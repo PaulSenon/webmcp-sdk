@@ -24,6 +24,7 @@
  */
 
 import type { ToolAnnotations } from "./contract.js";
+import { notImplemented } from "./not-implemented.js";
 
 /** `ModelContextTool` dictionary (draft). */
 export interface ModelContextTool {
@@ -45,15 +46,11 @@ export interface ModelContextLike {
 }
 
 /**
- * Returns `document.modelContext` when present, or `undefined` (SSR, workers, insecure
- * contexts, unsupported browsers). Never throws.
+ * Intended behaviour: returns `document.modelContext` when present, or `undefined` (SSR,
+ * workers, insecure contexts, unsupported browsers). Never throws.
+ *
+ * Prototype: not implemented, throws `NotImplementedError` like every other runtime entry point.
  */
 export function getModelContext(): ModelContextLike | undefined {
-  // The one runtime helper implemented on purpose: it is trivial and has no fake-success
-  // path. It either finds the object or reports `undefined`.
-  if (typeof document === "undefined") return undefined;
-  const mc = (document as Document & { modelContext?: unknown }).modelContext;
-  return mc && typeof (mc as ModelContextLike).registerTool === "function"
-    ? (mc as ModelContextLike)
-    : undefined;
+  return notImplemented("getModelContext");
 }

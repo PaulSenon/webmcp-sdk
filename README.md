@@ -5,7 +5,7 @@
 [WebMCP](https://webmachinelearning.github.io/webmcp/) lets a web page expose functions ("tools") to AI agents running in the browser, through `document.modelContext`. **webmcp-sdk** gives you a typed, validated, contract-first way to define those tools, built on [Standard Schema](https://standardschema.dev) (Zod, Valibot, ArkType, Effect…). The API is inspired by [oRPC](https://orpc.dev) and [TanStack](https://tanstack.com).
 
 > [!WARNING]
-> **Design prototype: types only, nothing runs.** Every runtime function throws `NotImplementedError`, and nothing is published to npm. This repo is for reviewing the API before it is built.
+> **Design prototype: types only, nothing runs.** Every runtime function throws `NotImplementedError` (only the error classes have real constructors), and nothing is published to npm. This repo is for reviewing the API before it is built.
 > WebMCP is itself an **experimental** W3C Community Group draft (see [Platform status](#platform-status)).
 
 ## Quick start
@@ -600,7 +600,7 @@ These are the decisions that would change the product. Recommendations are in [`
 | ------ | ------ |
 | `contract`, `implement`, `tool`, `toolset`, `.register()`, `withJsonSchema`, `contract.toJSONSchema()` | types for review · runtime throws `NotImplementedError` |
 | `ToolError`, `WebMCPError`, `NotImplementedError` | plain classes (implemented) |
-| `getModelContext()` | implemented (feature detection only) |
+| `getModelContext()` | types · runtime throws |
 | `webmcp-sdk/react`: `useToolset`, `useTool`, `RegisterToolset` | types · runtime throws |
 | `webmcp-sdk/consumer`: `createToolCatalog`, `bindContract` | types · runtime throws |
 
