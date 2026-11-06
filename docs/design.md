@@ -88,7 +88,20 @@ Rejected: sync `register()` returning a handle with a `ready` promise. It looks 
 
 Invariants: **all or nothing** per toolset, **a FIFO queue per (model context, name)** for SDK-issued registrations, and no takeover of names owned by other code.
 
-Default `ifUnsupported: "skip"`. Registering tools is progressive enhancement, so a page must not crash in browsers without WebMCP. The registration's `state: "unsupported"` makes the outcome explicit. That is not fake success, because nothing claims to be registered.
+## Decision: progressive enhancement (user decision, 2026-11-06)
+
+**Decided.** Loading the SDK and registering tools must never break the app in a browser without WebMCP. Concretely:
+
+- If `document.modelContext` is absent (unsupported browser, insecure context, SSR), registration registers nothing, does not throw, and reports a simple `"unsupported"` state. In React, the hooks report the same state and never throw during render.
+- Importing the SDK has no side effects and touches no browser globals at module load.
+- No polyfill is installed automatically. Using `@w3c/webmcp-polyfill` stays an explicit choice of the app (`modelContext` option, or the app installs it itself).
+- A light warning (for example a one-time dev-only `console.info`) is **not decided**. If it is added, it must be silenceable and must never be an error.
+
+This is not fake success. Nothing claims to be registered, and the state says so.
+
+**Not a requirement: the strict mode.** The `ifUnsupported: "throw"` option in the current types was a design suggestion, not a user request. Assessment: it does not earn its surface. An app that really requires WebMCP can write the check itself in one line (`if (reg.state === "unsupported") throw …`). The option adds a second behaviour to document and test in core and in React for a rare case. **Recommendation:** remove `ifUnsupported` in the next API pass and keep a single behaviour. It stays in the types for now, since this pass changes no API while the helpers-vs-builder discussion is open. `WebMCPError("unsupported")` would then go too.
+
+Other errors are unaffected. A genuine registration failure in a browser that *does* support WebMCP (duplicate name, schema conversion, permissions policy) is still reported (`WebMCPError`, or React `state: "error"`), because there the developer's intent failed.
 
 ## Alternative 5: errors
 
@@ -123,6 +136,8 @@ The guarantees are layered, and the README and source say exactly this:
 3. **Prefixes:** defer. Duplicate names fail loudly, React retries when the owner leaves, and prefixes can be added as a toolset option later.
 4. **Consumer packaging:** ship as `webmcp-sdk/consumer`, marked experimental, with its own stability notice. Move it to a separate package if the draft's discovery API changes shape.
 
+5. **Under discussion (not decided): definition API shape.** The alternative under review is pure helpers (`defineTool` / `implementTool` / optional `defineToolset`) plus an explicit WebMCP binding (`registerTools`, React hook), instead of `contract → implement().handler → toolset.register()`. The progressive-enhancement decision above holds in both shapes.
+
 ## Review log
 
 The first pass was reviewed by Claude Sonnet 5.5 (DX) and GPT-6.1 Sol at xhigh (type soundness, with compiler-verified repros). Changes applied:
@@ -135,7 +150,7 @@ The first pass was reviewed by Claude Sonnet 5.5 (DX) and GPT-6.1 Sol at xhigh (
   - Union and template names report potential duplicates regardless of order.
   - Handlers without an `output` schema return `JsonValue | void`.
 - **DX and naming:**
-  - `ifUnsupported` now defaults to `"skip"`, and React returns `{ state, error }` with the full option set.
+  - `ifUnsupported` now defaults to `"skip"`, and React returns `{ state, error }` with the full option set. (Superseded: see "Decision: progressive enhancement". The option itself is slated for removal.)
   - React re-registers on tool-list changes, not wrapper identity, and retries `duplicate_name` automatically.
   - Renames:
     - `WebMCPTools` → `RegisterToolset`
