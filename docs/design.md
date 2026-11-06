@@ -2,6 +2,136 @@
 
 Status: design prototype, 2026-11-06. This file records **why** the API looks the way it does. Facts about the platform are in [`research.md`](research.md), with dates and sources.
 
+> **Reading guide (2026-11-06).** The code, the type tests and the README still show **pass 1** (`contract → implement().handler → toolset.register()`). Decisions taken since then are recorded below and are **not implemented yet**. No API refactor or runtime work starts until every open point has been discussed with the user, one at a time.
+
+## Decision status
+
+### Decided
+
+| # | decision | source |
+| - | -------- | ------ |
+| D1 | **Progressive enhancement.** Without WebMCP, registering never breaks the app: nothing is registered, a simple `"unsupported"` state, no automatic polyfill. Details in [Decision: progressive enhancement](#decision-progressive-enhancement-user-decision-2026-11-06). | user, 2026-11-06 |
+| D2 | **Definition helpers, then implementation, then separate WebMCP registration.** Definitions and contracts are plain objects built by a helper (illustrative name `defineTool({...})`, no handler). `implementTool(definition, handler)` infers input/output from the definition. WebMCP registration (and the React binding) is a separate step that takes implementations. This replaces the chained `implement(c).handler()` and the `toolset.register()` method. | user, 2026-11-06 |
+| D3 | **No `defineToolset` unless it earns its place.** Applying the user's rule ("drop it if it is just an array"), the analysis below finds no real utility, so it is dropped. Registration takes a plain array of implementations. | user rule + analysis below |
+
+**Why `defineToolset` is dropped (D3).** Candidate benefits, each checked:
+
+- *Compile-time duplicate-name check.* It works the same on the registration parameter (`registerTools<const T extends readonly Impl[]>(tools: T & UniqueNames<T>)`), so no wrapper is needed.
+- *Stable identity for React.* A module-level array is just as stable, and with D2 the React binding should key on definitions anyway, not on a wrapper.
+- *Merged context typing.* Only relevant if context survives (open point O3). Even then, the merge can be computed on the registration parameter.
+- *Group-level options (prefix, shared `exposedTo`).* None exist in v0. If one appears later, re-introduce a toolset **with** that justification.
+
+So it would be pure ceremony today. Reversal criterion: a group-level option that must travel with the tools across call sites.
+
+### Proposed, awaiting discussion (in this order)
+
+1. **Errors.** Full proposal in [Errors: proposal under discussion](#errors-proposal-under-discussion). **The next discussion starts here.**
+2. **JSON Schema capability required at definition time** (vs only at WebMCP registration). Recommendation: at definition. Describing a tool to an LLM is intrinsic to a tool, and type errors stay next to the schema. WebMCP-only constraints (name charset, dialect, envelope, annotation mapping, serialization) move to the registration step.
+3. **No context concept in v0.** Recommendation: closures (React) and plain factory functions (`const cartTools = (cart) => [...]`) cover the cases. A probe showed context *can* be typed with helpers by annotating the handler's second parameter, but it is verbose and rarely needed.
+4. **Generic execution layer.** Recommendation: validation and failure mapping live in a generic, browser-free executor (illustrative `runTool(impl, rawInput, { signal })`) used by the WebMCP binding. `implementTool` stays a pure typed handler, callable directly in tests.
+5. **React binding details.** Recommendation: re-register only when the list of **definitions** changes (identity, element-wise) or options change. Handlers are refreshed in a ref after commit, and a call between render and commit sees the previous handler (documented). Dev warning on churn from inline definitions. Sub-choice: whole-set re-registration vs per-tool diff.
+6. **Strict mode removal.** Recommendation: remove `ifUnsupported` entirely (see D1 section).
+7. **Exact names.** `defineTool` (which may suggest a handler is included; `defineToolContract` is a candidate), `implementTool`, the registration function and hook names.
+
+### Still open from pass 1
+
+Typed error maps in contracts, toolset prefixes (now moot unless D3 is reversed), consumer packaging, and in-band envelope vs `outputSchema` (folded into the errors proposal).
+
+## Errors: proposal under discussion
+
+Goal (user): the SDK handles input/output validation and every failure in its own scope automatically, with no plumbing in handlers. What the agent gets must be clear and actionable, and must never promise a safe retry or the absence of side effects.
+
+### What Standard Schema actually provides
+
+`~standard.validate(value)` returns, sync **or** async, either `{ value }` (after transforms) or `{ issues: [{ message, path? }] }`. Nothing else is guaranteed:
+
+- `path` is optional. It is a list of `PropertyKey` or `{ key }`. Root-level issues (e.g. a `.refine` without `path`) have none.
+- `message` is free text from the schema library. It may *read* "expected X, received Y" (Zod), but there are **no** structured `expected`/`received`/`code` fields, and the SDK must not invent them.
+- `validate` takes no `AbortSignal`. Async validation cannot be cancelled, only ignored.
+- `validate` itself may **throw** (schema bug, an async refine hitting the network). That is not invalid input but an internal failure, and the handler was not called.
+- Messages may be localized and are authored by the schema author. The SDK passes them through.
+
+The SDK formats paths as readable strings (`items[0].sku`, with `"(root)"` when absent), caps the number of issues (e.g. 20, with an "N more" count), and never echoes the input back (the agent already has it).
+
+### Proposed taxonomy: five kinds, each mapped to an agent action
+
+| kind | `handlerCalled` | what the agent is told |
+| ---- | --------------- | ---------------------- |
+| `input_invalid` | `false` | did not run; fix these fields (issues) and call again |
+| `tool_error` | `true` | the author's `ToolError` message, `code`, `data` |
+| `internal` | `true` or `false` | failed unexpectedly; if called: may have partially run, check state before retrying |
+| `output_invalid` | `true` | ran, but its result failed validation; the action may have been performed; check state |
+| `interrupted` | `true` | the tool was removed while running (unregister, unmount); may have partially run; re-discover |
+
+Changes vs pass 1:
+
+- `execution_failed` splits into `tool_error` and `internal`. The difference changes the agent's next step.
+- `cancelled` is dropped. When the agent aborts, the browser has already rejected the caller and ignores late results, so an SDK value would be invisible.
+- `unavailable` becomes `interrupted`.
+- `retryable` is dropped. The SDK cannot know whether a retry is safe, and the author can say so in the message.
+- `handlerCalled: boolean` is added. It is a fact the SDK knows exactly, not a promise about effects.
+
+A non-serializable result falls under `output_invalid`. A failing validator falls under `internal` with `handlerCalled: false`. Out of scope: timeouts, concurrency, browser-level errors (`DataError`, `NotFoundError`, caller `AbortError`).
+
+### Examples (proposed API names, illustrative)
+
+```ts nocheck
+// Input invalid: no handler code needed
+// agent receives:
+{ "isError": true, "error": { "kind": "input_invalid", "handlerCalled": false,
+  "message": "Arguments rejected; the tool did not run. Fix the fields below and call again.",
+  "issues": [{ "path": "quantity", "message": "Too small: expected number to be >=1" }] } }
+```
+
+```ts nocheck
+// Business failure: the author throws ToolError
+const reserveItem = implementTool(reserveItemDef, async (input) => {
+  const left = await stock.available(input.sku);
+  if (left < input.quantity)
+    throw new ToolError(`Only ${left} left. Ask for at most ${left}.`, { code: "OUT_OF_STOCK", data: { left } });
+  return { reserved: input.quantity };
+});
+// agent receives:
+{ "isError": true, "error": { "kind": "tool_error", "handlerCalled": true,
+  "code": "OUT_OF_STOCK", "message": "Only 2 left. Ask for at most 2.", "data": { "left": 2 } } }
+// any other throw → { kind: "internal", handlerCalled: true, message: "The tool failed unexpectedly.
+//   It may have partially run; check the current state before retrying." }  (original → dev hook only)
+```
+
+```ts nocheck
+// User declines a confirmation: an outcome declared in the output, not an error (recommended option A)
+const checkoutDef = defineTool({
+  name: "checkout",
+  description: "Place the order. The user is asked to confirm; if they decline, do not retry unless they ask.",
+  output: z.discriminatedUnion("status", [
+    z.object({ status: z.literal("placed"), orderId: z.string() }),
+    z.object({ status: z.literal("declined"), message: z.string() }),
+  ]),
+});
+const checkout = implementTool(checkoutDef, async () => {
+  if (!(await confirmDialog("Place order for 42 €?")))
+    return { status: "declined", message: "The user declined. Do not retry unless they ask again." };
+  return { status: "placed", orderId: await placeOrder() };
+});
+// agent receives a successful, schema-described result:
+{ "status": "declined", "message": "The user declined. Do not retry unless they ask again." }
+```
+
+### Declined confirmation: two options
+
+- **A. An outcome in the output union (recommended).** No SDK surface, just a documented pattern. The semantics are right: the call succeeded and the user said no. It is typed in the contract, described by `outputSchema`, and typed for `bindContract` consumers. WebMCP has no `requestUserInteraction` in the current draft, so the confirmation UI is the page's own code inside the handler anyway.
+- **B. An SDK mechanism** (`return declined(...)` / `throw new ToolDeclined()`). It needs a third envelope shape, grows `outputSchema`, adds a concept, and the outcome is untyped in the contract. Revisit only if many tools repeat the same pattern. Even then, a tiny schema helper that builds the union would beat a new envelope.
+
+### Envelope vs `outputSchema`
+
+With declined outcomes in the output (A), the envelope carries only real failures. `{ isError: true, error }` remains, and tools with an `output` schema advertise `anyOf [output, envelope]`. The alternatives are worse: omitting `outputSchema` loses success typing, and rejecting loses the message to `OperationError`. Still to validate with agent implementers.
+
+### Questions for the user (errors)
+
+1. Declined confirmation: **A** (output union) or **B** (SDK mechanism)?
+2. Drop `retryable`, add `handlerCalled`?
+3. Minor, can default: readable path format, issue cap, the `interrupted` merge.
+
 ## Principles
 
 1. **Final API first.** The surface is written as if the runtime existed. Layers below it (validation pipeline, schema resolution, model-context adapter) exist only to serve it.
@@ -12,6 +142,8 @@ Status: design prototype, 2026-11-06. This file records **why** the API looks th
 6. **Core is small.** React and the consumer layer are separate entry points that the core does not import.
 
 ## Alternative 1: how to define a tool
+
+> Superseded by D2 (helpers + separate registration). Kept as history.
 
 Three shapes were compared on the same tool.
 
@@ -56,6 +188,8 @@ const addToCart = oc.name("add_to_cart").description("…").input(z.object({ sku
 It reads well for oRPC users, but most tools are 4–6 fields of metadata, which an object literal shows at a glance. Chains also make optional fields harder to scan and to diff. Rejected.
 
 ## Alternative 2: where context comes from
+
+> Under re-examination: see proposed point 3 (no context in v0).
 
 | option | verdict |
 | ------ | ------- |
@@ -105,6 +239,8 @@ Other errors are unaffected. A genuine registration failure in a browser that *d
 
 ## Alternative 5: errors
 
+> Pass-1 design. Superseded by [Errors: proposal under discussion](#errors-proposal-under-discussion) once validated.
+
 - One agent-facing union, `ToolFailure`, keyed by `kind` = the boundary that failed (`input_invalid`, `execution_failed`, `output_invalid`, `cancelled`, `unavailable`). No class hierarchy.
 - One author-facing class, `ToolError(message, { code, retryable, data, cause })`. Only its message crosses to the agent.
 - One developer-facing class, `WebMCPError(code)`, for definitions and registration.
@@ -136,7 +272,7 @@ The guarantees are layered, and the README and source say exactly this:
 3. **Prefixes:** defer. Duplicate names fail loudly, React retries when the owner leaves, and prefixes can be added as a toolset option later.
 4. **Consumer packaging:** ship as `webmcp-sdk/consumer`, marked experimental, with its own stability notice. Move it to a separate package if the draft's discovery API changes shape.
 
-5. **Under discussion (not decided): definition API shape.** The alternative under review is pure helpers (`defineTool` / `implementTool` / optional `defineToolset`) plus an explicit WebMCP binding (`registerTools`, React hook), instead of `contract → implement().handler → toolset.register()`. The progressive-enhancement decision above holds in both shapes.
+5. **Definition API shape:** decided, see D2/D3 in [Decision status](#decision-status).
 
 ## Review log
 

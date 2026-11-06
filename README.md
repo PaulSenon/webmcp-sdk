@@ -59,6 +59,9 @@ contract({...})  ──►  implement(contract).handler(fn)  ──►  toolset(
 [Open questions](#open-questions) ·
 [Status](#implementation-status)
 
+> [!NOTE]
+> **The API below is pass 1.** Decisions taken since (definition helpers + `implementTool` + separate registration, progressive enhancement) and proposals under discussion (errors, context, React) are recorded in [`docs/design.md`](docs/design.md#decision-status) and are not implemented yet.
+
 Design rationale and rejected alternatives are in [`docs/design.md`](docs/design.md). Dated platform research is in [`docs/research.md`](docs/research.md).
 
 ---
