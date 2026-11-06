@@ -1,0 +1,39 @@
+{
+  "name": "webmcp-sdk",
+  "version": "0.0.0-design",
+  "private": true,
+  "description": "Design prototype: contract-first, Standard Schema-based TypeScript SDK for WebMCP tools. Not functional, not published.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./react": "./src/react/index.ts",
+    "./consumer": "./src/consumer/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "check:docs": "node scripts/check-readme.mjs",
+    "check": "pnpm typecheck && pnpm check:docs"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "@standard-schema/spec": "^1.1.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@valibot/to-json-schema": "^1.8.0",
+    "arktype": "^2.2.9",
+    "react": "^19.3.1",
+    "typescript": "^7.0.2",
+    "valibot": "^1.5.0",
+    "zod": "^4.6.7"
+  }
+}

@@ -1,0 +1,4 @@
+node_modules
+.readme-check
+*.tsbuildinfo
+.DS_Store

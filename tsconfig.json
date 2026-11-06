@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "lib": ["es2023", "dom", "dom.iterable"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "jsx": "react-jsx",
+    "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "paths": {
+      "webmcp-sdk": ["./src/index.ts"],
+      "webmcp-sdk/react": ["./src/react/index.ts"],
+      "webmcp-sdk/consumer": ["./src/consumer/index.ts"]
+    }
+  },
+  "include": ["src", "type-tests", "examples"]
+}
