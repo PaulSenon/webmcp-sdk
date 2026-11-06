@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { z } from "zod";
 import { contract, implement, tool, toolset } from "webmcp-sdk";
-import { useTool, useToolset, WebMCPTools } from "webmcp-sdk/react";
+import { useTool, useToolset, RegisterToolset } from "webmcp-sdk/react";
 import type { Equal, Expect } from "./_utils.js";
 
 interface Cart { size: number }
@@ -23,11 +23,13 @@ export function Component({ cart }: { cart: Cart }) {
   const [todos, setTodos] = useState<string[]>([]);
 
   const status = useToolset(cartTools, { context: { cart } });
-  if (status.status === "error") {
+  if (status.state === "error") {
     type _e = Expect<Equal<typeof status.error.code, import("webmcp-sdk").WebMCPErrorCode>>;
   }
   useToolset(ping);
-  useToolset(ping, { enabled: false });
+  useToolset(ping, { enabled: false, ifUnsupported: "throw", exposedTo: ["https://example.com"] });
+  // A new wrapper around the same tools is fine to pass (re-registration is keyed on the tool list).
+  useToolset(toolset([getCart]), { context: { cart } });
   // @ts-expect-error context required
   useToolset(cartTools);
   // @ts-expect-error context is a value in React, not a getter
@@ -42,10 +44,10 @@ export function Component({ cart }: { cart: Cart }) {
 
   return (
     <>
-      <WebMCPTools toolset={cartTools} context={{ cart }} />
-      <WebMCPTools toolset={ping} />
+      <RegisterToolset toolset={cartTools} context={{ cart }} />
+      <RegisterToolset toolset={ping} />
       {/* @ts-expect-error context required */}
-      <WebMCPTools toolset={cartTools} />
+      <RegisterToolset toolset={cartTools} />
     </>
   );
 }

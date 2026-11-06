@@ -8,19 +8,27 @@ import type { ToolDescriptor } from "./contract.js";
 // Type-level helpers
 // ---------------------------------------------------------------------------
 
-type UnionToIntersection<U> = (U extends unknown ? (x: U) => void : never) extends (
-  x: infer I,
-) => void
-  ? I
-  : never;
+type ContextFn<T> = T extends AnyToolImplementation ? (context: InferToolContext<T>) => void : never;
 
-/** The merged context every tool in the list requires (intersection). */
+/**
+ * The context every tool in the list requires: the intersection of each tool's declared
+ * context, keeping unions and call signatures intact.
+ *
+ * Fails closed: if the element type is erased (`AnyToolImplementation[]`), the
+ * requirements are unknowable and the result is `never`, so `register()` cannot be
+ * called without a context that can never be satisfied. Keep tool lists as tuples
+ * (`toolset([a, b])`) or use `satisfies AnyToolImplementation[]`.
+ */
 export type ToolsetContext<TTools extends readonly AnyToolImplementation[]> =
   TTools extends readonly []
     ? {}
-    : UnionToIntersection<InferToolContext<TTools[number]>> extends infer Ctx
-      ? { [K in keyof Ctx]: Ctx[K] }
-      : never;
+    : 0 extends 1 & InferToolContext<TTools[number]>
+      ? never
+      : [ContextFn<TTools[number]>] extends [(context: infer Ctx) => void]
+        ? Ctx
+        : never;
+
+type Overlap<A extends string, B extends string> = Extract<A, B> | Extract<B, A>;
 
 type FindDuplicate<
   TTools extends readonly AnyToolImplementation[],
@@ -30,20 +38,21 @@ type FindDuplicate<
   ...infer Rest extends readonly AnyToolImplementation[],
 ]
   ? string extends Head["name"]
-    ? FindDuplicate<Rest, Seen> // non-literal names can only be checked at runtime
-    : Head["name"] extends Seen
-      ? Head["name"]
-      : FindDuplicate<Rest, Seen | Head["name"]>
+    ? FindDuplicate<Rest, Seen> // wide `string` names can only be checked at registration
+    : [Overlap<Head["name"], Seen>] extends [never]
+      ? FindDuplicate<Rest, Seen | Head["name"]>
+      : Overlap<Head["name"], Seen>
   : never;
 
 /**
- * Resolves to `unknown` (no constraint) when tool names are unique. Otherwise it resolves to a readable
- * compile error. Literal names are checked here. Computed names are checked at registration.
+ * `unknown` (no constraint) when tool names cannot collide. Otherwise a readable compile
+ * error. Union and template-literal names are checked conservatively: any possible
+ * overlap is reported. Wide `string` names are checked at registration.
  */
 export type UniqueToolNames<TTools extends readonly AnyToolImplementation[]> =
   [FindDuplicate<TTools>] extends [never]
     ? unknown
-    : { readonly "~error": `Duplicate tool name "${FindDuplicate<TTools>}" in toolset` };
+    : { readonly "~error": `Potential duplicate tool name "${FindDuplicate<TTools>}" in toolset` };
 
 // ---------------------------------------------------------------------------
 // Toolset and registration
@@ -52,7 +61,7 @@ export type UniqueToolNames<TTools extends readonly AnyToolImplementation[]> =
 /**
  * Where a registration stands.
  * - `registered`: every tool in the toolset is live.
- * - `unsupported`: no WebMCP in this environment and `ifUnsupported: "skip"` was set. Nothing registered.
+ * - `unsupported`: no WebMCP in this environment (and `ifUnsupported` is `"skip"`, the default). Nothing registered.
  * - `unregistered`: `unregister()` was called or the `signal` aborted. Terminal.
  */
 export type RegistrationState = "registered" | "unsupported" | "unregistered";
@@ -87,9 +96,10 @@ export type RegisterOptions<TContext> = {
    */
   readonly signal?: AbortSignal;
   /**
-   * What to do when no WebMCP implementation exists (SSR, insecure context, unsupported browser):
-   * - `"throw"` (default): reject with `WebMCPError("unsupported")`.
-   * - `"skip"`: resolve with a registration in `state: "unsupported"`.
+   * What to do when no WebMCP implementation exists (SSR, insecure context, most browsers today):
+   * - `"skip"` (default): resolve with a registration in `state: "unsupported"`. Nothing
+   *   is registered, and the state says so. Pages keep working where WebMCP is absent.
+   * - `"throw"`: reject with `WebMCPError("unsupported")`.
    */
   readonly ifUnsupported?: "throw" | "skip";
   /**
@@ -109,7 +119,7 @@ export type RegisterOptions<TContext> = {
    * validation failures, `context()` failures). Use it for logging. What the agent
    * sees is unaffected.
    */
-  readonly onError?: (error: unknown, info: { readonly toolName: string }) => void;
+  readonly onToolError?: (error: unknown, info: { readonly toolName: string }) => void;
 } & ({} extends TContext ? {} : { readonly context: () => TContext | Promise<TContext> });
 
 /**

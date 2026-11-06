@@ -7,6 +7,7 @@ import type {
   JSONSchema,
   JSONSchemaResolution,
   JSONSchemaTarget,
+  JsonValue,
   ToolArguments,
 } from "./schema.js";
 
@@ -43,7 +44,7 @@ export interface ContractDefinition<
   readonly description: string;
   /** Arguments schema. Omit for tools that take no arguments. */
   readonly input?: TInput;
-  /** Result schema. Omit to return any JSON-serializable value, unvalidated. */
+  /** Result schema. Omit to return any `JsonValue`, unvalidated. */
   readonly output?: TOutput;
   readonly annotations?: ToolAnnotations;
 }
@@ -87,27 +88,31 @@ export type NoArguments = Record<string, never>;
 
 // ---------------------------------------------------------------------------
 // Type helpers. "Tool" means the agent's side of the boundary; "Handler" means yours.
+// All are distributive, so `input?: Schema | undefined` stays correct.
 // ---------------------------------------------------------------------------
 
+type ToolInputOf<S> = S extends AnyInputSchema ? InferSchemaInput<S> : NoArguments;
+type HandlerInputOf<S> = S extends AnyInputSchema ? InferSchemaOutput<S> : NoArguments;
+type HandlerOutputOf<S> = S extends AnyOutputSchema ? InferSchemaInput<S> : JsonValue | void;
+type ToolOutputOf<S> = S extends AnyOutputSchema ? InferSchemaOutput<S> : unknown;
+
 /** Arguments as the **agent** sends them (schema input side, before transforms). */
-export type InferToolInput<C extends AnyContract> = C["input"] extends AnyInputSchema
-  ? InferSchemaInput<C["input"]>
-  : NoArguments;
+export type InferToolInput<C extends AnyContract> = ToolInputOf<C["input"]>;
 
 /** Arguments as your **handler** receives them (schema output side, after validation and transforms). */
-export type InferHandlerInput<C extends AnyContract> = C["input"] extends AnyInputSchema
-  ? InferSchemaOutput<C["input"]>
-  : NoArguments;
+export type InferHandlerInput<C extends AnyContract> = HandlerInputOf<C["input"]>;
 
-/** What your **handler** must return (output schema *input* side, before transforms). */
-export type InferHandlerOutput<C extends AnyContract> = C["output"] extends AnyOutputSchema
-  ? InferSchemaInput<C["output"]>
-  : unknown;
+/**
+ * What your **handler** must return: the output schema's *input* side, before transforms.
+ * Without an output schema, any {@link JsonValue}. Returning nothing (`void`) is sent as `null`.
+ */
+export type InferHandlerOutput<C extends AnyContract> = HandlerOutputOf<C["output"]>;
 
-/** What the **agent** receives (output schema *output* side, after validation and transforms). */
-export type InferToolOutput<C extends AnyContract> = C["output"] extends AnyOutputSchema
-  ? InferSchemaOutput<C["output"]>
-  : unknown;
+/**
+ * What the **agent** receives (output schema *output* side, after validation and transforms).
+ * `unknown` without an output schema.
+ */
+export type InferToolOutput<C extends AnyContract> = ToolOutputOf<C["output"]>;
 
 /** The resolved tool descriptor handed to the browser. Developer-visible for debugging and tests. */
 export interface ToolDescriptor {
@@ -119,8 +124,38 @@ export interface ToolDescriptor {
   readonly annotations?: ToolAnnotations;
 }
 
-/** Keeps the call site's literal name while checking the definition shape. */
-type ValidName<TName extends string> = TName extends "" ? never : TName;
+/** Rejects `""` and unions that may be `""`. Wide `string` names are checked at registration. */
+type ValidName<TName extends string> = string extends TName ? TName : "" extends TName ? never : TName;
+
+type InputGuard<S> =
+  0 extends 1 & InferSchemaInput<S>
+    ? InvalidInput<"`any` input type">
+    : [InferSchemaInput<S>] extends [never]
+      ? InvalidInput<"`never` input type">
+      : [InferSchemaInput<S>] extends [object]
+        ? [Extract<InferSchemaInput<S>, readonly unknown[] | Function | Date>] extends [never]
+          ? unknown
+          : InvalidInput<"array, function or Date input type">
+        : InvalidInput<"non-object input type">;
+type InvalidInput<Why extends string> = {
+  readonly "~error": `Tool input must be an object schema (got ${Why}). WebMCP requires inputSchema of type "object".`;
+};
+type OptionalInputGuard<S> = [Exclude<S, undefined>] extends [never]
+  ? unknown
+  : InputGuard<Exclude<S, undefined>>;
+
+/**
+ * The parameter type of `contract()` and `tool()`. Infers literal names, then checks them
+ * (non-empty) and checks that the input schema describes an object.
+ */
+export type ContractDefinitionArg<
+  TName extends string,
+  TInput extends AnyInputSchema | undefined,
+  TOutput extends AnyOutputSchema | undefined,
+> = ContractDefinition<TName, TInput, TOutput> & {
+  readonly name: ValidName<NoInfer<TName>>;
+  readonly input?: TInput & OptionalInputGuard<TInput>;
+};
 
 /**
  * Defines a tool contract: metadata and schemas, no implementation.
@@ -138,9 +173,7 @@ export function contract<
   const TName extends string,
   TInput extends AnyInputSchema | undefined = undefined,
   TOutput extends AnyOutputSchema | undefined = undefined,
->(
-  definition: ContractDefinition<ValidName<TName>, TInput, TOutput>,
-): ToolContract<TName, TInput, TOutput> {
+>(definition: ContractDefinitionArg<TName, TInput, TOutput>): ToolContract<TName, TInput, TOutput> {
   return notImplemented("contract");
 }
 

@@ -24,14 +24,28 @@ export type JSONSchema = { readonly [key: string]: unknown };
 export type ToolSchema<Input = unknown, Output = Input> = StandardSchemaV1<Input, Output> &
   StandardJSONSchemaV1<Input, Output>;
 
+/** A JSON value, as WebMCP serializes tool results with JSON. */
+export type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | readonly JsonValue[]
+  | { readonly [key: string]: JsonValue };
+
 /**
  * Tool arguments are always a JSON object. WebMCP and MCP require the top-level
  * `inputSchema` to be `type: "object"`.
  */
 export type ToolArguments = Record<string, unknown>;
 
-/** Any schema usable as a tool `input`: its *input* side must be an object. */
-export type AnyInputSchema = ToolSchema<ToolArguments, any>;
+/**
+ * Any schema usable as a tool `input`. The base constraint is `object` (so interface
+ * types are accepted). `contract()` additionally rejects `any`, `never`, arrays,
+ * functions and `Date` input types at compile time. The generated JSON Schema root is
+ * still checked at registration.
+ */
+export type AnyInputSchema = ToolSchema<object, any>;
 /** Any schema usable as a tool `output`. */
 export type AnyOutputSchema = ToolSchema<any, any>;
 

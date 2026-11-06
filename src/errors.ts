@@ -16,8 +16,12 @@
  * | `input_invalid`    | arguments failed the input schema                    | fix arguments using `issues`, retry |
  * | `execution_failed` | the handler threw                                    | read `message`/`code`; retry only if `retryable` |
  * | `output_invalid`   | the handler returned data that failed the output schema | not retry: page bug    |
- * | `cancelled`        | the call was aborted (by the agent, or the toolset was unregistered) and the handler stopped | not retry unless asked |
- * | `unavailable`      | the tool is gone or cannot run now (unregistered, page navigating) | re-discover tools |
+ * | `cancelled`        | the browser aborted the call (agent cancel, page unload) and the handler stopped | not retry unless asked |
+ * | `unavailable`      | this registration ended (unregister, abort, React unmount) before or during the call, and the handler did not complete | re-discover tools |
+ *
+ * A failing `context()` resolver is `execution_failed` with `code: "context_unavailable"`.
+ * In practice, a caller whose own signal aborted has already been rejected by the browser
+ * and never sees `cancelled`. The kind exists for every other path.
  */
 export type ToolFailureKind =
   | "input_invalid"
@@ -44,7 +48,7 @@ export type ToolFailure =
       readonly kind: "execution_failed";
       /** The `ToolError` message, or a generic message for unexpected errors. */
       readonly message: string;
-      /** The `ToolError` code. `"internal"` for unexpected errors. */
+      /** The `ToolError` code. `"internal"` for unexpected errors, `"context_unavailable"` when `context()` failed. */
       readonly code: string;
       readonly retryable: boolean;
       /** Extra JSON data from `ToolError`, if any. */
@@ -62,11 +66,13 @@ export type ToolFailure =
  * forwarded, so the agent would learn nothing actionable. A returned value is
  * serialized and delivered as-is.
  *
- * Trade-off: this value does not match the tool's `outputSchema`. Agents that strictly
- * check output may treat it as a malformed result, which is still a failure. See the
- * README "Open questions" section.
+ * So that strict agents do not drop it as malformed, a tool with an `output` schema
+ * advertises `outputSchema: { anyOf: [<output>, <ToolFailureEnvelope schema>] }`. A tool
+ * without one advertises no `outputSchema`. See README "Open questions" #1.
  */
-export interface ToolFailureResult {
+export interface ToolFailureEnvelope {
+  /** Discriminator. Consumers must check `isError === true` **and** a known `error.kind`. */
+  readonly isError: true;
   readonly error: ToolFailure;
 }
 
@@ -77,7 +83,7 @@ export interface ToolErrorOptions {
   readonly retryable?: boolean;
   /** Extra JSON-serializable data for the agent. */
   readonly data?: unknown;
-  /** Kept locally for logging (`onError`). **Never** sent to the agent. */
+  /** Kept locally for logging (`onToolError`). **Never** sent to the agent. */
   readonly cause?: unknown;
 }
 
@@ -86,7 +92,7 @@ export interface ToolErrorOptions {
  *
  * Only `ToolError` messages reach the agent. Any other thrown value becomes
  * `{ kind: "execution_failed", code: "internal", message: "The tool failed unexpectedly." }`,
- * and the original goes to the `onError` callback you passed at registration.
+ * and the original goes to the `onToolError` callback you passed at registration.
  *
  * @example
  * throw new ToolError("Only 2 left in stock. Retry with quantity <= 2.", {

@@ -109,3 +109,40 @@ contract({ name: "no_description" });
 
 // @ts-expect-error empty name
 contract({ name: "", description: "x" });
+// @ts-expect-error empty name, through tool() too
+tool({ name: "", description: "x" });
+// @ts-expect-error empty name, nested in implement()
+implement(contract({ name: "", description: "x" }));
+
+// --- Nested contract() keeps literal names (SOL #1) ------------------------------
+const nested = implement(contract({ name: "nested", description: "x" })).handler(() => null);
+type _nested = Expect<Equal<typeof nested.name, "nested">>;
+
+// --- Interface-typed schemas are accepted (SOL #2) --------------------------------
+interface Args { q: string }
+declare const ifaceSchema: StandardSchemaV1<Args>;
+contract({
+  name: "iface",
+  description: "x",
+  input: withJsonSchema(ifaceSchema, { input: { type: "object" } }),
+});
+
+// --- Degenerate inputs are rejected (SOL #2) ---------------------------------------
+// @ts-expect-error any input
+contract({ name: "any", description: "x", input: z.any() });
+// @ts-expect-error never input
+contract({ name: "never", description: "x", input: z.never() });
+// @ts-expect-error array input type hidden behind an intersection
+contract({ name: "arr", description: "x", input: z.intersection(z.array(z.string()), z.record(z.string(), z.unknown())) });
+
+// --- Without an output schema, handlers return JSON (SOL #7) ----------------------
+const free = contract({ name: "free", description: "x" });
+implement(free).handler(() => ({ ok: true, items: [1, 2] }));
+implement(free).handler(() => {}); // void is sent as null
+implement(free).handler(async () => {});
+// @ts-expect-error bigint is not JSON
+implement(free).handler(() => 1n);
+// @ts-expect-error functions are not JSON
+implement(free).handler(() => () => 1);
+// @ts-expect-error Date is not JSON (declare an output schema with a transform instead)
+implement(free).handler(() => new Date());

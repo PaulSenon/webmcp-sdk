@@ -88,12 +88,15 @@ Rejected: sync `register()` returning a handle with a `ready` promise. It looks 
 
 Invariants: **all or nothing** per toolset, **a FIFO queue per (model context, name)** for SDK-issued registrations, and no takeover of names owned by other code.
 
+Default `ifUnsupported: "skip"`. Registering tools is progressive enhancement, so a page must not crash in browsers without WebMCP. The registration's `state: "unsupported"` makes the outcome explicit. That is not fake success, because nothing claims to be registered.
+
 ## Alternative 5: errors
 
 - One agent-facing union, `ToolFailure`, keyed by `kind` = the boundary that failed (`input_invalid`, `execution_failed`, `output_invalid`, `cancelled`, `unavailable`). No class hierarchy.
 - One author-facing class, `ToolError(message, { code, retryable, data, cause })`. Only its message crosses to the agent.
 - One developer-facing class, `WebMCPError(code)`, for definitions and registration.
-- **In-band delivery**, because the draft drops callback rejection messages (`OperationError`). The cost is a mismatch with `outputSchema`. This is open question #1 in the README.
+- **In-band delivery**, because the draft drops callback rejection messages (`OperationError`). The envelope is `{ isError: true, error: ToolFailure }`, with a discriminator so consumers do not guess from shape alone. Tools with an `output` schema advertise `anyOf [output, envelope]` so that strict agents do not reject failures as malformed. This is open question #1 in the README.
+- A failing `context()` getter is `execution_failed` / `context_unavailable`. `unavailable` is reserved for "this registration ended during the call".
 - Typed per-contract error maps (oRPC `.errors()`) are deferred. They can be added later without breaking changes.
 
 ## Alternative 6: consumer identity
@@ -101,11 +104,54 @@ Invariants: **all or nothing** per toolset, **a FIFO queue per (model context, n
 | option | verdict |
 | ------ | ------- |
 | name only | breaks with frames (same name in two documents) |
-| name + window | breaks on same-origin navigation (WindowProxy survives) |
-| **source document + name + descriptor fingerprint** ✅ | best the platform allows. Re-registration of an identical descriptor is indistinguishable, and that is documented |
+| name + window | misses same-origin navigation (the WindowProxy survives) |
+| **observed source + name + descriptor fingerprint** ✅ | the most the platform allows |
 | registration instance id | does not exist in the platform |
 
-The `key` (LLM-facing unique name) is computed per snapshot and deliberately **not** identity. `bind(contract)` is name-based by design and validates both directions at runtime.
+The guarantees are layered, and the README and source say exactly this:
+
+1. **SDK guarantee:** an `id` is never remapped to a different descriptor or observed source. A mismatch returns `stale` and `executeTool` is not called.
+2. **Best-effort detection:** same-origin navigation is detected (`Document` identity). Cross-origin navigation is detected only through origin or descriptor changes. Identical re-registration is invisible.
+3. **Platform limit:** `executeTool` resolves by name, so check-then-call is not atomic. Changes not yet observed can slip in. The browser still enforces origin and exposure.
+
+`uniqueName` (the LLM-facing name) is computed per snapshot and is deliberately **not** identity. `bindContract(contract)` is name-based by design and validates both directions at runtime. The catalog follows React's external-store contract (no immediate emit). Svelte and Vue need a one-line adapter.
+
+## Recommendations on open questions
+
+1. **Failure envelope:** keep the in-band envelope with `isError: true` and `anyOf` advertising, then revisit with feedback from agent implementers. Omitting `outputSchema` would lose useful typing for successful results.
+2. **Typed error maps:** defer. The `ToolError` code covers agents. Typed maps mostly help `bindContract` consumers and can be added without breaking anything.
+3. **Prefixes:** defer. Duplicate names fail loudly, React retries when the owner leaves, and prefixes can be added as a toolset option later.
+4. **Consumer packaging:** ship as `webmcp-sdk/consumer`, marked experimental, with its own stability notice. Move it to a separate package if the draft's discovery API changes shape.
+
+## Review log
+
+The first pass was reviewed by Claude Sonnet 5.5 (DX) and GPT-6.1 Sol at xhigh (type soundness, with compiler-verified repros). Changes applied:
+
+- **Types:**
+  - Nested `contract()` names stay literal, and empty names are rejected everywhere (`NoInfer` + separate validation).
+  - The input constraint is now `object` plus a guard: interfaces are accepted; `any`, `never`, arrays, functions and `Date` are rejected.
+  - Context merging keeps unions and call signatures (function-intersection), and erased `AnyToolImplementation[]` fails closed.
+  - Optional input schemas infer correctly (distributive helpers).
+  - Union and template names report potential duplicates regardless of order.
+  - Handlers without an `output` schema return `JsonValue | void`.
+- **DX and naming:**
+  - `ifUnsupported` now defaults to `"skip"`, and React returns `{ state, error }` with the full option set.
+  - React re-registers on tool-list changes, not wrapper identity, and retries `duplicate_name` automatically.
+  - Renames:
+    - `WebMCPTools` → `RegisterToolset`
+    - `ToolCall` → `ToolHandlerArgs`
+    - `onError` → `onToolError`
+    - `ToolFailureResult` → `ToolFailureEnvelope`
+    - consumer `ref`/`key` → `id`/`uniqueName`
+    - `bind` → `bindContract`
+    - `kind: "tool"` → `"tool_failed"`
+  - `catalog.call(ref)` was removed, since `tool.call()` suffices.
+  - Consumer-only platform types moved out of core.
+- **Rejected:**
+  - A global `setDefaults()` (hidden shared state).
+  - `implementation.register()` (`toolset([t]).register()` is one line).
+  - Renaming `WebMCPError` (it covers definition and environment errors, not only registration).
+  - Renaming the `/consumer` subpath.
 
 ## What is deliberately not here
 

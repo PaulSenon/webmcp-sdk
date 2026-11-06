@@ -1,6 +1,6 @@
 import type {
   AnyContract,
-  ContractDefinition,
+  ContractDefinitionArg,
   InferHandlerInput,
   InferHandlerOutput,
   ToolContract,
@@ -9,7 +9,7 @@ import { notImplemented } from "./not-implemented.js";
 import type { AnyInputSchema, AnyOutputSchema } from "./schema.js";
 
 /** Everything a handler receives for one call. */
-export interface ToolCall<C extends AnyContract, TContext> {
+export interface ToolHandlerArgs<C extends AnyContract, TContext> {
   /** Validated, transformed arguments. */
   readonly input: InferHandlerInput<C>;
   /** The context supplied by whoever registered the toolset (`register({ context })`). */
@@ -25,7 +25,7 @@ export interface ToolCall<C extends AnyContract, TContext> {
 
 /** A handler may be sync or async. Validation of its result runs either way. */
 export type ToolHandler<C extends AnyContract, TContext> = (
-  call: ToolCall<C, TContext>,
+  args: ToolHandlerArgs<C, TContext>,
 ) => InferHandlerOutput<C> | Promise<InferHandlerOutput<C>>;
 
 /**
@@ -94,7 +94,7 @@ export function tool<
   TInput extends AnyInputSchema | undefined = undefined,
   TOutput extends AnyOutputSchema | undefined = undefined,
 >(
-  definition: ContractDefinition<TName, TInput, TOutput>,
+  definition: ContractDefinitionArg<TName, TInput, TOutput>,
 ): Implementer<ToolContract<TName, TInput, TOutput>> {
   return notImplemented("tool");
 }

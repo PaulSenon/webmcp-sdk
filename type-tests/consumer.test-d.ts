@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { contract } from "webmcp-sdk";
-import { createToolCatalog, type ToolCallResult, type ToolRef } from "webmcp-sdk/consumer";
+import { createToolCatalog, type ToolCallResult, type ToolId } from "webmcp-sdk/consumer";
 import type { Equal, Expect } from "./_utils.js";
 
 const searchContract = contract({
@@ -24,17 +24,19 @@ if (first) {
   }
 }
 
-// Refs are opaque, not plain strings.
-// @ts-expect-error a string is not a ToolRef
-catalog.call("search", {});
+// Ids are opaque, not plain strings.
+declare function takesId(id: ToolId): void;
+// @ts-expect-error a string is not a ToolId
+takesId("search");
+if (first) takesId(first.id);
 
 // --- Known tools: typed by contract, checked at runtime -------------------------
-const search = catalog.bind(searchContract);
+const search = catalog.bindContract(searchContract);
 const res = await search.call({ q: "shoes" }); // `limit` optional on the agent side (default)
 if (res.ok) {
   type _v = Expect<Equal<typeof res.value, { hits: string[] }>>;
 } else if (res.error.kind === "unresolved") {
-  type _c = Expect<Equal<typeof res.error.candidates, readonly ToolRef[]>>;
+  type _c = Expect<Equal<typeof res.error.candidates, readonly ToolId[]>>;
 }
 // @ts-expect-error input checked against the contract
 search.call({ query: "shoes" });
@@ -42,10 +44,15 @@ search.call({ query: "shoes" });
 // --- Framework-agnostic mapping ---------------------------------------------------
 catalog.subscribe(({ tools }) => {
   const forAgent = tools.map((t) => ({
-    name: t.key,
+    name: t.uniqueName,
     description: t.description,
     parameters: t.inputSchema,
     execute: (args: unknown) => t.call(args),
   }));
   void forAgent;
 });
+
+// --- Optional input schema keeps its argument type (SOL #5) ----------------------
+declare const maybeInput: z.ZodObject<{ q: z.ZodString }> | undefined;
+const optional = contract({ name: "optional", description: "x", input: maybeInput });
+catalog.bindContract(optional).call({ q: "hello" });

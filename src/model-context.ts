@@ -16,18 +16,14 @@
  * - Duplicate names (per document) reject with `InvalidStateError`.
  * - `execute(input, { signal })` returns any JSON-serializable value. A callback rejection
  *   reaches the caller as an opaque `OperationError` and **its message is not forwarded**.
- *   That is why this SDK returns agent-facing failures in-band (see `ToolFailureResult`).
+ *   That is why this SDK returns agent-facing failures in-band (see `ToolFailureEnvelope`).
+ * - The consumer half (`getTools`, `executeTool`, `toolchange`) is typed in
+ *   `webmcp-sdk/consumer`, not here.
  * - Removing a tool does **not** cancel callbacks already running.
  * - The browser does not validate inputs or outputs against the schemas.
  */
 
-/** WebMCP tool annotations (draft). These differ from MCP's annotation set. */
-export interface ModelContextToolAnnotations {
-  readonly readOnlyHint?: boolean;
-  readonly untrustedContentHint?: boolean;
-  readonly consequentialHint?: boolean;
-  readonly debugging?: boolean;
-}
+import type { ToolAnnotations } from "./contract.js";
 
 /** `ModelContextTool` dictionary (draft). */
 export interface ModelContextTool {
@@ -36,22 +32,8 @@ export interface ModelContextTool {
   readonly description: string;
   readonly inputSchema?: object;
   readonly outputSchema?: object;
-  readonly annotations?: ModelContextToolAnnotations;
+  readonly annotations?: ToolAnnotations;
   readonly execute: (input: object, options: { readonly signal: AbortSignal }) => Promise<unknown>;
-}
-
-/** `RegisteredTool` dictionary returned by discovery (draft). It carries no callable. */
-export interface RegisteredTool {
-  readonly name: string;
-  readonly title?: string;
-  readonly description: string;
-  readonly inputSchema?: object;
-  readonly outputSchema?: object;
-  /** The window of the document that owns the tool. */
-  readonly window: Window;
-  /** The owner document's origin, serialized. */
-  readonly origin: string;
-  readonly annotations?: ModelContextToolAnnotations;
 }
 
 /** The provider half of `ModelContext`: what the core SDK needs to register tools. */
@@ -62,27 +44,16 @@ export interface ModelContextLike {
   ): Promise<undefined | void>;
 }
 
-/** The consumer half of `ModelContext` (draft §4.2): discovery, execution, change events. */
-export interface ModelContextConsumerLike extends EventTarget {
-  getTools(options?: { readonly fromOrigins?: readonly string[] }): Promise<readonly RegisteredTool[]>;
-  /** Resolves to the JSON-serialized result **string**. */
-  executeTool(
-    tool: RegisteredTool,
-    input?: object,
-    options?: { readonly signal?: AbortSignal },
-  ): Promise<string>;
-}
-
 /**
  * Returns `document.modelContext` when present, or `undefined` (SSR, workers, insecure
  * contexts, unsupported browsers). Never throws.
  */
-export function getModelContext(): (ModelContextLike & Partial<ModelContextConsumerLike>) | undefined {
+export function getModelContext(): ModelContextLike | undefined {
   // The one runtime helper implemented on purpose: it is trivial and has no fake-success
   // path. It either finds the object or reports `undefined`.
   if (typeof document === "undefined") return undefined;
   const mc = (document as Document & { modelContext?: unknown }).modelContext;
   return mc && typeof (mc as ModelContextLike).registerTool === "function"
-    ? (mc as ModelContextLike & Partial<ModelContextConsumerLike>)
+    ? (mc as ModelContextLike)
     : undefined;
 }
