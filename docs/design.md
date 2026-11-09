@@ -13,6 +13,7 @@ Status: design prototype, 2026-11-06. This file records **why** the API looks th
 | D1 | **Progressive enhancement.** Without WebMCP, registering never breaks the app: nothing is registered, a simple `"unsupported"` state, no automatic polyfill. Details in [Decision: progressive enhancement](#decision-progressive-enhancement-user-decision-2026-11-06). | user, 2026-11-06 |
 | D2 | **Definition helpers, then implementation, then separate WebMCP registration.** Definitions and contracts are plain objects built by a helper (illustrative name `defineTool({...})`, no handler). `implementTool(definition, handler)` infers input/output from the definition. WebMCP registration (and the React binding) is a separate step that takes implementations. This replaces the chained `implement(c).handler()` and the `toolset.register()` method. | user, 2026-11-06 |
 | D4 | **Context is a property of the implementation, never of the definition.** The definition stays the agent-facing contract, free of app-internal types (option S2 rejected). | user, 2026-11-09 |
+| D5 | **No SDK context mechanism in v0: dependencies are passed by plain factories.** Handler stays `(input, { signal })` so a `context` property can be added later without breaking. | user, 2026-11-09 |
 | D3 | **No `defineToolset` unless it earns its place.** Applying the user's rule ("drop it if it is just an array"), the analysis below finds no real utility, so it is dropped. Registration takes a plain array of implementations. | user rule + analysis below |
 
 **Why `defineToolset` is dropped (D3).** Candidate benefits, each checked:
@@ -233,10 +234,40 @@ D4 settles *where* context belongs. The remaining question is whether the SDK sh
 
 Reversal criterion: a real case where the implementation must be defined at module scope and wired elsewhere, where a factory is clearly worse.
 
+### Follow-up (2026-11-09): steering toward one factory per tool
+
+User concern: with 20 tools, a developer may write one big factory that returns all the implementations and closes over shared scope. Tools are then no longer isolated, and their dependencies are hidden, which makes them hard to move.
+
+**Recommended convention (documentation and examples, no new API):**
+
+```ts nocheck
+// one export per tool; a tool that needs data is a function of exactly that data
+export const applyFilterTool = ({ dashboard }: { dashboard: Dashboard }) =>
+  implementTool(applyFilter, (input) => ({ count: dashboard.apply(input.filter) }));
+export const pingTool = implementTool(ping, () => "pong"); // no deps: a plain value
+
+// compose at the registration site; no global factory needed
+useWebMCPTools([applyFilterTool({ dashboard }), resetTool({ dashboard }), pingTool]);
+```
+
+Why no API enforcement:
+
+- No API can prevent closure capture.
+- Enforcing declared per-tool dependencies would mean re-introducing the SDK context mechanism rejected in D5, and it still would not stop a big closure.
+
+The leverage instead comes from three places:
+
+1. **Make the good path the shortest.** Every README example uses one export per tool, with dependencies as an explicit parameter object, composed in the array at the call site.
+2. **Make composition safe.** A duplicate name across a composed array is a compile error, and a missing dependency is a compile error at `applyFilterTool({ … })`.
+3. **Make testing obvious:** `applyFilterTool({ dashboard: fake })`.
+
+A shared factory is only for reusing the same set in several places, and it should just forward to the per-tool factories.
+
 ### Questions for the user (context)
 
 1. ~~S1 (implementation) or S2 (definition)?~~ Decided: implementation (D4).
-1b. **SDK context mechanism, or factories only in v0?** Recommendation: factories (see follow-up).
+1b. ~~SDK context mechanism, or factories only?~~ Decided: factories (D5).
+1c. **Per-tool factory convention via docs/examples only (no API enforcement)?** Recommendation: yes.
 2. **Provide at registration**, with no `defineToolSet`, unless a real "pre-bound set registered from several places" case exists?
 3. Minor: reject or accept extra context; the placeholder `_ctx` when only `signal` is needed (vs an options object).
 
