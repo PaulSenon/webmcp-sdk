@@ -12,6 +12,7 @@ Status: design prototype, 2026-11-06. This file records **why** the API looks th
 | - | -------- | ------ |
 | D1 | **Progressive enhancement.** Without WebMCP, registering never breaks the app: nothing is registered, a simple `"unsupported"` state, no automatic polyfill. Details in [Decision: progressive enhancement](#decision-progressive-enhancement-user-decision-2026-11-06). | user, 2026-11-06 |
 | D2 | **Definition helpers, then implementation, then separate WebMCP registration.** Definitions and contracts are plain objects built by a helper (illustrative name `defineTool({...})`, no handler). `implementTool(definition, handler)` infers input/output from the definition. WebMCP registration (and the React binding) is a separate step that takes implementations. This replaces the chained `implement(c).handler()` and the `toolset.register()` method. | user, 2026-11-06 |
+| D4 | **Context is a property of the implementation, never of the definition.** The definition stays the agent-facing contract, free of app-internal types (option S2 rejected). | user, 2026-11-09 |
 | D3 | **No `defineToolset` unless it earns its place.** Applying the user's rule ("drop it if it is just an array"), the analysis below finds no real utility, so it is dropped. Registration takes a plain array of implementations. | user rule + analysis below |
 
 **Why `defineToolset` is dropped (D3).** Candidate benefits, each checked:
@@ -219,9 +220,23 @@ registerTools([applyFilterTool, otherImplWhereDashboardIsANumber], …);        
 - **Runtime:** context is trusted page-side data and is **not validated** by the SDK. If it contains external data (API responses), validate where that data enters the app.
 - **Not authorization:** context carries page data (which may include the signed-in user's session), not a statement about the agent. The agent acts with the user's authority in the page. Handlers must enforce the app's own permission checks per call, and sensitive actions should use confirmation (`consequentialHint`, a declined outcome).
 
+### Follow-up (2026-11-09): is an SDK context feature worth it at all?
+
+D4 settles *where* context belongs. The remaining question is whether the SDK should have a context mechanism, or whether plain factories are the answer to R1. **Recommendation: factories in v0, no SDK context.**
+
+- **R1 is satisfied by factories.** A required function parameter means a tool cannot be wired without its data. The agent never sees it, and it is never in a schema.
+- **The React rule makes factories free.** `useWebMCPTools(dashboardTools(dashboard))` creates new implementations each render, but the binding keys on **definitions** and refreshes handlers after each commit (proposed point 5). Freshness is therefore identical to an SDK context option.
+- **Outside React**, per-call freshness and async dependencies come from passing a getter: `dashboardTools(() => store.current)`.
+- **The SDK feature would only add** module-level pre-declared implementations and a merged requirement at the registration site. The factory signature already *is* that requirement, written in plain TypeScript.
+- **What the SDK feature would cost:** a handler parameter with special meaning, a `context` option in core and React, intersection typing with an unreadable conflict error, an extra failure path (getter throws), and documentation.
+- **Forward compatibility:** keep the handler as `(input, { signal })`, with call info in an object, so a `context` property could be added later without breaking anyone.
+
+Reversal criterion: a real case where the implementation must be defined at module scope and wired elsewhere, where a factory is clearly worse.
+
 ### Questions for the user (context)
 
-1. **S1 (implementation) or S2 (definition) for declaring the requirement?** Recommendation: S1.
+1. ~~S1 (implementation) or S2 (definition)?~~ Decided: implementation (D4).
+1b. **SDK context mechanism, or factories only in v0?** Recommendation: factories (see follow-up).
 2. **Provide at registration**, with no `defineToolSet`, unless a real "pre-bound set registered from several places" case exists?
 3. Minor: reject or accept extra context; the placeholder `_ctx` when only `signal` is needed (vs an options object).
 
