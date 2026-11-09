@@ -23,11 +23,15 @@ Status: design prototype, 2026-11-06. This file records **why** the API looks th
 
 So it would be pure ceremony today. Reversal criterion: a group-level option that must travel with the tools across call sites.
 
+### Requirement (user, 2026-11-09)
+
+**R1. Context is a real need.** A tool must be able to require page-side data (context) that its implementation reads. The developer must **not** be able to wire a tool where that data is missing (a compile-time guarantee). The agent never knows about or provides context: it is distinct from LLM arguments and never appears in any exposed schema. *Not decided:* where the requirement is declared (definition vs implementation), where it is provided (toolset, registration, per call), the exact syntax. The oRPC-style `.$context<T>()` builder stays rejected (D2).
+
 ### Proposed, awaiting discussion (in this order)
 
 1. **Errors.** Full proposal in [Errors: proposal under discussion](#errors-proposal-under-discussion). **The next discussion starts here.**
 2. **JSON Schema capability required at definition time** (vs only at WebMCP registration). Recommendation: at definition. Describing a tool to an LLM is intrinsic to a tool, and type errors stay next to the schema. WebMCP-only constraints (name charset, dialect, envelope, annotation mapping, serialization) move to the registration step.
-3. **No context concept in v0.** Recommendation: closures (React) and plain factory functions (`const cartTools = (cart) => [...]`) cover the cases. A probe showed context *can* be typed with helpers by annotating the handler's second parameter, but it is verbose and rarely needed.
+3. **Context.** Superseded by the user requirement of 2026-11-09 (R1). Analysis in [Context: requirement and analysis](#context-requirement-and-analysis-2026-11-09). It can be discussed independently of the errors review.
 4. **Generic execution layer.** Recommendation: validation and failure mapping live in a generic, browser-free executor (illustrative `runTool(impl, rawInput, { signal })`) used by the WebMCP binding. `implementTool` stays a pure typed handler, callable directly in tests.
 5. **React binding details.** Recommendation: re-register only when the list of **definitions** changes (identity, element-wise) or options change. Handlers are refreshed in a ref after commit, and a call between render and commit sees the previous handler (documented). Dev warning on churn from inline definitions. Sub-choice: whole-set re-registration vs per-tool diff.
 6. **Strict mode removal.** Recommendation: remove `ifUnsupported` entirely (see D1 section).
@@ -132,6 +136,95 @@ With declined outcomes in the output (A), the envelope carries only real failure
 2. Drop `retryable`, add `handlerCalled`?
 3. Minor, can default: readable path format, issue cap, the `interrupted` merge.
 
+## Context: requirement and analysis (2026-11-09)
+
+Status: **analysis, not decided.** All signatures are illustrative. Two type probes (TypeScript 7.0.2, strict, `exactOptionalPropertyTypes`) confirmed that every positive and negative case shown here type-checks as described. The probes used a minimal model of the helpers, not the repo API, and were deleted afterwards.
+
+### Do closures and factories already give the guarantee?
+
+Mostly yes. That is the honest baseline.
+
+```ts nocheck
+const dashboardTools = (dashboard: Dashboard) => [
+  implementTool(applyFilter, (input) => ({ count: dashboard.apply(input.filter) })),
+];
+registerTools(dashboardTools(dashboard)); // forgetting `dashboard` is a compile error
+```
+
+A plain function parameter already makes "missing context" a compile error, handles async dependencies (pass a getter) and composes across heterogeneous tools (`[...cartTools(cart), ...userTools(user)]`). What factories **do not** give:
+
+1. **Implementations defined once, at module scope**, that are not yet wired. Each instance re-creates them. That is harmless if bindings key on definitions, but the "tool value" and "its wiring" cannot be separated.
+2. **One provision point with a merged, inspectable requirement.** The registration site cannot see "these tools need `{ dashboard, user }`". Each factory must be called by hand.
+3. **Per-call resolution by the host.** A factory captures values when called, so freshness depends on re-calling it or on passing getters.
+
+So an SDK context feature is **ergonomics plus a single checked wiring point**. It is not a capability that factories lack in principle. That is a sufficient reason only if it stays cheap. The proposal below adds no new helper.
+
+### Where to declare the requirement
+
+| | **S1. On the implementation** (handler's 2nd parameter) | **S2. On the definition** (`context: requires<T>()`) |
+| - | - | - |
+| syntax | `implementTool(def, (input, { dashboard }: { dashboard: Dashboard }) => …)` | `defineTool({ …, context: requires<{ dashboard: Dashboard }>() })`, then the handler's `(input, { dashboard })` is typed without annotation |
+| new concept | none (a parameter annotation) | a type-marker value `requires<T>()` |
+| definition stays agent-facing and shareable | yes | no: the shared contract imports app-internal types |
+| mock/test implementation needing no context | natural | must still be fed the declared context |
+| requirement visible next to the metadata | no (it is in the handler) | yes |
+| probe | ✅ `Ctx` inferred from the annotation, `input`/output still inferred; no 2nd param ⇒ no requirement | ✅ handler context typed from the definition; an impl claiming another type is rejected |
+
+**Recommendation: S1.** Context is an implementation dependency: a mock or a second implementation of the same definition may need none. The definition is the agent-facing contract that consumers and tests import, and it should not depend on app internals. S1 also adds no concept. The cost is an annotation in the handler and a placeholder when only `signal` is needed: `(input, _ctx, { signal })`. Offering both S1 and S2 is rejected because it creates two ways to do one thing. The user's intuition was S2, so this is the first point to discuss.
+
+### Where to provide and resolve it
+
+| option | verdict |
+| ------ | ------- |
+| **at registration** (`registerTools(tools, { context })`, React hook `{ context }`) ✅ | one wiring point, merged requirement checked there, no extra concept |
+| a toolset that binds context (`defineToolSet({ tools, context })`) | adds a guarantee only if a *pre-bound* set must be registered from several places; otherwise it duplicates registration. Re-introduce `defineToolSet` only with that use case (D3 criterion) |
+| injected per call by the host | this *is* the registration option's semantics: see resolution below |
+
+**Resolution:**
+
+- **Core:** `context: () => C | Promise<C>`, called **once at the start of each call**. Values are fresh, async lookups (a client, a token) are allowed, and a getter that throws gives `internal` with `handlerCalled: false` (errors proposal).
+- **React:** `context` is a plain value from the **latest commit**, kept in a ref and read at call start. The handler gets that snapshot for the whole call. A long-running handler that needs live values after an `await` should put a getter or store in the context (`{ getFilters: () => … }`). No magic is promised.
+
+### Cases
+
+```ts nocheck
+// module scope, usable with or without React
+export const applyFilterTool = implementTool(applyFilter,
+  (input, { dashboard }: { dashboard: Dashboard }) => ({ count: dashboard.apply(input.filter) }));
+export const whoAmITool = implementTool(whoAmI, (_input, { user }: { user: User }) => user.name);
+export const pingTool = implementTool(ping, () => "pong"); // no context
+
+// React dashboard: values from the latest commit, read per call
+function DashboardPanel({ dashboard, user }: Props) {
+  useWebMCPTools([applyFilterTool, whoAmITool, pingTool], { context: { dashboard, user } });
+}
+
+// Outside React, async per-call dependency
+registerTools([applyFilterTool], { context: async () => ({ dashboard: await loadDashboard() }) });
+
+registerTools([pingTool]);                                         // ✅ nothing required
+registerTools([applyFilterTool]);                                  // ❌ context missing
+registerTools([applyFilterTool, whoAmITool], { context: () => ({ dashboard }) }); // ❌ `user` missing
+registerTools([applyFilterTool, otherImplWhereDashboardIsANumber], …);          // ❌ incompatible `dashboard` types
+```
+
+- **Heterogeneous collections:** the requirement is the intersection of each tool's context. Pass-1 types already handle unions and callables, and erased `AnyTool[]` arrays fail closed. Incompatible same-named keys become `never` and are rejected, but the message is unreadable today. A dedicated "conflicting context key" error type is a follow-up. Convention: namespace keys (`dashboard`, `cart`, `user`).
+- **Extra context where none is needed:** the probe rejects it (a likely wiring mistake). Lenient acceptance is the alternative. Minor, to decide.
+- **Several instances of the same component:** context does **not** solve exposing two dashboards at once. WebMCP names are unique per document, so the second instance gets `duplicate_name` (React retries when the first leaves). Exposing several instances needs distinct names or an instance argument in `input`. That is an agent-facing design choice, not context.
+- **Consumer:** calls with `input` only. `bindContract(definition)` and discovered tools never see context, because it is a separate handler parameter and is never part of `inputSchema`.
+
+### Guarantees and non-guarantees
+
+- **Compile-time:** a tool cannot be registered without a context that satisfies its requirement. This holds with tuples or `satisfies`. Erased element types fail closed.
+- **Runtime:** context is trusted page-side data and is **not validated** by the SDK. If it contains external data (API responses), validate where that data enters the app.
+- **Not authorization:** context carries page data (which may include the signed-in user's session), not a statement about the agent. The agent acts with the user's authority in the page. Handlers must enforce the app's own permission checks per call, and sensitive actions should use confirmation (`consequentialHint`, a declined outcome).
+
+### Questions for the user (context)
+
+1. **S1 (implementation) or S2 (definition) for declaring the requirement?** Recommendation: S1.
+2. **Provide at registration**, with no `defineToolSet`, unless a real "pre-bound set registered from several places" case exists?
+3. Minor: reject or accept extra context; the placeholder `_ctx` when only `signal` is needed (vs an options object).
+
 ## Principles
 
 1. **Final API first.** The surface is written as if the runtime existed. Layers below it (validation pipeline, schema resolution, model-context adapter) exist only to serve it.
@@ -189,7 +282,7 @@ It reads well for oRPC users, but most tools are 4–6 fields of metadata, which
 
 ## Alternative 2: where context comes from
 
-> Under re-examination: see proposed point 3 (no context in v0).
+> Pass-1 history. Superseded by R1 and [Context: requirement and analysis](#context-requirement-and-analysis-2026-11-09).
 
 | option | verdict |
 | ------ | ------- |
