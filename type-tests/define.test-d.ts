@@ -4,6 +4,8 @@ import { toStandardJsonSchema } from "@valibot/to-json-schema";
 import { type } from "arktype";
 import {
   defineTool,
+  type AnyToolDefinition,
+  type ToolDefinitionInit,
   implementTool,
   withJsonSchema,
   type InferHandlerInput,
@@ -55,9 +57,13 @@ defineTool({ name: "b", description: "x", input: z.array(z.string()) });
 defineTool({ name: "c", description: "x", input: z.any() });
 // @ts-expect-error never input
 defineTool({ name: "d", description: "x", input: z.never() });
+// A schema that may be undefined is rejected: pass it or omit the property (SOL pass-2 #1/#3)
 declare const maybeInput: z.ZodObject<{ q: z.ZodString }> | undefined;
-const optional = defineTool({ name: "optional", description: "x", input: maybeInput });
-type _optIn = Expect<Equal<InferToolInput<typeof optional>, { q: string } | NoArguments>>;
+// @ts-expect-error `input` may be undefined
+defineTool({ name: "optional_in", description: "x", input: maybeInput });
+declare const maybeOutput: z.ZodObject<{ n: z.ZodNumber }> | undefined;
+// @ts-expect-error `output` may be undefined
+defineTool({ name: "optional_out", description: "x", output: maybeOutput });
 
 // --- Metadata ------------------------------------------------------------------------
 // @ts-expect-error description is required
@@ -112,3 +118,24 @@ implementTool(litB, async () => ({ state: "open" }));
 implementTool(litB, () => ({ state: "nope", tags: [] }));
 // @ts-expect-error not declared outcome
 implementTool(litA, async () => ({ status: "cancelled" }));
+
+// --- SOL pass-2 regressions -----------------------------------------------------------
+// #2: explicit generics cannot claim schemas that were not supplied
+const qSchema = z.object({ q: z.string() });
+// @ts-expect-error input is required when its type is a schema
+const init: ToolDefinitionInit<"x", typeof qSchema, undefined> = { name: "x", description: "x" };
+// #1: no-argument input never makes a property look present
+implementTool(ping, (input) => {
+  // @ts-expect-error no such argument
+  input.q;
+  return null;
+});
+// #3: union and erased definitions cannot be implemented
+const defA = defineTool({ name: "def_a", description: "x", output: z.object({ a: z.string() }) });
+const defB = defineTool({ name: "def_b", description: "x", output: z.object({ b: z.number() }) });
+declare const pick: boolean;
+// @ts-expect-error union of definitions
+implementTool(pick ? defA : defB, () => ({ a: "x" }));
+const erased: AnyToolDefinition = defA;
+// @ts-expect-error erased definition
+implementTool(erased, () => Symbol());

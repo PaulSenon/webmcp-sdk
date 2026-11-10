@@ -24,11 +24,18 @@ export interface ToolAnnotations {
 }
 
 /** What you pass to {@link defineTool}. */
-export interface ToolDefinitionInit<
+export type ToolDefinitionInit<
   TName extends string = string,
   TInput extends AnyInputSchema | undefined = AnyInputSchema | undefined,
   TOutput extends AnyOutputSchema | undefined = AnyOutputSchema | undefined,
-> {
+> = ToolMetadataInit<TName> &
+  // A schema type that excludes `undefined` makes its property required: the definition
+  // can never claim a schema that was not supplied.
+  (undefined extends TInput ? { readonly input?: TInput } : { readonly input: TInput }) &
+  (undefined extends TOutput ? { readonly output?: TOutput } : { readonly output: TOutput });
+
+/** The metadata part of {@link ToolDefinitionInit}; schemas are documented there. */
+export interface ToolMetadataInit<TName extends string = string> {
   /**
    * Unique within a document, e.g. `"add_to_cart"`. WebMCP allows 1–128 ASCII letters,
    * digits, `_`, `-`, `.` (case-sensitive).
@@ -40,10 +47,10 @@ export interface ToolDefinitionInit<
   readonly title?: string;
   /** What the tool does and when to use it. Agents read this to pick tools, so be specific. */
   readonly description: string;
-  /** Arguments schema (an object schema). Omit for tools without arguments. */
-  readonly input?: TInput;
-  /** Result schema. Optional; when present, every result is validated against it. */
-  readonly output?: TOutput;
+  /*
+   * input?: arguments schema (an object schema). Omit it for tools without arguments.
+   * output?: result schema. When present, every result is validated against it.
+   */
   readonly annotations?: ToolAnnotations;
 }
 
@@ -69,8 +76,12 @@ export interface ToolDefinition<
 /** Any definition, for constraints. */
 export type AnyToolDefinition = ToolDefinition<string, AnyInputSchema | undefined, AnyOutputSchema | undefined>;
 
-/** Arguments of a tool without an `input` schema. */
-export type NoArguments = Record<string, never>;
+declare const noArguments: unique symbol;
+/**
+ * Arguments of a tool without an `input` schema: an empty object. It is shaped so that it
+ * never makes a property look present (unlike `Record<string, never>`).
+ */
+export type NoArguments = { readonly [noArguments]?: never };
 
 // ---------------------------------------------------------------------------
 // Inference. "Tool" = the agent's side of the boundary; "Handler" = yours.
@@ -116,6 +127,13 @@ type InputGuard<S> =
         : InvalidInput<"non-object input type">;
 type OptionalInputGuard<S> = [Exclude<S, undefined>] extends [never] ? unknown : InputGuard<Exclude<S, undefined>>;
 
+/** `S | undefined` (a schema that may or may not be there) is rejected: pass the schema, or omit the property. */
+type Definite<S, Prop extends string> = [S] extends [undefined]
+  ? unknown
+  : undefined extends S
+    ? { readonly "~error": `\`${Prop}\` may be undefined. Pass a schema or omit \`${Prop}\`; define two tools if it is conditional.` }
+    : unknown;
+
 /** The parameter type of {@link defineTool}: infers a literal name, then checks it and the input schema. */
 export type ToolDefinitionArg<
   TName extends string,
@@ -123,7 +141,8 @@ export type ToolDefinitionArg<
   TOutput extends AnyOutputSchema | undefined,
 > = ToolDefinitionInit<TName, TInput, TOutput> & {
   readonly name: ValidName<NoInfer<TName>>;
-  readonly input?: TInput & OptionalInputGuard<TInput>;
+  readonly input?: TInput & OptionalInputGuard<TInput> & Definite<TInput, "input">;
+  readonly output?: TOutput & Definite<TOutput, "output">;
 };
 
 /**

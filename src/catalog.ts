@@ -16,17 +16,20 @@ export interface ToolSource {
   readonly origin: string;
 }
 
-/** Why a call produced no value. Failures are values: `call` never throws. */
+/**
+ * Why a call produced no value. Failures are values: `call` never throws. Every variant
+ * has a `message` you can hand to an LLM as-is.
+ */
 export type ToolCallError =
   /** No tool with this id in the latest discovery result, or the browser reports it gone. Nothing was executed. */
   | { readonly kind: "not_found"; readonly message: string }
-  /** The tool returned a failure envelope (webmcp-sdk tools, or any tool using the same shape). */
-  | { readonly kind: "tool_failed"; readonly failure: ToolFailure }
+  /** The tool returned a failure envelope (webmcp-sdk tools, or any tool using the same shape). `message` is `failure.message`. */
+  | { readonly kind: "tool_failed"; readonly message: string; readonly failure: ToolFailure }
   /** The browser rejected the call: `AbortError` (your signal, or the owner unloaded), `OperationError` (the tool threw; reason not forwarded), `SecurityError`… */
-  | { readonly kind: "rejected"; readonly domException: string; readonly message: string }
-  /** Known contracts only: your input failed the contract's input schema. Nothing was sent. */
-  | { readonly kind: "input_invalid"; readonly issues: readonly ToolIssue[] }
-  /** Known contracts only: the result failed the contract's output schema. */
+  | { readonly kind: "rejected"; readonly message: string; readonly domException: string }
+  /** Known definitions only: your input failed the definition's input schema. Nothing was sent. */
+  | { readonly kind: "input_invalid"; readonly message: string; readonly issues: readonly ToolIssue[] }
+  /** Known definitions only: the result failed the definition's output schema. */
   | { readonly kind: "output_invalid"; readonly message: string };
 
 export type ToolCallResult<T = unknown> =
@@ -35,7 +38,10 @@ export type ToolCallResult<T = unknown> =
 
 /** One discovered tool. Its types are unknown: discovery happens at runtime. */
 export interface DiscoveredTool {
-  /** Stable id for this page session: `<source.key>__<name>`, e.g. `"self__search"`, `"f1__search"`. Never persist it. */
+  /**
+   * Stable, opaque id for this page session, e.g. `"self__search"`, `"f1__search"`. Use it as
+   * an opaque string: do not parse it, because names may contain `_`. Never persist it.
+   */
   readonly id: string;
   readonly name: string;
   readonly title: string | undefined;
@@ -51,8 +57,16 @@ export interface DiscoveredTool {
 
 /** A discovered tool matched to a definition you know: typed, and checked at runtime. */
 export interface KnownTool<D extends AnyToolDefinition> extends Omit<DiscoveredTool, "call"> {
-  /** Validates `input` locally first (nothing is sent if it fails), then validates the result with the definition's output schema. */
-  call(input: InferToolInput<D>, options?: { readonly signal?: AbortSignal }): Promise<ToolCallResult<InferToolOutput<D>>>;
+  /**
+   * Validates `input` locally against the definition first (nothing is sent if it fails),
+   * then sends **your original value**, not the parsed one, because the provider validates
+   * again. Finally it validates the result with the definition's output schema.
+   */
+  call(
+    ...args: [D["input"]] extends [undefined]
+      ? [input?: InferToolInput<D>, options?: { readonly signal?: AbortSignal }]
+      : [input: InferToolInput<D>, options?: { readonly signal?: AbortSignal }]
+  ): Promise<ToolCallResult<InferToolOutput<D>>>;
 }
 
 export interface ToolCatalogSnapshot {
@@ -64,8 +78,9 @@ export interface ToolCatalogSnapshot {
     | "error"; // the browser rejected discovery, e.g. SecurityError for an invalid origin
   /** Sorted by id. Same array object until something changes. */
   readonly tools: readonly DiscoveredTool[];
-  readonly error?: unknown;
-  /** Increases with each applied result. */
+  /** Set when `status` is `"error"`, usually a `DOMException` from the browser. */
+  readonly error?: Error;
+  /** Snapshot counter: increases with each applied discovery result. It is not a tool revision. */
   readonly version: number;
 }
 
@@ -94,7 +109,8 @@ export interface ToolCatalog {
   update(options: Pick<ToolCatalogOptions, "fromOrigins">): void;
   /**
    * Calls the tool currently registered under `id` (a replaced tool is called in its
-   * current version, and the provider validates). Never throws.
+   * current version, and the provider validates). If nothing has been discovered yet, it
+   * runs a discovery first. Never throws.
    */
   call(id: string, input?: unknown, options?: { readonly signal?: AbortSignal }): Promise<ToolCallResult>;
   /** Discovered tools whose name is `definition.name`, typed by it. Several sources may match; you choose. */
@@ -109,7 +125,8 @@ export function createToolCatalog(options?: ToolCatalogOptions): ToolCatalog {
 }
 
 /**
- * Maps an id to a name an LLM provider accepts (e.g. `^[a-zA-Z0-9_-]{1,64}$`). Deterministic.
+ * Maps an id to a name an LLM provider accepts. Defaults: `maxLength: 64`,
+ * `pattern: /^[a-zA-Z0-9_-]+$/` (common provider rules). Deterministic.
  * It sanitizes and truncates, and appends a short hash whenever it changed the id, so
  * distinct ids stay distinct. Keep your own `providerName → id` map to route calls back.
  */

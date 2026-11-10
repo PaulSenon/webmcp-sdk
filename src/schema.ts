@@ -41,7 +41,7 @@ export type ToolArguments = Record<string, unknown>;
 
 /**
  * Any schema usable as a tool `input`. The base constraint is `object` (so interface
- * types are accepted). `contract()` additionally rejects `any`, `never`, arrays,
+ * types are accepted). `defineTool()` additionally rejects `any`, `never`, arrays,
  * functions and `Date` input types at compile time. The generated JSON Schema root is
  * still checked at registration.
  */
@@ -90,8 +90,6 @@ export type JSONSchemaResolution =
   | { readonly ok: true; readonly schema: JSONSchema }
   | {
       readonly ok: false;
-      /** Which side of which schema failed. */
-      readonly side: "input" | "output";
       /** The converter's message. Developer-facing; never sent to agents. */
       readonly message: string;
       readonly cause: unknown;

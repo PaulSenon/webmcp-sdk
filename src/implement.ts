@@ -5,6 +5,7 @@ import type {
   InferToolOutput,
 } from "./define.js";
 import type { ToolFailure } from "./errors.js";
+import type { AnyOutputSchema } from "./schema.js";
 import { notImplemented } from "./not-implemented.js";
 
 /** What a handler receives besides its input. */
@@ -46,7 +47,7 @@ export type AnyToolImplementation = ToolImplementation<AnyToolDefinition>;
  *   implementTool(addToCart, async ({ sku, quantity }) => ({ itemCount: await cart.add(sku, quantity) }));
  */
 export function implementTool<D extends AnyToolDefinition>(
-  definition: D,
+  definition: D & ImplementableDefinition<D>,
   // NoInfer around the whole handler type: D is inferred from the definition only, and the
   // handler is then checked against the resolved types. This keeps literal return types
   // (enums, discriminated unions) without `as const`, and still rejects wrong returns.
@@ -54,6 +55,17 @@ export function implementTool<D extends AnyToolDefinition>(
 ): ToolImplementation<D> {
   return notImplemented("implementTool");
 }
+
+type IsUnion<T, U = T> = T extends unknown ? ([U] extends [T] ? false : true) : never;
+/**
+ * A definition must be concrete to be implemented: not a union of definitions (the handler
+ * could satisfy only one of them), and not erased to `AnyToolDefinition` (types would be lost).
+ */
+type ImplementableDefinition<D> = true extends IsUnion<D>
+  ? { readonly "~error": "Cannot implement a union of definitions. Implement each definition separately." }
+  : AnyOutputSchema extends Exclude<D extends AnyToolDefinition ? D["output"] : never, undefined>
+    ? { readonly "~error": "Cannot implement an erased definition (AnyToolDefinition). Pass the definition itself so its types are known." }
+    : unknown;
 
 /** The outcome of {@link runTool}. */
 export type ToolRunResult<D extends AnyToolDefinition> =

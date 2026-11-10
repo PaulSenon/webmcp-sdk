@@ -44,3 +44,17 @@ catalog.update({ fromOrigins: [] });
 const off = catalog.subscribe((s) => s.status);
 off();
 catalog.dispose();
+
+// --- SOL pass-2 #6: known tools without input can be called without arguments ----------
+const pingDef = defineTool({ name: "ping", description: "x" });
+const [pingKnown] = await catalog.find(pingDef);
+if (pingKnown) {
+  await pingKnown.call();
+  await pingKnown.call({});
+  // @ts-expect-error no such argument
+  await pingKnown.call({ q: "x" });
+}
+if (search) {
+  // @ts-expect-error input required when the definition has one
+  await search.call();
+}

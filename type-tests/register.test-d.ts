@@ -33,7 +33,7 @@ const snap: ToolRegistrationSnapshot = reg.getSnapshot();
 type _state = Expect<Equal<(typeof snap.tools)[number]["state"], "pending" | "registered" | "unsupported" | "error">>;
 const p: Promise<ToolRegistrationSnapshot> = reg.settled();
 reg.subscribe((s) => s.supported);
-registerTools([pingTool], { signal: new AbortController().signal, exposedTo: ["https://a.example"], onToolError: (e, info) => info.kind });
+registerTools([pingTool], { signal: new AbortController().signal, exposedTo: ["https://a.example"], onUnexpectedError: (e, info) => info.kind });
 
 // --- Duplicate names --------------------------------------------------------------------
 const pingAgain = implementTool(defineTool({ name: "ping", description: "y" }), () => null);
@@ -72,3 +72,10 @@ declare const value: unknown;
 if (isToolFailureEnvelope(value)) {
   type _f = Expect<Equal<typeof value.error, ToolFailure>>;
 }
+
+// --- SOL pass-2 regressions: duplicates after a dynamic prefix are still caught ----------
+declare const cond: boolean;
+// @ts-expect-error duplicate after a conditional spread
+registerTools([...(cond ? [searchTool] : []), pingTool, pingTool]);
+registerTools([...(cond ? [searchTool] : []), pingTool]); // fine
+registerTools([pingTool].map((t) => t)); // dynamic: checked at runtime only

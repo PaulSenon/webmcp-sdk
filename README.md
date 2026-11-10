@@ -71,7 +71,9 @@ Here is what the SDK does for you:
 - **Validates your result** against `output` when you declare one.
 - **Publishes a JSON Schema** of the input (and output) generated from the same schemas.
 - **Turns failures into short, actionable messages** for the agent, without leaking internals.
-- **Never breaks your app.** Without WebMCP (most browsers today, SSR), nothing is registered and nothing throws.
+- **Never breaks your app.** Without WebMCP (most browsers today, SSR), registration does nothing and never throws.
+
+**Requirements:** TypeScript ≥ 5.4, a Standard Schema library with JSON Schema support (e.g. Zod ≥ 4.2), and React ≥ 18 for the bindings. **To try it** (once implemented), you need a browser with WebMCP enabled, or the official polyfill: see [Platform status](#platform-status).
 
 ---
 
@@ -111,7 +113,11 @@ export const addToCart = defineTool({
 | `description` | what the tool does and when to use it; agents read this to choose |
 | `input` | optional object schema for the arguments |
 | `output` | optional schema for the result. If declared, every result is validated against it |
-| `annotations` | WebMCP hints: `readOnlyHint`, `consequentialHint`, `untrustedContentHint`, `debugging` |
+| `annotations` | WebMCP hints for agents (not enforced): `readOnlyHint`, `consequentialHint`, `untrustedContentHint`, `debugging` |
+
+Pass a schema or omit the property. A schema that *may* be `undefined` (`input: cond ? schema : undefined`) is a compile error; define two tools instead.
+
+`defineTool` is the only function that throws: `WebMCPError("invalid_definition")` for an invalid name or an empty description, because those are programming errors.
 
 ### Schemas: any Standard Schema library
 
@@ -146,8 +152,8 @@ defineTool({
 });
 
 defineTool({
-  name: "nope",
-  description: "x",
+  name: "bad_schema",
+  description: "Rejected at compile time.",
   // @ts-expect-error Property 'jsonSchema' is missing: validation-only schema
   input: v.object({ query: v.string() }),
 });
@@ -206,7 +212,7 @@ defineTool({
 
 ### Schemas that cannot become JSON Schema
 
-The types only check that a library *can* convert. A particular schema can still fail at runtime, for example Zod `z.date()` on the advertised side. Conversion runs when the tool is registered. A failure marks that tool `"error"` (`json_schema_unavailable`) and registers nothing for it. Catch it in CI with [`toJSONSchema`](#testing). Fix it by choosing a wire type (`z.iso.datetime()`) or using `withJsonSchema`. The SDK never weakens a schema silently.
+The types only check that a library *can* convert. A particular schema can still fail at runtime, for example Zod `z.date()` on the advertised side. Conversion runs when the tool is registered. A failure marks that tool `"error"` (`json_schema_unavailable`) and registers nothing for it (a non-object input root is reported the same way). Catch it in CI with [`toJSONSchema`](#testing). Fix it by choosing a wire type (`z.iso.datetime()`) or using `withJsonSchema`. The SDK never weakens a schema silently.
 
 ---
 
@@ -249,7 +255,7 @@ const tools = [addToCartTool({ cart })];
 
 ### Without an output schema
 
-A handler may return any JSON value, or nothing (sent as `null`). `Date`, `bigint` and functions are compile errors. The SDK serializes the result itself, so a runtime failure (a cycle, for example) becomes a clear [`output_invalid`](#what-agents-receive). Note that `JSON.stringify` is lossy without failing: it drops `undefined` and functions in objects, and turns `Date` into a string. Declare an `output` schema when the shape matters.
+A handler may return any JSON value, or nothing (sent as `null`). `Date`, `bigint` and functions are compile errors. The SDK serializes the result itself, so a runtime failure (a cycle, for example) becomes a clear [`output_invalid`](#what-agents-receive). Note that `JSON.stringify` is lossy without failing: it drops `undefined` and functions in objects, and turns `Date` into a string. Declare an `output` schema when the shape matters. Values typed with an `interface` are rejected by TypeScript's index-signature rule (type aliases and object literals are fine): declare an output schema (recommended) or spread the value (`{ ...value }`). The same applies to `ToolError` `data`.
 
 ### Outcomes are outputs: user confirmation
 
@@ -290,15 +296,17 @@ Throw `ToolError` for failures the agent should understand. Anything else stays 
 ```ts
 import { implementTool, ToolError } from "webmcp-sdk";
 import { addToCart } from "./definitions.js";
-declare const stock: { available(sku: string): Promise<number>; reserve(sku: string, n: number): Promise<number> };
 
-export const addToCartTool = implementTool(addToCart, async ({ sku, quantity }) => {
-  const left = await stock.available(sku);
-  if (left < quantity) {
-    throw new ToolError(`Only ${left} left. Ask for at most ${left}.`, { code: "OUT_OF_STOCK", data: { left } });
-  }
-  return { itemCount: await stock.reserve(sku, quantity) };
-});
+interface Stock { available(sku: string): Promise<number>; reserve(sku: string, n: number): Promise<number> }
+
+export const reserveStockTool = ({ stock }: { stock: Stock }) =>
+  implementTool(addToCart, async ({ sku, quantity }) => {
+    const left = await stock.available(sku);
+    if (left < quantity) {
+      throw new ToolError(`Only ${left} left. Ask for at most ${left}.`, { code: "OUT_OF_STOCK", data: { left } });
+    }
+    return { itemCount: await stock.reserve(sku, quantity) };
+  });
 ```
 
 - **`message`** (required) is what the agent reads, so make it say what to do next.
@@ -320,7 +328,7 @@ export class OutOfStockError extends ToolError {
 }
 ```
 
-**Anything else thrown is a defect.** The agent gets a generic message (`"internal"`), and you get the original via `onToolError`:
+**Anything else thrown is a defect.** The agent gets a generic message (`"internal"`), and you get the original via `onUnexpectedError`. It is also called for `output_invalid` and for `ToolError` data that could not be serialized, and never for `input_invalid` or a valid `ToolError`:
 
 ```ts
 import { registerTools } from "webmcp-sdk";
@@ -328,11 +336,36 @@ import { addToCartTool, type Cart } from "./tools.js";
 declare const cart: Cart;
 
 registerTools([addToCartTool({ cart })], {
-  onToolError: (error, { toolName, kind, handlerCalled }) => console.error(toolName, kind, handlerCalled, error),
+  onUnexpectedError: (error, { toolName, kind, handlerCalled }) => console.error(toolName, kind, handlerCalled, error),
 });
 ```
 
 `ToolError` is recognized by a brand (`isToolError`), so it also works if two copies of the package end up in your bundle. **What you write explicitly** in `message` or `data` is sent as-is. Do not forward third-party error messages blindly.
+
+---
+
+## What agents receive
+
+**On success:** your validated output, as-is.
+
+**On failure:** an envelope, returned rather than thrown. In WebMCP, a thrown error reaches the agent as an opaque `OperationError` without its message.
+
+```json
+{ "isError": true, "error": { "kind": "input_invalid", "handlerCalled": false,
+  "message": "Arguments rejected; the tool did not run. Fix the fields below and call again.",
+  "issues": [{ "path": "quantity", "message": "Too small: expected number to be >=1" }] } }
+```
+
+| `kind` | `handlerCalled` | when | extra fields |
+| ------ | --------------- | ---- | ------------ |
+| `input_invalid` | `false` | arguments failed the input schema; the tool did not run | `issues` (at most 20, readable paths), `omittedIssues` when more were found |
+| `tool_error` | `true` | the handler threw a `ToolError` | `code`, `data` |
+| `internal` | `true` / `false` | an unexpected error (a defect, or a validator that crashed); no details | — |
+| `output_invalid` | `true` | the tool ran, but its result failed the declared output and was withheld; **the action may have been performed** | — |
+
+- **`handlerCalled`** is a fact, not a promise. When it is `true`, effects may have happened, so agents should check the current state before retrying. The SDK never claims a retry is safe.
+- **`outputSchema`:** when a tool declares an `output`, it is advertised as `anyOf: [<your output>, <the envelope>]`, so strict agents do not discard failures as malformed. Without one, no `outputSchema` is advertised.
+- **Detection:** `isToolFailureEnvelope(value)` checks `isError === true`, a known `kind` and a string `message`.
 
 ---
 
@@ -354,14 +387,14 @@ reg.update([searchProductsTool, addToCartTool({ cart }), checkoutTool]);
 // Fresh dependencies for the same definitions: handlers refreshed, nothing re-registered
 reg.update([searchProductsTool, addToCartTool({ cart: nextCart }), checkoutTool]);
 
-// Per-tool state
-await reg.settled();
-for (const t of reg.getSnapshot().tools) {
-  if (t.state === "error") console.warn(t.name, t.error?.code); // duplicate_name, json_schema_unavailable, registration_failed
+// Per-tool state, once the current list is reconciled
+const snapshot = await reg.settled();
+for (const t of snapshot.tools) {
+  if (t.state === "error") console.warn(t.name, t.error.code); // duplicate_name, json_schema_unavailable, registration_failed
 }
 const unsubscribe = reg.subscribe((snapshot) => console.log(snapshot.supported, snapshot.tools));
 
-// Remove everything (or abort the `signal` option)
+// Remove everything (or abort the `signal` option). The handle is then finished: `update` is ignored.
 reg.unregister();
 unsubscribe();
 ```
@@ -385,11 +418,28 @@ How `update` reconciles:
 - **Each tool succeeds or fails on its own.** One failure does not roll back the others.
 - **`update` copies the list.** Mutating the array afterwards has no effect until the next `update`.
 - **Calls already running are never cancelled** by `update` or `unregister`. They finish with the definition and handler they started with. The handler's `signal` only aborts when the *caller* cancels or unloads.
-- **Duplicate names** are a compile error for literal names, and a per-tool `duplicate_name` state otherwise. The SDK never takes over a name registered by other code.
+- **Duplicate names** are a compile error for literal names in array literals (also after a conditional spread), and a per-tool `duplicate_name` state otherwise (`.map()`, dynamic arrays). The SDK never takes over a name registered by other code.
 
-Options: `signal` (aborting it means `unregister()`), `modelContext` (a polyfill or test double), `exposedTo` (origins allowed to see these tools from other frames, enforced by the browser), `onToolError`.
+Each tool's `state` is one of:
 
-**Progressive enhancement.** Without WebMCP, `snapshot.supported` is `false` and every tool is `"unsupported"`. Nothing throws, and `update` stays cheap. To *require* WebMCP, check `supported` yourself. No polyfill is installed automatically. To use one, pass it as `modelContext` or install it before registering.
+- `"pending"`: being registered, or queued behind a previous registration of the same name.
+- `"registered"`.
+- `"unsupported"`: no WebMCP here.
+- `"error"`, with `error.code` set to `duplicate_name`, `json_schema_unavailable` or `registration_failed`.
+
+| option | |
+| ------ | - |
+| `signal` | aborting it is the same as `unregister()` |
+| `modelContext` | a polyfill or test double instead of `document.modelContext` |
+| `exposedTo` | origins allowed to see these tools from other frames (enforced by the browser), fixed for the registration |
+| `onUnexpectedError` | logging hook, see [Errors](#errors) |
+
+**Progressive enhancement.** Without WebMCP, nothing throws and `update` stays cheap:
+
+- **Registration:** `snapshot.supported` is `false` and every tool is `"unsupported"`.
+- **Discovery:** the catalog's `status` is `"unsupported"`.
+
+To *require* WebMCP, check `supported` yourself. No polyfill is installed automatically. To use one, pass it as `modelContext` or install it before registering.
 
 ---
 
@@ -424,11 +474,11 @@ export function Dashboard({ rows }: { rows: { status: string }[] }) {
   const [status, setStatus] = useState("all");
 
   // Registered on mount, unregistered on unmount. Re-renders refresh handlers without re-registering.
-  const { supported, tools } = useRegisterTools([applyFilterTool({ setStatus, rows })]);
+  const { supported } = useRegisterTools([applyFilterTool({ setStatus, rows })]);
 
   return (
     <>
-      {supported && <small>AI tools: {tools.map((t) => `${t.name} (${t.state})`).join(", ")}</small>}
+      {supported && <small>AI tools available</small>}
       <p>Showing {status}</p>
       {/* Available only while rendered */}
       {rows.length > 0 && <RegisterTools tools={[exportCsvTool({ rows })]} />}
@@ -444,13 +494,17 @@ export function Dashboard({ rows }: { rows: { status: string }[] }) {
 | re-render | `update(tools)` after commit: handlers refreshed, only added/removed definitions change |
 | a call starting between a render and its commit | uses the previous handler |
 | StrictMode double mount | register → unregister → register; no spurious `duplicate_name` |
-| unmount while a call runs | the call finishes; to stop it, combine your own signal: `AbortSignal.any([signal, mountSignal])` |
+| unmount while a call runs | the call finishes. A handler that must stop with its component needs its own `AbortController`, owned by your code |
 | no WebMCP | `supported: false`, tools `"unsupported"`; nothing throws |
 | errors | never thrown during render; per tool in the returned snapshot |
 
 Keep **definitions** at module scope. Implementations can be recreated freely. A definition created during render is a new tool on every render, so it is re-registered every time (a dev warning is logged).
 
-Options: `enabled` (`false` unregisters), plus `modelContext`, `exposedTo` and `onToolError` as in core.
+Options:
+
+- `enabled` (`false` unregisters).
+- `modelContext` and `exposedTo` (compared by value): changing either re-creates the registration.
+- `onUnexpectedError`: the latest value is always used.
 
 ---
 
@@ -459,33 +513,53 @@ Options: `enabled` (`false` unregisters), plus `modelContext`, `exposedTo` and `
 For **in-page agents**, such as a chat widget or a copilot running in the page, that need the tools exposed by the page and its frames. This wraps the draft's `getTools()`, `executeTool()` and `toolchange`.
 
 ```ts
-import { createToolCatalog, toProviderName } from "webmcp-sdk";
+import { createToolCatalog, toProviderName, type ToolCatalogSnapshot } from "webmcp-sdk";
 
 declare const agent: { setTools(tools: { name: string; description: string; parameters: object }[]): void };
 
 const catalog = createToolCatalog({ fromOrigins: ["https://widgets.example"] });
-const byName = new Map<string, string>(); // provider name → id
+const idByName = new Map<string, string>(); // provider name → id
 
-// Re-send the tool list to your LLM whenever it changes
-catalog.subscribe(({ tools }) => {
-  byName.clear();
+// Send the tool list to your LLM now, and again whenever it changes
+function sync({ tools }: ToolCatalogSnapshot) {
+  idByName.clear();
   agent.setTools(
     tools.map((t) => {
-      const name = toProviderName(t.id, { maxLength: 64 });
-      byName.set(name, t.id);
+      const name = toProviderName(t.id); // provider-safe (default: ≤ 64 chars, [a-zA-Z0-9_-])
+      idByName.set(name, t.id);
       return { name, description: t.description, parameters: t.inputSchema };
     }),
   );
-});
+}
+sync(catalog.getSnapshot());
+const stop = catalog.subscribe(sync); // the first subscriber starts discovery
 
 // When the LLM calls a tool
 async function onToolCall(name: string, args: unknown) {
-  const result = await catalog.call(byName.get(name) ?? name, args);
-  return result.ok ? result.value : { error: result.error };
+  const id = idByName.get(name);
+  if (!id) return { error: `Unknown tool "${name}".` };
+  const result = await catalog.call(id, args);
+  return result.ok ? result.value : { error: result.error.message };
+}
+
+// When the agent goes away
+function teardown() {
+  stop();
+  catalog.dispose();
 }
 ```
 
-**Ids.** Each tool gets a stable string id, `<source>__<name>`. The source is `self` for this page, or `f1`, `f2`… for other frames, assigned once per frame and origin and never reused.
+| `ToolCatalog` | |
+| ------------- | - |
+| `getSnapshot()` | `{ status, tools, error?, version }`. `status` is `"idle"`, `"loading"`, `"ready"`, `"unsupported"` or `"error"`. `version` counts snapshots; it is not a tool revision |
+| `subscribe(fn)` | called on each new snapshot, not on subscribe; the first subscriber starts discovery and the `toolchange` listener, the last one stops them |
+| `getTools()` | query now; returns the list (and updates the snapshot) |
+| `update({ fromOrigins })` | change the origins (compared by value) |
+| `call(id, input, { signal })` | call by id; runs a discovery first if none happened yet; never throws |
+| `find(definition)` | typed entries for a definition you know (below) |
+| `dispose()` | stop everything; later calls return `not_found` |
+
+**Ids.** Each tool gets a stable, **opaque** string id, such as `"self__search"` (do not parse it). The source is `self` for this page, or `f1`, `f2`… for other frames, assigned once per frame and origin and never reused.
 
 - **Same name in two frames:** `self__search` and `f1__search` stay distinct, whatever order they register in.
 - **Re-registration:** a tool re-registered under the same name keeps its id.
@@ -496,9 +570,9 @@ async function onToolCall(name: string, args: unknown) {
 
 - **Replaced tool:** if it was replaced, the new version is called, and it validates your arguments against its current schema.
 - **Gone tool:** if it no longer exists, you get `{ ok: false, error: { kind: "not_found" } }` and nothing runs.
-- **Never throws:** failures are values (`tool_failed`, `rejected`, `not_found`).
+- **Never throws:** failures are values (`not_found`, `tool_failed`, `rejected`), each with a `message`.
 
-**Known tools are typed by their definition.** Discovery happens at runtime, so on its own it only knows `unknown`. If you share the definition with the page that implements it, `find` gives you typed calls, validated on both sides:
+**Known tools are typed by their definition.** Discovery happens at runtime, so on its own it only knows `unknown`. If you share the definition with the page that implements it, `find` gives you typed calls. They are validated on your side too: your input before sending (the original value is sent, since the provider validates again), and the result on return.
 
 ```ts
 import { createToolCatalog } from "webmcp-sdk";
@@ -547,42 +621,17 @@ const bad = await runTool(addToCartTool({ cart: fakeCart }), { sku: 42 });
 if (!bad.ok && bad.failure.kind === "input_invalid") console.log(bad.failure.issues);
 
 // Catch non-convertible schemas in CI
-const { input } = toJSONSchema(addToCart);
-if (!input.ok) throw new Error(`${input.side}: ${input.message}`);
+const schemas = toJSONSchema(addToCart);
+for (const [side, r] of Object.entries(schemas)) if (r && !r.ok) throw new Error(`${side}: ${r.message}`);
 ```
 
 For registration tests, pass any object with a `registerTool` method as `modelContext`, or install [`@w3c/webmcp-polyfill`](https://github.com/webmachinelearning/webmcp-polyfill).
 
 ---
 
-## What agents receive
-
-**On success:** your validated output, as-is.
-
-**On failure:** an envelope, returned rather than thrown. In WebMCP, a thrown error reaches the agent as an opaque `OperationError` without its message.
-
-```json
-{ "isError": true, "error": { "kind": "input_invalid", "handlerCalled": false,
-  "message": "Arguments rejected; the tool did not run. Fix the fields below and call again.",
-  "issues": [{ "path": "quantity", "message": "Too small: expected number to be >=1" }] } }
-```
-
-| `kind` | `handlerCalled` | when | extra fields |
-| ------ | --------------- | ---- | ------------ |
-| `input_invalid` | `false` | arguments failed the input schema; the tool did not run | `issues` (≤ 20, readable paths) |
-| `tool_error` | `true` | the handler threw a `ToolError` | `code`, `data` |
-| `internal` | `true` / `false` | an unexpected error (a defect, or a validator that crashed); no details | — |
-| `output_invalid` | `true` | the tool ran, but its result failed the declared output and was withheld; **the action may have been performed** | — |
-
-- **`handlerCalled`** is a fact, not a promise. When it is `true`, effects may have happened, so agents should check the current state before retrying. The SDK never claims a retry is safe.
-- **`outputSchema`:** when a tool declares an `output`, it is advertised as `anyOf: [<your output>, <the envelope>]`, so strict agents do not discard failures as malformed. Without one, no `outputSchema` is advertised.
-- **Detection:** `isToolFailureEnvelope(value)` checks `isError === true`, a known `kind` and a string `message`.
-
----
-
 ## Limitations
 
-- **Not usable yet.** This is a typed design, so everything throws `NotImplementedError`.
+- **Failures are in-band.** The platform, and any host that does not understand the envelope, sees a failed call as a *successful* call whose content says `isError: true`.
 - **Types are compile-time only.** Runtime truth comes from your validators, which run on every call.
 - **JSON Schema is only as good as your library's converter.** Refinements and transforms are not expressible, so say them in `description`.
 - **Envelope ambiguity.** A *successful* result shaped exactly like `{ isError: true, error: { kind, message } }`, with a known `kind`, is indistinguishable from a failure on the wire. The SDK does not restrict your schemas; avoid that shape in outputs.

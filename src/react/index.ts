@@ -14,8 +14,8 @@
  *   render and its commit uses the previous handler.
  * - **StrictMode:** mount → unmount → mount means register, unregister, register. The core's
  *   per-name queue prevents a spurious `duplicate_name`.
- * - **Running calls** are never aborted by unmount or update. A handler that must stop with
- *   its component combines its own signal: `AbortSignal.any([signal, mountSignal])`.
+ * - **Running calls** are never aborted by unmount or update. A handler that must stop when
+ *   its component goes away needs its own `AbortController`, owned by your code.
  * - **Keep definitions stable** (module scope). A definition created during render is a new
  *   tool on every render, so it is re-registered every time (a dev warning is logged).
  * - **Errors** never throw during render. They appear per tool in the snapshot.
@@ -41,7 +41,10 @@ import type {
 } from "../index.js";
 import { notImplemented } from "../not-implemented.js";
 
-/** Options for {@link useRegisterTools}. Changing `modelContext` re-creates the registration; the others apply on the next commit. */
+/**
+ * Options for {@link useRegisterTools}. Changing `modelContext` or `exposedTo` (compared by
+ * value) re-creates the registration. `enabled` and `onUnexpectedError` apply on the next commit.
+ */
 export interface UseRegisterToolsOptions extends Omit<RegisterToolsOptions, "signal"> {
   /** `false` unregisters every tool of this hook. Default `true`. */
   readonly enabled?: boolean;

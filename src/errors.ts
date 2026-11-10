@@ -76,9 +76,9 @@ export function isToolFailureEnvelope(value: unknown): value is ToolFailureEnvel
 export interface ToolErrorOptions {
   /** Stable machine-readable code, e.g. `"OUT_OF_STOCK"`. Omitted from the response when absent. */
   readonly code?: string;
-  /** Structured facts for the agent. Dropped (and reported to `onToolError`) if it cannot be serialized. */
+  /** Structured facts for the agent. Dropped (and reported to `onUnexpectedError`) if it cannot be serialized. */
   readonly data?: JsonValue;
-  /** For your logs only (`onToolError`). Never sent. */
+  /** For your logs only (`onUnexpectedError`). Never sent. */
   readonly cause?: unknown;
 }
 
@@ -90,7 +90,7 @@ export interface ToolErrorOptions {
  * `data` is sent as-is: do not forward third-party error messages blindly.
  *
  * Any other thrown value is a defect. The agent gets `{ kind: "internal" }` with a generic
- * message, and the original goes to `onToolError`.
+ * message, and the original goes to `onUnexpectedError`.
  *
  * @example
  * throw new ToolError(`Only ${left} left. Ask for at most ${left}.`, { code: "OUT_OF_STOCK", data: { left } });
@@ -117,11 +117,11 @@ export function isToolError(value: unknown): value is ToolError {
 
 /** Developer-facing error codes. Bugs or environment problems, never agent mistakes. */
 export type WebMCPErrorCode =
-  /** Thrown by `defineTool`: invalid name, empty description, non-object input root. */
+  /** Thrown by `defineTool`: invalid name or empty description. */
   | "invalid_definition"
   /** Registration: the name is already registered in this document (browser `InvalidStateError`). */
   | "duplicate_name"
-  /** Registration: a schema could not be converted to JSON Schema (see `cause`). */
+  /** Registration: a schema could not be converted to JSON Schema, or the input's JSON Schema root is not an object (see `cause`). */
   | "json_schema_unavailable"
   /** Registration: the browser rejected the tool for another reason, e.g. `NotAllowedError` from the permissions policy (see `cause`). */
   | "registration_failed";

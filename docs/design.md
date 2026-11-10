@@ -78,6 +78,37 @@ The agreed next pass, now executed:
 
 No runtime implementation until that pass is reviewed.
 
+## Pass 2 review log (2026-11-10)
+
+Reviewed by Claude Sonnet 5.5 (DX, README) and GPT-6.1 Sol at xhigh (type soundness, compiler-verified repros; all 26 `@ts-expect-error` checked).
+
+**Applied (Sonnet):**
+
+- **Agent example:** sends the current list first, then subscribes. Unknown provider names are rejected, and it disposes on teardown.
+- **`ToolCallError`:** every variant now has a `message`.
+- **`onToolError` → `onUnexpectedError`:** it fires only for `internal`, `output_invalid` and dropped `ToolError` data.
+- **Per-tool registration entries are discriminated:** `state: "error"` implies `error`.
+- **Lifecycle:** the handle after `unregister()` is documented as finished. `exposedTo` is fixed per registration (React re-creates on a value change).
+- **Docs:**
+  - the undefined `mountSignal` advice is removed;
+  - `KnownTool.call` is documented to send the original value;
+  - the Errors example is a factory;
+  - "What agents receive" moved next to Errors (`omittedIssues`);
+  - in-band failures are listed as a limitation;
+  - a catalog API table is added, with ids described as opaque;
+  - a requirements line is added;
+  - `side` is dropped from `JSONSchemaResolution`.
+
+**Applied (Sol):**
+
+- **Possibly-`undefined` schemas** (`input`/`output` typed `S | undefined`) are rejected by `defineTool`. Explicit `ToolDefinitionInit` generics require the schema property.
+- **`NoArguments`** no longer uses `Record<string, never>`, which made any property look present.
+- **`implementTool`** rejects unions of definitions and erased `AnyToolDefinition`.
+- **Duplicate-name check:** it also scans tuple suffixes after a dynamic prefix, and it is bounded (200) instead of producing a bogus error on huge tuples. It is documented as best-effort, with runtime detection.
+- **`KnownTool.call()`** may omit the input when the definition has none.
+
+**Kept, documented:** `JsonValue` for no-output handler returns and `ToolError` data. An interface-typed value is rejected by TS's index-signature rule. The workaround is to declare an output schema or spread the value. A generic JSON-compatibility check would need overloads, whose error messages are worse.
+
 ## React list changes (D11)
 
 Settled so far: the hook takes an array of implementations. It registers on mount, refreshes handlers on re-render without re-registering when the definitions are the same, and cleans up on unmount. The question was what happens when the list changes: re-register the group, or diff per tool. The user asked for the simplest option.
@@ -740,7 +771,7 @@ It reads well for oRPC users, but most tools are 4–6 fields of metadata, which
 | **require `StandardJSONSchemaV1` at compile time + `withJsonSchema()` escape hatch** ✅ | one rule, no vendor code in the core, failures are explicit |
 
 - Advertised schemas: the input side of `input`, the output side of `output`. The handler sees the opposite sides (see README table).
-- Conversion runs at `register()` (and in `contract.toJSONSchema()` for tests). A failure is `WebMCPError("json_schema_unavailable")` before anything registers. The SDK never falls back to `{}`.
+- *(Pass-1 wording, superseded by D12/D14: conversion is lazy and per tool; a failure marks that tool `"error"` with `json_schema_unavailable`; `toJSONSchema(definition)` runs it eagerly in tests.)* The SDK never falls back to `{}`.
 - Target dialect: `draft-2020-12` (the dialect the WebMCP draft references), configurable.
 
 ## Alternative 4: registration lifetime

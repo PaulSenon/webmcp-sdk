@@ -11,6 +11,7 @@ export type {
   ToolDefinition,
   ToolDefinitionArg,
   ToolDefinitionInit,
+  ToolMetadataInit,
 } from "./define.js";
 export { implementTool, runTool } from "./implement.js";
 export type { AnyToolImplementation, ToolCallContext, ToolHandler, ToolImplementation, ToolRunResult } from "./implement.js";
@@ -38,7 +39,7 @@ export type { ToolErrorOptions, ToolFailure, ToolFailureEnvelope, ToolFailureKin
 export { registerTools } from "./register.js";
 export type {
   RegisterToolsOptions,
-  ToolErrorInfo,
+  UnexpectedErrorInfo,
   ToolRegistration,
   ToolRegistrationEntry,
   ToolRegistrationSnapshot,
