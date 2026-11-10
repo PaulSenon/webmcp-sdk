@@ -20,6 +20,7 @@ Status: design prototype, 2026-11-06. This file records **why** the API looks th
 | D9 | **Output schema is optional. When declared, the SDK always validates the output, with no off flag.** Without one, the SDK only enforces JSON serializability. `output_invalid` means "ran, result withheld", not "execution failed". Details in [Output validation](#output-validation-d9). | design arbitration (Opus) on the user's stated preference, 2026-11-10 |
 | D10 | **Author-transmitted failures are thrown as `ToolError` (or a subclass), recognized by a brand, with a field whitelist: `message` required, `code` and `data` optional.** Every other throw is a defect: the agent gets a generic message, the details go to the developer hook. No Result return type. Details in [Handler errors](#handler-errors-d10). | design arbitration (Opus) on the user's principle, 2026-11-10 |
 | D11 | **React: one registration per tool, keyed by definition identity.** When the list changes, only added or removed tools are registered or unregistered. Unchanged tools are never touched. There is no group re-registration and no group rollback. Details in [React list changes](#react-list-changes-d11). | design arbitration (Opus) on the user's "keep it simplest", 2026-11-10 |
+| D12 | **Framework-agnostic core with one registration primitive: `registerTools(tools)` returns a `ToolRegistration` handle with `update(tools)` (explicit reconcile), `unregister()`, `subscribe`/`getSnapshot` and `settled()`.** Tools are matched by definition identity, never by array identity, and the core never observes mutations. Framework bindings only call `update`/`unregister` from their own effect system. Details in [Core registration and bindings](#core-registration-and-bindings-d12). | design arbitration (Opus) on the user's TanStack-style direction, 2026-11-10 |
 | D3 | **No `defineToolset` unless it earns its place.** Applying the user's rule ("drop it if it is just an array"), the analysis below finds no real utility, so it is dropped. Registration takes a plain array of implementations. | user rule + analysis below |
 
 **Why `defineToolset` is dropped (D3).** Candidate benefits, each checked:
@@ -71,7 +72,92 @@ Settled so far: the hook takes an array of implementations. It registers on moun
 
 **Rejected: group re-registration on any change.** It is no simpler to write, but its effects are worse: unchanged tools vanish briefly, in-flight calls on unrelated tools are interrupted, and every list change produces notifications for tools that did not change.
 
-Scope: this applies to the React publisher binding only. Whether core `registerTools()` outside React should also be per-tool without rollback (instead of pass 1's all-or-nothing) is a separate point, not decided. Per-tool would keep the two consistent.
+Scope: D12 moves this logic into the framework-agnostic core. The React binding only calls `update()`, so per-tool semantics now apply everywhere.
+
+## Core registration and bindings (D12)
+
+**Direction (user):** a TanStack-style architecture. The TypeScript core is framework-agnostic, with thin bindings per framework and React first. React's model must not dictate the core. The goal is *structural* simplicity, not the shortest algorithm.
+
+**Options compared:**
+
+| option | verdict |
+| ------ | ------- |
+| core = only `registerTool(impl)` per tool; bindings diff themselves | each binding re-implements reconciliation, handler refresh and the per-name queue: duplicated, subtle logic |
+| core observes the array (Proxy, deep watch, mutation tracking) | ❌ magic and fragile; it ties the core to a reactivity model; explicitly not wanted |
+| core registry with `add`/`remove`/`set` methods | three ways to change one thing |
+| **core handle with one explicit `update(tools)` (declare the desired list; the core reconciles)** ✅ | one concept. The core owns the diff, handler refresh, per-name queue and per-tool errors. Bindings just call it. This mirrors TanStack's observer `setOptions` |
+
+**Contract:**
+
+```ts nocheck
+const reg = registerTools(tools, { signal?, modelContext?, exposedTo? }); // sync handle; registration starts
+reg.update(tools);      // reconcile against the new desired list
+reg.unregister();       // abort everything; idempotent (same as aborting `signal`)
+reg.getSnapshot();      // { tools: [{ name, definition, state: "pending" | "registered" | "unsupported" | "error", error? }] }
+reg.subscribe(listener) // React external-store contract (no immediate emit); returns unsubscribe
+await reg.settled();    // resolves when the current desired list is reconciled; never rejects (errors are in the snapshot)
+```
+
+**Reconciliation rules (`update`):**
+
+- **The match is by definition identity**, element by element. An array's identity is meaningless: a new array holding the same definitions is a no-op apart from refreshing handlers, and re-passing a mutated array works the same way.
+- **Kept definitions** get their handler replaced by the one in the new implementation (calls already in flight keep theirs) and are not re-registered.
+- **Removed definitions** are aborted first, then **added** ones are registered, with the per-name queue ordering same-name replacements.
+- **Per-tool outcome, no group rollback** (consistent with D11). A failure is visible in the snapshot for that tool only.
+- **`update` copies the list.** Mutating the array afterwards without calling `update` again changes nothing. There is no hidden observation.
+- **Progressive enhancement (D1):** without WebMCP, every tool's state is `"unsupported"`, nothing throws, and `update` stays a cheap no-op.
+
+**Synchronous handle, async work.** This replaces pass 1's `await toolset.register()`. It fits effects (no promise inside cleanup), and `settled()` never rejects, which avoids the unhandled-rejection problem that ruled out "sync handle + `ready` promise" in pass 1.
+
+**Independent lifetimes need no extra API:** use separate registrations. A "registration of one" is the individual registration.
+
+**Plain TypeScript:**
+
+```ts nocheck
+const reg = registerTools([searchTool, pingTool]);
+
+// cart became non-empty: declare the new desired list
+reg.update([searchTool, pingTool, checkoutTool({ cart })]);
+// fresh data for the same definition: handler refreshed, no re-registration, no notification
+reg.update([searchTool, pingTool, checkoutTool({ cart: nextCart })]);
+
+await reg.settled();
+for (const t of reg.getSnapshot().tools) if (t.state === "error") console.warn(t.name, t.error);
+
+// a separate lifetime: just another registration
+const debug = registerTools([debugTool], { signal: devtools.signal });
+reg.unregister();
+```
+
+**React binding (the whole job):**
+
+```tsx nocheck
+function useWebMCPTools(tools: readonly AnyImpl[], options?: Options) {
+  const [reg, setReg] = useState<ToolRegistration | null>(null);
+  useEffect(() => {                                   // create once per mount (StrictMode: create → unregister → create)
+    const r = registerTools([], options); setReg(r); return () => r.unregister();
+  }, [options?.modelContext]);
+  useEffect(() => { reg?.update(tools); });          // after every commit: reconcile (cheap no-op when definitions are unchanged)
+  return useSyncExternalStore(reg?.subscribe ?? noop, reg?.getSnapshot ?? idleSnapshot, idleSnapshot);
+}
+// usage
+useWebMCPTools([applyFilterTool({ dashboard }), pingTool]);
+```
+
+This sketch shows the boundary, not final code. Options handling and the empty first snapshot stay to be refined.
+
+**Other frameworks (feasibility only, not built now):** each binding is "call `update` in your effect, `unregister` on dispose, read status via `subscribe`":
+
+- **Vue:** `watchEffect(() => reg.update(toValue(tools)))` plus `onScopeDispose(reg.unregister)`.
+- **Svelte 5:** `$effect(() => reg.update(tools))`, with teardown in the effect's return.
+- **Solid:** `createEffect(() => reg.update(tools()))` plus `onCleanup`.
+- **Angular:** `effect(() => reg.update(tools()))` plus `DestroyRef`.
+
+**Boundary:**
+
+- **Core:** definitions, implementations, validation and execution, reconciliation, per-name queue, status store.
+- **Bindings:** when to call `update`/`unregister`, and how to expose the status reactively.
+- Nothing framework-specific lives in core.
 
 ## Errors: proposal under discussion
 
