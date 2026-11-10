@@ -15,6 +15,7 @@ Status: design prototype, 2026-11-06. This file records **why** the API looks th
 | D4 | **Context is a property of the implementation, never of the definition.** The definition stays the agent-facing contract, free of app-internal types (option S2 rejected). | user, 2026-11-09 |
 | D5 | **No SDK context mechanism in v0: dependencies are passed by plain factories.** Handler stays `(input, { signal })` so a `context` property can be added later without breaking. | user, 2026-11-09 |
 | D6 | **One factory per implementation, taught by docs and examples (no API enforcement).** A tool that needs data is a function of exactly that data (`applyFilterTool({ dashboard })`). Composition happens in the array at the registration site. A shared factory only forwards to per-tool factories. Factories topic closed. | user, 2026-11-10 |
+| D7 | **A user declining a confirmation is a normal business result**, declared by the tool author in the tool's own output schema (`status: "declined"` is only an example; no status name is imposed). There is no SDK mechanism for it. The SDK validates that output like any other. | user, 2026-11-10 |
 | D3 | **No `defineToolset` unless it earns its place.** Applying the user's rule ("drop it if it is just an array"), the analysis below finds no real utility, so it is dropped. Registration takes a plain array of implementations. | user rule + analysis below |
 
 **Why `defineToolset` is dropped (D3).** Candidate benefits, each checked:
@@ -32,7 +33,7 @@ So it would be pure ceremony today. Reversal criterion: a group-level option tha
 
 ### Proposed, awaiting discussion (in this order)
 
-1. **Errors.** Full proposal in [Errors: proposal under discussion](#errors-proposal-under-discussion). **In discussion since 2026-11-10, starting with the declined-confirmation question (A vs B).**
+1. **Errors.** Full proposal in [Errors: proposal under discussion](#errors-proposal-under-discussion). In discussion since 2026-11-10. Declined confirmation is settled (D7). Next: SDK-generated errors vs errors the author transmits, then the `handlerCalled`/retry guarantees and the envelope.
 2. **JSON Schema capability required at definition time** (vs only at WebMCP registration). Recommendation: at definition. Describing a tool to an LLM is intrinsic to a tool, and type errors stay next to the schema. WebMCP-only constraints (name charset, dialect, envelope, annotation mapping, serialization) move to the registration step.
 3. **Context.** Superseded by the user requirement of 2026-11-09 (R1). Analysis in [Context: requirement and analysis](#context-requirement-and-analysis-2026-11-09). It can be discussed independently of the errors review.
 4. **Generic execution layer.** Recommendation: validation and failure mapping live in a generic, browser-free executor (illustrative `runTool(impl, rawInput, { signal })`) used by the WebMCP binding. `implementTool` stays a pure typed handler, callable directly in tests.
@@ -124,7 +125,7 @@ const checkout = implementTool(checkoutDef, async () => {
 { "status": "declined", "message": "The user declined. Do not retry unless they ask again." }
 ```
 
-### Declined confirmation: two options
+### Declined confirmation: two options (decided: A, see D7)
 
 - **A. An outcome in the output union (recommended).** No SDK surface, just a documented pattern. The semantics are right: the call succeeded and the user said no. It is typed in the contract, described by `outputSchema`, and typed for `bindContract` consumers. WebMCP has no `requestUserInteraction` in the current draft, so the confirmation UI is the page's own code inside the handler anyway.
 - **B. An SDK mechanism** (`return declined(...)` / `throw new ToolDeclined()`). It needs a third envelope shape, grows `outputSchema`, adds a concept, and the outcome is untyped in the contract. Revisit only if many tools repeat the same pattern. Even then, a tiny schema helper that builds the union would beat a new envelope.
@@ -135,7 +136,7 @@ With declined outcomes in the output (A), the envelope carries only real failure
 
 ### Questions for the user (errors)
 
-1. Declined confirmation: **A** (output union) or **B** (SDK mechanism)?
+1. ~~Declined confirmation: A or B?~~ Decided: A (D7).
 2. Drop `retryable`, add `handlerCalled`?
 3. Minor, can default: readable path format, issue cap, the `interrupted` merge.
 
