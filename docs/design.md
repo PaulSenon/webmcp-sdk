@@ -23,6 +23,7 @@ Status: design prototype, 2026-11-06. This file records **why** the API looks th
 | D12 | **Framework-agnostic core with one registration primitive: `registerTools(tools)` returns a `ToolRegistration` handle with `update(tools)` (explicit reconcile), `unregister()`, `subscribe`/`getSnapshot` and `settled()`.** Tools are matched by definition identity, never by array identity, and the core never observes mutations. Framework bindings only call `update`/`unregister` from their own effect system. Details in [Core registration and bindings](#core-registration-and-bindings-d12). | design arbitration (Opus) on the user's TanStack-style direction, 2026-11-10 |
 | D13 | **Consumer ids: one stable string per (source, name), always prefixed from the start: `<sourceKey>__<name>`.** `sourceKey` is `self`, or `f<n>` assigned once per source (WindowProxy + origin) and never reused. Re-registering under the same name in the same source keeps the id. A separate `revision` lets snapshot-bound calls refuse a changed descriptor. Discovery API stays close to native (`getTools({ fromOrigins })` + change subscription + `call`). Replaces the pass-1 consumer identity model. Details in [Consumer ids and discovery](#consumer-ids-and-discovery-d13). | design arbitration (Opus) on user feedback, 2026-11-10. **Consumer topic still in discussion:** the user has more input; this is not a validated need |
 | D14 | **Schemas: the SDK requires both Standard Schema capabilities from entry (`defineTool`): validation (`~standard.validate`) and JSON Schema conversion (`~standard.jsonSchema`).** Libraries plug in through the standard interface, with a documented adapter where conversion is not native (e.g. Valibot `toStandardJsonSchema`). The SDK keeps the **original validator** and runs it through the Standard Schema API. It **never rebuilds a validator from JSON Schema**: JSON Schema is only for description and protocol transfer. | user (considered settled), 2026-11-10 |
+| D15 | **Consumer lifecycle: a lazy, framework-agnostic catalog (core) plus `useTools({ fromOrigins })` (React).** The core owns discovery, the `toolchange` subscription, origin updates, race handling and identities. React only orchestrates lifecycle and reactivity. Source keys come from a **page-wide** identity table, so ids are identical across catalogs and survive remounts. Details in [Consumer lifecycle and React](#consumer-lifecycle-and-react-d15). | design arbitration (Opus) on the user's desired experience, 2026-11-10. Consumer topic still in discussion |
 | D3 | **No `defineToolset` unless it earns its place.** Applying the user's rule ("drop it if it is just an array"), the analysis below finds no real utility, so it is dropped. Registration takes a plain array of implementations. | user rule + analysis below |
 
 **Why `defineToolset` is dropped (D3).** Candidate benefits, each checked:
@@ -243,6 +244,67 @@ if (r.ok) r.value.hits;                                       // output validate
 - **What is not promised:** the SDK does not compare the advertised JSON Schema with the contract (JSON Schema equivalence is not decidable in general). Agreement is checked by validating real values.
 
 Not adopted: no consumer-side delay or "grace period" rule. Earlier React discussions created no consumer requirement.
+
+## Consumer lifecycle and React (D15)
+
+**Desired experience (user):**
+
+- **Core:** stays close to the WebMCP API, is type-safe when a contract is known, and makes calls simpler with stable ids.
+- **React:** a hook (illustrative `useTools(origins)`) handles initial discovery, the `toolchange` subscription and dynamic updates, and exposes the list with the core's stable ids. React users never handle listeners.
+- **Split:** the core keeps the catalog and identity logic. React must not redo it.
+
+**Change subscription: `subscribe(listener)` rather than mirroring `addEventListener("toolchange")`.** The native event has no payload, so a faithful mirror would make every caller re-run `getTools()` by hand and handle the races. `subscribe` hands over the new typed list, follows the React external-store contract (no immediate emit) and returns an unsubscribe function. That is real ergonomic and typing value, so this adaptation is justified. `getTools()` and `call()` stay native-shaped (D13 table).
+
+**Core catalog:**
+
+```ts nocheck
+const catalog = createToolCatalog({ fromOrigins: ["https://widgets.example"] });
+catalog.getSnapshot();     // { status: "idle" | "loading" | "ready" | "unsupported" | "error", tools, error?, version }
+catalog.subscribe(fn);     // first subscriber starts discovery + the toolchange listener; the last one leaving stops them
+await catalog.getTools();  // explicit query (also updates the snapshot if it is the latest)
+catalog.update({ fromOrigins: [...] }); // compared by value (sorted set), not array identity; re-queries if changed
+catalog.call(id, input, { signal, revision? });
+await catalog.find(contract);           // typed entries (D13 revision)
+catalog.dispose();         // stops everything; in-flight results ignored; later calls → stale
+```
+
+- **Lazy:** creating a catalog has no side effects. Discovery runs only while someone subscribes or calls `getTools()`, as in TanStack observers. That makes creation safe during a React render.
+- **Page-wide identity table.** The `WeakMap<WindowProxy, sourceKey>` and the monotonic counter live at module level (one per SDK instance in the page), not per catalog. Every catalog in the page therefore shows **the same ids for the same tools**, and recreating a catalog (remount, StrictMode, origin change) never renumbers anything. Two copies of the SDK bundled in one page would have separate tables (documented).
+- **Races, handled in the core:**
+  - Every query carries a sequence number, and only the **latest completed** query updates the snapshot. A listener never sees an older list after a newer one.
+  - A burst of `toolchange` events coalesces into at most one query in flight plus one pending.
+  - `version` increases with each applied snapshot.
+- **Origin changes:**
+  - Tools from origins no longer requested drop out of the snapshot, and calls to their ids return `stale`.
+  - Re-adding an origin brings back the **same ids**, as long as the source (WindowProxy + origin) is the same.
+- **Status:**
+  - `unsupported` when the consumer API is missing (progressive enhancement, D1): empty list, no throw.
+  - `error` when the native `getTools` rejects (e.g. `SecurityError` for an invalid origin), with `error` set and an empty list. This is a developer mistake and is surfaced as such.
+- **Not promised:**
+  - `fromOrigins` is a **request filter**. Owner-side `exposedTo` and the permissions policy still decide, and adding an origin never grants access.
+  - Discovered tools stay `unknown` unless matched through `find(contract)`.
+
+**React:**
+
+```tsx nocheck
+function AssistantPanel() {
+  const { status, tools, call } = useTools({ fromOrigins: ["https://widgets.example"] });
+  useEffect(() => {
+    agent.setTools(tools.map((t) => ({ name: toProviderName(t.id), description: t.description, parameters: t.inputSchema })));
+  }, [tools]);                                   // a new array only when the snapshot changes
+  if (status === "unsupported") return null;
+  return <ToolList tools={tools} />;
+}
+```
+
+- **Internals (no logic duplicated):**
+  - `useState(() => createToolCatalog(options))` creates the catalog, which is lazy and therefore safe during render.
+  - `useSyncExternalStore(catalog.subscribe, catalog.getSnapshot)` reads it. Subscribing starts discovery, and unsubscribing on unmount stops it.
+  - An effect calls `catalog.update({ fromOrigins })` when the origins change **by value**. Inline array literals are therefore fine.
+  - `dispose` runs on unmount.
+- **StrictMode:** the double mount unsubscribes and then subscribes again. Ids are unaffected because of the page-wide table.
+- **Returned values:** `{ status, tools, error, call, find }`. `tools` keeps its identity while `version` is unchanged, which makes it safe as an effect dependency.
+- **Typed known tools in React:** `find(contract)` is async. A convenience such as `useTool(contract)` returning typed entries from the current snapshot is feasible on top of the same snapshot. It is not added until a need shows up.
 
 ## Errors: proposal under discussion
 
