@@ -14,6 +14,7 @@ Status: design prototype, 2026-11-06. This file records **why** the API looks th
 | D2 | **Definition helpers, then implementation, then separate WebMCP registration.** Definitions and contracts are plain objects built by a helper (illustrative name `defineTool({...})`, no handler). `implementTool(definition, handler)` infers input/output from the definition. WebMCP registration (and the React binding) is a separate step that takes implementations. This replaces the chained `implement(c).handler()` and the `toolset.register()` method. | user, 2026-11-06 |
 | D4 | **Context is a property of the implementation, never of the definition.** The definition stays the agent-facing contract, free of app-internal types (option S2 rejected). | user, 2026-11-09 |
 | D5 | **No SDK context mechanism in v0: dependencies are passed by plain factories.** Handler stays `(input, { signal })` so a `context` property can be added later without breaking. | user, 2026-11-09 |
+| D6 | **One factory per implementation, taught by docs and examples (no API enforcement).** A tool that needs data is a function of exactly that data (`applyFilterTool({ dashboard })`). Composition happens in the array at the registration site. A shared factory only forwards to per-tool factories. Factories topic closed. | user, 2026-11-10 |
 | D3 | **No `defineToolset` unless it earns its place.** Applying the user's rule ("drop it if it is just an array"), the analysis below finds no real utility, so it is dropped. Registration takes a plain array of implementations. | user rule + analysis below |
 
 **Why `defineToolset` is dropped (D3).** Candidate benefits, each checked:
@@ -31,7 +32,7 @@ So it would be pure ceremony today. Reversal criterion: a group-level option tha
 
 ### Proposed, awaiting discussion (in this order)
 
-1. **Errors.** Full proposal in [Errors: proposal under discussion](#errors-proposal-under-discussion). **The next discussion starts here.**
+1. **Errors.** Full proposal in [Errors: proposal under discussion](#errors-proposal-under-discussion). **In discussion since 2026-11-10, starting with the declined-confirmation question (A vs B).**
 2. **JSON Schema capability required at definition time** (vs only at WebMCP registration). Recommendation: at definition. Describing a tool to an LLM is intrinsic to a tool, and type errors stay next to the schema. WebMCP-only constraints (name charset, dialect, envelope, annotation mapping, serialization) move to the registration step.
 3. **Context.** Superseded by the user requirement of 2026-11-09 (R1). Analysis in [Context: requirement and analysis](#context-requirement-and-analysis-2026-11-09). It can be discussed independently of the errors review.
 4. **Generic execution layer.** Recommendation: validation and failure mapping live in a generic, browser-free executor (illustrative `runTool(impl, rawInput, { signal })`) used by the WebMCP binding. `implementTool` stays a pure typed handler, callable directly in tests.
@@ -267,7 +268,7 @@ A shared factory is only for reusing the same set in several places, and it shou
 
 1. ~~S1 (implementation) or S2 (definition)?~~ Decided: implementation (D4).
 1b. ~~SDK context mechanism, or factories only?~~ Decided: factories (D5).
-1c. **Per-tool factory convention via docs/examples only (no API enforcement)?** Recommendation: yes.
+1c. ~~Per-tool factory convention via docs/examples only?~~ Decided (D6). Topic closed.
 2. **Provide at registration**, with no `defineToolSet`, unless a real "pre-bound set registered from several places" case exists?
 3. Minor: reject or accept extra context; the placeholder `_ctx` when only `signal` is needed (vs an options object).
 
