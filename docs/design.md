@@ -21,6 +21,7 @@ Status: design prototype, 2026-11-06. This file records **why** the API looks th
 | D10 | **Author-transmitted failures are thrown as `ToolError` (or a subclass), recognized by a brand, with a field whitelist: `message` required, `code` and `data` optional.** Every other throw is a defect: the agent gets a generic message, the details go to the developer hook. No Result return type. Details in [Handler errors](#handler-errors-d10). | design arbitration (Opus) on the user's principle, 2026-11-10 |
 | D11 | **React: one registration per tool, keyed by definition identity.** When the list changes, only added or removed tools are registered or unregistered. Unchanged tools are never touched. There is no group re-registration and no group rollback. Details in [React list changes](#react-list-changes-d11). | design arbitration (Opus) on the user's "keep it simplest", 2026-11-10 |
 | D12 | **Framework-agnostic core with one registration primitive: `registerTools(tools)` returns a `ToolRegistration` handle with `update(tools)` (explicit reconcile), `unregister()`, `subscribe`/`getSnapshot` and `settled()`.** Tools are matched by definition identity, never by array identity, and the core never observes mutations. Framework bindings only call `update`/`unregister` from their own effect system. Details in [Core registration and bindings](#core-registration-and-bindings-d12). | design arbitration (Opus) on the user's TanStack-style direction, 2026-11-10 |
+| D13 | **Consumer ids: one stable string per (source, name), always prefixed from the start: `<sourceKey>__<name>`.** `sourceKey` is `self`, or `f<n>` assigned once per source (WindowProxy + origin) and never reused. Re-registering under the same name in the same source keeps the id. A separate `revision` lets snapshot-bound calls refuse a changed descriptor. Discovery API stays close to native (`getTools({ fromOrigins })` + change subscription + `call`). Replaces the pass-1 consumer identity model. Details in [Consumer ids and discovery](#consumer-ids-and-discovery-d13). | design arbitration (Opus) on user feedback, 2026-11-10; to present to the user |
 | D3 | **No `defineToolset` unless it earns its place.** Applying the user's rule ("drop it if it is just an array"), the analysis below finds no real utility, so it is dropped. Registration takes a plain array of implementations. | user rule + analysis below |
 
 **Why `defineToolset` is dropped (D3).** Candidate benefits, each checked:
@@ -158,6 +159,57 @@ This sketch shows the boundary, not final code. Options handling and the empty f
 - **Core:** definitions, implementations, validation and execution, reconciliation, per-name queue, status store.
 - **Bindings:** when to call `update`/`unregister`, and how to expose the status reactively.
 - Nothing framework-specific lives in core.
+
+## Consumer ids and discovery (D13)
+
+**User need:** tools with the same name may come from different origins, or from different windows of the same origin. The agent side needs a **unique, stable string id**, so it can map tools to an agent framework without object references. That id is separate from the duplicable original `title`/`name`. Counter-example to avoid: A.`toto` and B.`toto` both unregister, then register again in reverse order. A first-come-keeps-the-name strategy would hand A's old id to B.
+
+**What the platform actually provides** (draft 9 Nov 2026, checked 2026-11-10; see research addendum):
+
+- `RegisteredTool` has `name`, `title`, `description`, schemas, `annotations`, **`window`** ("the Window of the document that registered the tool") and **`origin`**. There is **no registration id or generation**. The spec itself tells callers to inspect `origin` and `window` to tell same-named tools apart.
+- `executeTool(tool)` resolves `tool.window` to its document, rejects `NotFoundError` if the origin no longer matches, then looks the tool up **by name**. The spec states that a quick unregister plus re-register under the same name "is *not* protected against" (issue #92).
+- *Inference, not verified:* JavaScript code receives the `window` member as a **WindowProxy** (WebIDL/HTML convention), which survives navigation of that browsing context. After a **same-origin** navigation, an old `RegisteredTool` could therefore reach the new document's same-named tool. After a cross-origin navigation, it would hit the origin check.
+- `toolchange` carries no payload and its timing relative to other tasks is not guaranteed. Discovery results are sorted by name.
+
+So "name + origin + window" is the native disambiguation, but **not** a native identity guarantee. The SDK must not claim more.
+
+**Algorithm (decided):**
+
+- **Source = (WindowProxy, origin).** Each new pair gets a `sourceKey`: `self` for the catalog's own document, `f1`, `f2`… for others, from one monotonic counter per catalog. The counter is per source, not per name, and **never reused**. The keys are kept in a `WeakMap<WindowProxy, …>`, so a removed frame frees its entry.
+  - **Origin change** for the same window means a new source key, so an id is never carried across sites.
+  - **Same-origin navigation** keeps the source key. The SDK deliberately does not use `Document` identity, which is only visible for same-origin frames. One uniform rule beats a best-effort split, and the `revision` check below covers descriptor changes.
+- **`id = sourceKey + "__" + name`**, always prefixed, never only on collision. It is injective: source keys never contain `__`, so the first `__` splits unambiguously, even for names that already contain `__` or look like `f1__x`.
+  - **The counter-example cannot happen:** A's `toto` is always `f1__toto` and B's is always `f2__toto`, whatever the registration order.
+  - **Re-registration** under the same name in the same source keeps the same id. That is the "same tool" the user wants.
+- **`revision`** is an opaque hash of the descriptor (description, schemas, annotations) carried by each snapshot entry.
+  - **Snapshot-bound calls** (`tool.call()` on an entry) pass their revision. If the current descriptor differs, the result is `stale` and **nothing is executed**.
+  - **`catalog.call(id, input)` without a revision** means, explicitly, "whatever is currently registered under this id". That matches native name-based semantics.
+  - **Safe by default where it matters:** a handle taken from a list given to an LLM never silently hits a changed contract.
+- **What remains impossible to guarantee:**
+  - An identical descriptor re-registered is indistinguishable from the original.
+  - A same-origin navigation to a page exposing an identical tool is indistinguishable.
+  - Check-then-`executeTool` is not atomic (issue #92). The browser's origin and exposure checks still apply.
+- **Scope of stability:** the catalog's lifetime (one page session). Ids are **not** stable across reloads (keys follow discovery order), so never persist them.
+- **Provider name limits** (e.g. `^[a-zA-Z0-9_-]{1,64}$`): ids can exceed 64 characters and may contain `.`, so ids stay SDK identity. The SDK ships a small deterministic mapper, `toProviderName(id, { maxLength, pattern })`. It sanitizes, truncates, and appends a short hash whenever it altered the id, which keeps distinct ids distinct.
+- **Memory:** sources live in a `WeakMap`. Snapshot entries hold the latest `RegisteredTool` objects only, replaced on each refresh. `dispose()` removes the `toolchange` listener.
+
+**Discovery API (decided: minimal, close to native):**
+
+```ts nocheck
+const catalog = createToolCatalog({ fromOrigins: ["https://widgets.example"] }); // passed through to native getTools
+const tools = await catalog.getTools();     // fresh native query, normalized entries
+// entry: { id, name, title, description, inputSchema, outputSchema, annotations, origin, source: { key, isSelf }, revision, call(input, { signal }) }
+const off = catalog.subscribe((tools) => agent.setTools(tools)); // re-queries on `toolchange` (coalesced); React-store contract
+catalog.getSnapshot();                      // last result, sync (for useSyncExternalStore)
+await catalog.call(id, input, { signal, revision }); // revision optional (see above)
+catalog.dispose();
+```
+
+- **Removed from pass 1:** `refresh()` (`getTools()` is the refresh), `snapshot.get(uniqueName)` (use `find`), `formatName` (replaced by the fixed id plus `toProviderName`), and the fingerprint-in-id `ToolId`.
+- **Permissions:** the SDK passes `fromOrigins` through unchanged, and `call` hands the stored native `RegisteredTool` to `executeTool`. Exposure (`exposedTo`), origin checks and the permissions policy stay entirely native.
+- **`bindContract`** (typed known tools) is unchanged in principle and resolves by name, with `pick` for multiple sources.
+
+Not adopted: no consumer-side delay or "grace period" rule. Earlier React discussions created no consumer requirement.
 
 ## Errors: proposal under discussion
 

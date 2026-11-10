@@ -425,3 +425,13 @@ Every URL below was fetched on **2026-11-06**. Version/date evidence is recorded
 
 - **EXPERIMENTAL:** The WebMCP draft is now "Draft Community Group Report, **9 November 2026**" (repo `main` at `f2f2ae2`, 2026-11-09, "Fire `toolactivated` event after invoking execute (#371)"). `ModelContextTool` still declares `object outputSchema`. Quote: "Tool output is expected to conform to the provided schema, and agents may reject outputs that do not validate." No user-agent output validation is defined. An unserializable result maps to `OperationError`. <https://webmachinelearning.github.io/webmcp/>
 - **EXPERIMENTAL:** `webmachinelearning/webmcp-polyfill` `main` at `042327b` (2026-11-09), package `@w3c/webmcp-polyfill@0.1.0` (npm latest 0.1.0): `grep -rn outputSchema` over the source and tests returns **no matches**. The README targets `webmcp-types@0.1.9` and does not mention `outputSchema`. Inference (not verified at runtime): the polyfill neither stores nor exposes output schemas.
+
+## Addendum, 2026-11-10 (consumer identity re-check)
+
+Source: WebMCP Draft CG Report, 9 November 2026 (<https://webmachinelearning.github.io/webmcp/>), all EXPERIMENTAL.
+
+- `RegisteredTool` IDL: `required Window window;` ("The Window of the document that registered the tool") and `required USVString origin;` ("only meaningful when the tool is cross-origin"). It has no id, generation or registration handle. `getTools` sets `window` to "targetDocument's relevant global object".
+- `executeTool` steps: targetWindow = tool's window, then targetDocument = its associated Document, then a same-origin check against the recorded origin (`NotFoundError`), then lookup `targetToolMap[toolName]` (`NotFoundError` if absent), then an exposure check. The per-*execution* `uuid` is internal. "tool unregistration followed by a quick re-registration of a tool with the same toolName but input schema is _not_ protected against" (issue #92).
+- §6.3.4.2 advises callers to inspect `origin` and `window` "to disambiguate tools when multiple subframes or origins expose tools with the same name."
+- `toolchange`: fired from register/unregister via "notify documents of a tool change" at the ModelContext of eligible documents. It has no payload, and "the timing between firing the toolchange event, and other tasks queued after this algorithm, cannot be relied upon."
+- **UNVERIFIED inference:** under WebIDL/HTML conventions, the JS value of a `Window`-typed member is the browsing context's WindowProxy, which survives navigation. The spec text fetched does not address this.
