@@ -2,7 +2,7 @@
 
 Status: design prototype, 2026-11-06. This file records **why** the API looks the way it does. Facts about the platform are in [`research.md`](research.md), with dates and sources.
 
-> **Reading guide (2026-11-06).** The code, the type tests and the README still show **pass 1** (`contract → implement().handler → toolset.register()`). Decisions taken since then are recorded below and are **not implemented yet**. No API refactor or runtime work starts until every open point has been discussed with the user, one at a time.
+> **Reading guide (updated 2026-11-10).** The code, the type tests and the README still show **pass 1** (`contract → implement().handler → toolset.register()`). Decisions taken since then are recorded below and are **not implemented yet**. No API refactor or runtime work starts until every open point has been discussed with the user, one at a time.
 
 ## Decision status
 
@@ -16,14 +16,14 @@ Status: design prototype, 2026-11-06. This file records **why** the API looks th
 | D5 | **No SDK context mechanism in v0: dependencies are passed by plain factories.** Handler stays `(input, { signal })` so a `context` property can be added later without breaking. | user, 2026-11-09 |
 | D6 | **One factory per implementation, taught by docs and examples (no API enforcement).** A tool that needs data is a function of exactly that data (`applyFilterTool({ dashboard })`). Composition happens in the array at the registration site. A shared factory only forwards to per-tool factories. Factories topic closed. | user, 2026-11-10 |
 | D7 | **A user declining a confirmation is a normal business result**, declared by the tool author in the tool's own output schema (`status: "declined"` is only an example; no status name is imposed). There is no SDK mechanism for it. The SDK validates that output like any other. | user, 2026-11-10 |
-| D8 | **No validation-formatting hook in v0.** Input-validation failures use one fixed SDK format. A future hook, if a real case appears, must follow the constraints below. Details in [Validation formatting](#validation-formatting-d8). | design arbitration (Opus), 2026-11-10, after a question from the user |
-| D9 | **Output schema is optional. When declared, the SDK always validates the output, with no off flag.** Without one, the SDK only enforces JSON serializability. `output_invalid` means "ran, result withheld", not "execution failed". Details in [Output validation](#output-validation-d9). | design arbitration (Opus) on the user's stated preference, 2026-11-10 |
-| D10 | **Author-transmitted failures are thrown as `ToolError` (or a subclass), recognized by a brand, with a field whitelist: `message` required, `code` and `data` optional.** Every other throw is a defect: the agent gets a generic message, the details go to the developer hook. No Result return type. Details in [Handler errors](#handler-errors-d10). | design arbitration (Opus) on the user's principle, 2026-11-10 |
-| D11 | **React: one registration per tool, keyed by definition identity.** When the list changes, only added or removed tools are registered or unregistered. Unchanged tools are never touched. There is no group re-registration and no group rollback. Details in [React list changes](#react-list-changes-d11). | design arbitration (Opus) on the user's "keep it simplest", 2026-11-10 |
-| D12 | **Framework-agnostic core with one registration primitive: `registerTools(tools)` returns a `ToolRegistration` handle with `update(tools)` (explicit reconcile), `unregister()`, `subscribe`/`getSnapshot` and `settled()`.** Tools are matched by definition identity, never by array identity, and the core never observes mutations. Framework bindings only call `update`/`unregister` from their own effect system. Details in [Core registration and bindings](#core-registration-and-bindings-d12). | design arbitration (Opus) on the user's TanStack-style direction, 2026-11-10 |
-| D13 | **Consumer ids: one stable string per (source, name), always prefixed from the start: `<sourceKey>__<name>`.** `sourceKey` is `self`, or `f<n>` assigned once per source (WindowProxy + origin) and never reused. Re-registering under the same name in the same source keeps the id. A separate `revision` lets snapshot-bound calls refuse a changed descriptor. Discovery API stays close to native (`getTools({ fromOrigins })` + change subscription + `call`). Replaces the pass-1 consumer identity model. Details in [Consumer ids and discovery](#consumer-ids-and-discovery-d13). | design arbitration (Opus) on user feedback, 2026-11-10. **Consumer topic still in discussion:** the user has more input; this is not a validated need |
-| D14 | **Schemas: the SDK requires both Standard Schema capabilities from entry (`defineTool`): validation (`~standard.validate`) and JSON Schema conversion (`~standard.jsonSchema`).** Libraries plug in through the standard interface, with a documented adapter where conversion is not native (e.g. Valibot `toStandardJsonSchema`). The SDK keeps the **original validator** and runs it through the Standard Schema API. It **never rebuilds a validator from JSON Schema**: JSON Schema is only for description and protocol transfer. | user (considered settled), 2026-11-10 |
-| D15 | **Consumer lifecycle: a lazy, framework-agnostic catalog (core) plus `useTools({ fromOrigins })` (React).** The core owns discovery, the `toolchange` subscription, origin updates, race handling and identities. React only orchestrates lifecycle and reactivity. Source keys come from a **page-wide** identity table, so ids are identical across catalogs and survive remounts. Details in [Consumer lifecycle and React](#consumer-lifecycle-and-react-d15). | design arbitration (Opus) on the user's desired experience, 2026-11-10. Consumer topic still in discussion |
+| D8 | **No validation-formatting hook in v0.** Input-validation failures use one fixed SDK format. A future hook, if a real case appears, must follow the constraints below. Details in [Validation formatting](#validation-formatting-d8). | validated by the user, 2026-11-10 (arbitration: Opus) |
+| D9 | **Output schema is optional. When declared, the SDK always validates the output, with no off flag.** Without one, the SDK only enforces JSON serializability. `output_invalid` means "ran, result withheld", not "execution failed". Details in [Output validation](#output-validation-d9). | validated by the user, 2026-11-10 (arbitration: Opus) |
+| D10 | **Author-transmitted failures are thrown as `ToolError` (or a subclass), recognized by a brand, with a field whitelist: `message` required, `code` and `data` optional.** Every other throw is a defect: the agent gets a generic message, the details go to the developer hook. No Result return type. Details in [Handler errors](#handler-errors-d10). | validated by the user, 2026-11-10 (arbitration: Opus) |
+| D11 | **React: one registration per tool, keyed by definition identity.** When the list changes, only added or removed tools are registered or unregistered. Unchanged tools are never touched. There is no group re-registration and no group rollback. Details in [React list changes](#react-list-changes-d11). | validated by the user, 2026-11-10 (arbitration: Opus) |
+| D12 | **Framework-agnostic core with one registration primitive: `registerTools(tools)` returns a `ToolRegistration` handle with `update(tools)` (explicit reconcile), `unregister()`, `subscribe`/`getSnapshot` and `settled()`.** Tools are matched by definition identity, never by array identity, and the core never observes mutations. Framework bindings only call `update`/`unregister` from their own effect system. Details in [Core registration and bindings](#core-registration-and-bindings-d12). | validated by the user, 2026-11-10 (arbitration: Opus) |
+| D13 | **Consumer ids: one stable string per (source, name), always prefixed from the start: `<sourceKey>__<name>`.** `sourceKey` is `self`, or `f<n>` assigned once per source (WindowProxy + origin) and never reused. Re-registering under the same name in the same source keeps the id. A separate `revision` lets snapshot-bound calls refuse a changed descriptor. Discovery API stays close to native (`getTools({ fromOrigins })` + change subscription + `call`). Replaces the pass-1 consumer identity model. Details in [Consumer ids and discovery](#consumer-ids-and-discovery-d13). | validated by the user, 2026-11-10 (arbitration: Opus) |
+| D14 | **Schemas: the SDK requires both Standard Schema capabilities from entry (`defineTool`): validation (`~standard.validate`) and JSON Schema conversion (`~standard.jsonSchema`).** Libraries plug in through the standard interface, with a documented adapter where conversion is not native (e.g. Valibot `toStandardJsonSchema`). The SDK keeps the **original validator** and runs it through the Standard Schema API. It **never rebuilds a validator from JSON Schema**: JSON Schema is only for description and protocol transfer. | validated by the user, 2026-11-10 (arbitration: Opus) |
+| D15 | **Consumer lifecycle: a lazy, framework-agnostic catalog (core) plus `useTools({ fromOrigins })` (React).** The core owns discovery, the `toolchange` subscription, origin updates, race handling and identities. React only orchestrates lifecycle and reactivity. Source keys come from a **page-wide** identity table, so ids are identical across catalogs and survive remounts. Details in [Consumer lifecycle and React](#consumer-lifecycle-and-react-d15). | validated by the user, 2026-11-10 (arbitration: Opus) |
 | D3 | **No `defineToolset` unless it earns its place.** Applying the user's rule ("drop it if it is just an array"), the analysis below finds no real utility, so it is dropped. Registration takes a plain array of implementations. | user rule + analysis below |
 
 **Why `defineToolset` is dropped (D3).** Candidate benefits, each checked:
@@ -39,19 +39,58 @@ So it would be pure ceremony today. Reversal criterion: a group-level option tha
 
 **R1. Context is a real need.** A tool must be able to require page-side data (context) that its implementation reads. The developer must **not** be able to wire a tool where that data is missing (a compile-time guarantee). The agent never knows about or provides context: it is distinct from LLM arguments and never appears in any exposed schema. *Not decided:* where the requirement is declared (definition vs implementation), where it is provided (toolset, registration, per call), the exact syntax. The oRPC-style `.$context<T>()` builder stays rejected (D2).
 
-### Proposed, awaiting discussion (in this order)
+### Remaining arbitrations (audit, 2026-11-10)
 
-1. **Errors.** Full proposal in [Errors: proposal under discussion](#errors-proposal-under-discussion). In discussion since 2026-11-10. Declined confirmation is settled (D7). Done so far: D7 (declined), D8 (no formatting hook), D9 (output validation), D10 (handler errors). Next: the `handlerCalled`/retry guarantees (including abort/interrupted), then the envelope.
-2. ~~JSON Schema capability at definition time~~ Decided (D14). Detail (Opus): the capability is required **at the type level** in `defineTool`, while conversion **runs lazily** at registration. The result is cached per definition and target dialect, and a failure is reported for that tool only (D11/D12 per-tool semantics). `toJSONSchema(definition)` runs it eagerly in tests/CI. Agent-side inputs are validated by the original validator, never by the JSON Schema.
-3. **Context.** Superseded by the user requirement of 2026-11-09 (R1). Analysis in [Context: requirement and analysis](#context-requirement-and-analysis-2026-11-09). It can be discussed independently of the errors review.
-4. **Generic execution layer.** Recommendation: validation and failure mapping live in a generic, browser-free executor (illustrative `runTool(impl, rawInput, { signal })`) used by the WebMCP binding. `implementTool` stays a pure typed handler, callable directly in tests.
-5. **React binding details.** Mostly settled by D11 (list changes). Remaining: hook naming and the shape of the returned state.
-6. **Strict mode removal.** Recommendation: remove `ifUnsupported` entirely (see D1 section).
-7. **Exact names.** `defineTool` (which may suggest a handler is included; `defineToolContract` is a candidate), `implementTool`, the registration function and hook names.
+D1–D15 are settled (D8–D15 validated together by the user on 2026-11-10). Audit of the docs and exchanges: only the items below remain.
 
-### Still open from pass 1
+**A. User questions, in this order for the oral review**
 
-Typed error maps in contracts, toolset prefixes (now moot unless D3 is reversed), consumer packaging, and in-band envelope vs `outputSchema` (folded into the errors proposal).
+1. **Interruptions and abort.**
+   - **Recommendation:** drop `cancelled`. When the agent aborts or the page unloads, the browser has already rejected the caller and ignores late results, so the SDK only propagates the `signal` to the handler.
+   - **Keep one kind, `interrupted`,** for "this registration ended during the call" (`unregister()`, removal by `update()`, unmount), when the handler then stops or throws. Message: "removed while running; may have partially run; re-discover tools and check state before retrying".
+   - **A handler that completes anyway** returns its real result.
+   - **Nothing is promised** about the absence of side effects after an abort.
+2. **`handlerCalled` and retry.**
+   - **Recommendation:** add `handlerCalled: boolean` to every failure. It is a fact the SDK knows exactly.
+   - **Remove `retryable`.** The SDK cannot know whether a retry is safe, and the author can say so in the `ToolError` message.
+   - Only `input_invalid` (and validator crashes, `internal` with `handlerCalled: false`) may say "did not run".
+3. **Envelope and `outputSchema`.**
+   - **Recommendation:** keep the in-band envelope `{ isError: true, error: { kind, message, ... } }` with the five kinds: `input_invalid`, `tool_error`, `internal`, `output_invalid`, `interrupted`.
+   - **Advertise `outputSchema`** as `anyOf [declared output, envelope]` when an output is declared. Advertise none otherwise.
+   - **Consumer side:** a result is recognized as a failure only if `isError === true` and the kind is known.
+   - **The platform does not enforce it** (polyfill ignores `outputSchema`; see research addendum). This is the most agent-implementer-dependent choice, so it is worth a short confirmation.
+4. **Public names (DX-visible).** Recommendation:
+   - definition and implementation: `defineTool`, `implementTool`;
+   - publisher core: `registerTools`, and publisher React: `useRegisterTools(tools, options?)`;
+   - consumer core: `createToolCatalog`, and consumer React: `useToolCatalog({ fromOrigins })`.
+
+   This avoids the confusing pair `useWebMCPTools` / `useTools`, where one publishes and the other discovers. `defineTool` stays despite the "no handler" nuance: it is the most guessable name, and the docs say "definition = contract".
+5. **License** (non-blocking for the next pass). Not chosen. Needed before any public use beyond review.
+
+**B. Details Opus settles directly (recorded here, no user question)**
+
+- **Strict mode:** `ifUnsupported` is removed (D1). The state says `"unsupported"`, and an app that requires WebMCP checks it itself.
+- **Developer hook:** `onToolError(error, { toolName, kind, handlerCalled })`, as a `registerTools` option. It receives originals (defects, output issues, unserializable `data`, failing validators), never shows them to agents, and its own throws are swallowed and logged.
+- **Definition-time checks:** `defineTool` throws `WebMCPError("invalid_definition")` for an invalid name (WebMCP charset, 1–128) or an empty description. These are programming errors. Registration failures are per-tool states in the snapshot (D12), never throws.
+- **Generic execution layer:** validation and failure mapping live in a browser-free executor used by the registration code. Whether it is exported (for tests) is decided while writing the types.
+- **Formatting:** issue paths are readable (`items[0].sku`, `(root)`), with at most 20 issues plus an "N more" count. JSON Schema target `draft-2020-12`, converted lazily and cached (D14).
+- **Annotations:** the WebMCP hint names (`readOnlyHint`, `consequentialHint`, `untrustedContentHint`, `debugging`) are used as-is in `defineTool`.
+- **`exposedTo`** is a per-registration option. Tools needing different exposure use separate registrations.
+- **Packaging:** one package with subpaths `webmcp-sdk` (core: publisher + consumer), `webmcp-sdk/react` (both hooks). The consumer is marked experimental. Not published.
+
+**C. Deferred (not v0, no decision needed now)**
+
+Typed error maps in contracts, an SDK context mechanism (D5 reversal criterion), a validation-formatting hook (D8 constraints), `toolset` prefixes (moot with D3), bindings other than React, `useTool(contract)` for typed consumer entries in React.
+
+### Resume point after the review
+
+Once A.1–A.4 are settled (A.5 can wait), the next pass is:
+
+1. **Types/interfaces** for the whole surface (core publisher, core consumer, React publisher and consumer hooks), with TODO implementations that throw `NotImplementedError`. Type tests: positive and negative.
+2. **README rewritten as general library documentation**, not a design report. It covers plain TypeScript **and** the React bindings, with compiling examples checked by `pnpm check`, and DX reviewed.
+3. **React is the only binding** in this pass. The core stays framework-agnostic, and other frameworks come later.
+
+No runtime implementation until that pass is reviewed.
 
 ## React list changes (D11)
 
