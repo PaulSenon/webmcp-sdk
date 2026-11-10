@@ -18,6 +18,7 @@ Status: design prototype, 2026-11-06. This file records **why** the API looks th
 | D7 | **A user declining a confirmation is a normal business result**, declared by the tool author in the tool's own output schema (`status: "declined"` is only an example; no status name is imposed). There is no SDK mechanism for it. The SDK validates that output like any other. | user, 2026-11-10 |
 | D8 | **No validation-formatting hook in v0.** Input-validation failures use one fixed SDK format. A future hook, if a real case appears, must follow the constraints below. Details in [Validation formatting](#validation-formatting-d8). | design arbitration (Opus), 2026-11-10, after a question from the user |
 | D9 | **Output schema is optional. When declared, the SDK always validates the output, with no off flag.** Without one, the SDK only enforces JSON serializability. `output_invalid` means "ran, result withheld", not "execution failed". Details in [Output validation](#output-validation-d9). | design arbitration (Opus) on the user's stated preference, 2026-11-10 |
+| D10 | **Author-transmitted failures are thrown as `ToolError` (or a subclass), recognized by a brand, with a field whitelist: `message` required, `code` and `data` optional.** Every other throw is a defect: the agent gets a generic message, the details go to the developer hook. No Result return type. Details in [Handler errors](#handler-errors-d10). | design arbitration (Opus) on the user's principle, 2026-11-10 |
 | D3 | **No `defineToolset` unless it earns its place.** Applying the user's rule ("drop it if it is just an array"), the analysis below finds no real utility, so it is dropped. Registration takes a plain array of implementations. | user rule + analysis below |
 
 **Why `defineToolset` is dropped (D3).** Candidate benefits, each checked:
@@ -35,7 +36,7 @@ So it would be pure ceremony today. Reversal criterion: a group-level option tha
 
 ### Proposed, awaiting discussion (in this order)
 
-1. **Errors.** Full proposal in [Errors: proposal under discussion](#errors-proposal-under-discussion). In discussion since 2026-11-10. Declined confirmation is settled (D7). Done so far: D7 (declined), D8 (no formatting hook), D9 (output validation). Next: SDK-generated errors vs errors the author transmits, then the `handlerCalled`/retry guarantees and the envelope.
+1. **Errors.** Full proposal in [Errors: proposal under discussion](#errors-proposal-under-discussion). In discussion since 2026-11-10. Declined confirmation is settled (D7). Done so far: D7 (declined), D8 (no formatting hook), D9 (output validation), D10 (handler errors). Next: the `handlerCalled`/retry guarantees (including abort/interrupted), then the envelope.
 2. **JSON Schema capability required at definition time** (vs only at WebMCP registration). Recommendation: at definition. Describing a tool to an LLM is intrinsic to a tool, and type errors stay next to the schema. WebMCP-only constraints (name charset, dialect, envelope, annotation mapping, serialization) move to the registration step.
 3. **Context.** Superseded by the user requirement of 2026-11-09 (R1). Analysis in [Context: requirement and analysis](#context-requirement-and-analysis-2026-11-09). It can be discussed independently of the errors review.
 4. **Generic execution layer.** Recommendation: validation and failure mapping live in a generic, browser-free executor (illustrative `runTool(impl, rawInput, { signal })`) used by the WebMCP binding. `implementTool` stays a pure typed handler, callable directly in tests.
@@ -107,6 +108,66 @@ The SDK formats paths as readable strings (`items[0].sku`, with `"(root)"` when 
    - **Framing:** "The tool ran, but its result did not match its declared output and was withheld. The action may have been performed. Check the current state before retrying. Retrying the same call may repeat the action and is unlikely to fix this."
    - **Facts:** `handlerCalled: true`. It is not "execution failed", and the agent is not invited to fix a page bug by retrying.
    - **Issues** stay out of the agent response (the agent cannot fix them, and messages may echo internal values). They go to the developer hook.
+
+### Handler errors (D10)
+
+**Principle (user):** an unexpected exception (a defect) tells the agent something went wrong, with no internal details. Only errors that are useful to the agent are exposed, and only explicitly.
+
+**Mechanisms compared:**
+
+| mechanism | verdict |
+| --------- | ------- |
+| **Result return** (`return fail(...)` / `{ ok: false }`) | ❌ The handler's return type becomes `Output \| Failure`, which pollutes output-schema typing. The SDK must tell a failure from a legitimate output (it needs a brand anyway). Failures from nested services must be threaded back up by hand. Expected business outcomes already go in the output (D7). |
+| **Throw a dedicated class** `ToolError` | ✅ Idiomatic JS. Works from any depth (a service layer can throw it). Leaves the return type untouched. |
+| **Subclasses of `ToolError`** | ✅ The extension point for custom errors, reusable across tools, with no extra API. |
+| a factory `toolError(...)` | redundant with the class: one way only |
+
+**Shape:**
+
+```ts nocheck
+new ToolError(message: string, options?: { code?: string; data?: JsonValue; cause?: unknown })
+```
+
+- **`message`** is **required** and must be non-empty. It is the only text that tells the agent what happened and what to do next. Making it required is what "the signature guides the author" means here.
+- **`code`** is optional. It is a stable identifier for programmatic consumers (`bindContract`, logs). Agents read the message, so forcing a code would be ceremony. When absent, it is omitted from the response (no default value).
+- **`data`** is optional, typed `JsonValue`, for structured facts (e.g. `{ left: 2 }`). If it fails to serialize at runtime, it is dropped, the message and code are still sent, and the problem is reported to the developer hook. A business error never degrades into `internal`.
+- **`cause`** is local only, passed to the developer hook and never sent.
+- **No `retryable`.** That question belongs to the next step (`handlerCalled`/retry guarantees).
+
+**Whitelist, not spread.** The agent response is built only from `message`, `code` and `data`. It never includes `name`, `stack`, `cause`, other own or inherited properties, subclass fields, or `toString()`. A subclass that wants something sent must put it in `data`.
+
+**Identification:** a brand rather than bare `instanceof`. `ToolError.prototype[Symbol.for("webmcp-sdk.tool-error")] = true`, checked by an exported `isToolError(e)`. It survives duplicated package copies (two SDK versions in one bundle), where `instanceof` fails. Realms are a lesser concern, because handler and SDK run in the same page realm, but the brand covers them too. The cost is one symbol and one function.
+
+**Scope:** `ToolError` is honoured when thrown from the handler, including code it calls. A throw from a schema validator stays `internal` with `handlerCalled: false` (the errors proposal). Non-`Error` throws (strings, objects) are defects. Throws caused by abort or interruption are handled in a later step.
+
+**Anti-leak guarantee:**
+
+- **What is guaranteed:** nothing reaches the agent *implicitly*. That covers defect messages, stacks, causes and extra fields.
+- **What is not guaranteed:** what the author writes *explicitly* into `message` or `data` is sent as-is, and the SDK does not scan for secrets.
+- **Documented pitfall:** `throw new ToolError(apiError.message)` forwards a third-party message verbatim.
+
+**Examples:**
+
+```ts nocheck
+// minimal
+if (!user.canExport) throw new ToolError("Exporting requires an admin. Ask the user to sign in as an admin.");
+// agent: { kind: "tool_error", handlerCalled: true, message: "Exporting requires an admin. …" }
+
+// with code + data
+throw new ToolError(`Only ${left} left. Ask for at most ${left}.`, { code: "OUT_OF_STOCK", data: { left } });
+
+// custom, reusable subclass: extra fields are local unless put in data
+class OutOfStockError extends ToolError {
+  constructor(readonly sku: string, left: number) {
+    super(`Only ${left} left for ${sku}. Ask for at most ${left}.`, { code: "OUT_OF_STOCK", data: { sku, left } });
+  }
+}
+
+// defect: anything else
+throw new Error("db connection reset");
+// agent: { kind: "internal", handlerCalled: true, message: "The tool failed unexpectedly. It may have partially run; check the current state before retrying." }
+// developer hook: the original Error, with stack and cause
+```
 
 ### Proposed taxonomy: five kinds, each mapped to an agent action
 
