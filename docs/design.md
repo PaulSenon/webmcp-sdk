@@ -19,6 +19,7 @@ Status: design prototype, 2026-11-06. This file records **why** the API looks th
 | D8 | **No validation-formatting hook in v0.** Input-validation failures use one fixed SDK format. A future hook, if a real case appears, must follow the constraints below. Details in [Validation formatting](#validation-formatting-d8). | design arbitration (Opus), 2026-11-10, after a question from the user |
 | D9 | **Output schema is optional. When declared, the SDK always validates the output, with no off flag.** Without one, the SDK only enforces JSON serializability. `output_invalid` means "ran, result withheld", not "execution failed". Details in [Output validation](#output-validation-d9). | design arbitration (Opus) on the user's stated preference, 2026-11-10 |
 | D10 | **Author-transmitted failures are thrown as `ToolError` (or a subclass), recognized by a brand, with a field whitelist: `message` required, `code` and `data` optional.** Every other throw is a defect: the agent gets a generic message, the details go to the developer hook. No Result return type. Details in [Handler errors](#handler-errors-d10). | design arbitration (Opus) on the user's principle, 2026-11-10 |
+| D11 | **React: one registration per tool, keyed by definition identity.** When the list changes, only added or removed tools are registered or unregistered. Unchanged tools are never touched. There is no group re-registration and no group rollback. Details in [React list changes](#react-list-changes-d11). | design arbitration (Opus) on the user's "keep it simplest", 2026-11-10 |
 | D3 | **No `defineToolset` unless it earns its place.** Applying the user's rule ("drop it if it is just an array"), the analysis below finds no real utility, so it is dropped. Registration takes a plain array of implementations. | user rule + analysis below |
 
 **Why `defineToolset` is dropped (D3).** Candidate benefits, each checked:
@@ -40,13 +41,37 @@ So it would be pure ceremony today. Reversal criterion: a group-level option tha
 2. **JSON Schema capability required at definition time** (vs only at WebMCP registration). Recommendation: at definition. Describing a tool to an LLM is intrinsic to a tool, and type errors stay next to the schema. WebMCP-only constraints (name charset, dialect, envelope, annotation mapping, serialization) move to the registration step.
 3. **Context.** Superseded by the user requirement of 2026-11-09 (R1). Analysis in [Context: requirement and analysis](#context-requirement-and-analysis-2026-11-09). It can be discussed independently of the errors review.
 4. **Generic execution layer.** Recommendation: validation and failure mapping live in a generic, browser-free executor (illustrative `runTool(impl, rawInput, { signal })`) used by the WebMCP binding. `implementTool` stays a pure typed handler, callable directly in tests.
-5. **React binding details.** Recommendation: re-register only when the list of **definitions** changes (identity, element-wise) or options change. Handlers are refreshed in a ref after commit, and a call between render and commit sees the previous handler (documented). Dev warning on churn from inline definitions. Sub-choice: whole-set re-registration vs per-tool diff.
+5. **React binding details.** Mostly settled by D11 (list changes). Remaining: hook naming and the shape of the returned state.
 6. **Strict mode removal.** Recommendation: remove `ifUnsupported` entirely (see D1 section).
 7. **Exact names.** `defineTool` (which may suggest a handler is included; `defineToolContract` is a candidate), `implementTool`, the registration function and hook names.
 
 ### Still open from pass 1
 
 Typed error maps in contracts, toolset prefixes (now moot unless D3 is reversed), consumer packaging, and in-band envelope vs `outputSchema` (folded into the errors proposal).
+
+## React list changes (D11)
+
+Settled so far: the hook takes an array of implementations. It registers on mount, refreshes handlers on re-render without re-registering when the definitions are the same, and cleans up on unmount. The question was what happens when the list changes: re-register the group, or diff per tool. The user asked for the simplest option.
+
+**Decision: per-tool registration, keyed by definition identity.** This is the simplest robust option, not an extra layer. WebMCP's primitive is already one `registerTool` per tool, each with its own `AbortSignal`. Group atomicity (rollback when one tool fails) is the extra machinery. The hook keeps a map from definition to its controller and its latest handler. A list change is a set difference, applied in one effect after commit: abort the removed tools first, then register the added ones.
+
+**Observable effects:**
+
+| situation | what happens |
+| --------- | ------------ |
+| re-render, same definitions (implementation objects recreated, D6) | nothing is registered or unregistered; handlers refreshed after commit |
+| a tool is added or removed | only that tool is registered or unregistered; unchanged tools never disappear and cause no notification from the SDK |
+| same name, new definition object (e.g. schema changed) | old one aborted, new one registered; the per-name queue orders them; a short gap **for that tool only**, which is correct because its descriptor changed |
+| a call in flight on an unchanged tool | unaffected; the call keeps the handler it started with |
+| a call in flight on a removed tool | its handler `signal` aborts (outcome covered at the `interrupted` step) |
+| one tool fails to register (e.g. `duplicate_name`) | the others stay registered; the hook reports the error naming that tool; no rollback |
+| StrictMode mount → cleanup → mount | everything aborted, then registered again; the per-name queue prevents a spurious `duplicate_name` (dev only) |
+| `enabled: false` / unmount | all tools of this hook are unregistered |
+| the same definition twice, or two definitions with one name, in a list | compile-time error for literal names; at runtime the second is reported as a duplicate |
+
+**Rejected: group re-registration on any change.** It is no simpler to write, but its effects are worse: unchanged tools vanish briefly, in-flight calls on unrelated tools are interrupted, and every list change produces notifications for tools that did not change.
+
+Scope: this applies to the React publisher binding only. Whether core `registerTools()` outside React should also be per-tool without rollback (instead of pass 1's all-or-nothing) is a separate point, not decided. Per-tool would keep the two consistent.
 
 ## Errors: proposal under discussion
 
