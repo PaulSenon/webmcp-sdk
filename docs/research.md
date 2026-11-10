@@ -420,3 +420,8 @@ Every URL below was fetched on **2026-11-06**. Version/date evidence is recorded
 - MCP raw schema fetched: https://raw.githubusercontent.com/modelcontextprotocol/modelcontextprotocol/main/schema/2026-07-28/schema.ts
 - MCP pinned schema: https://github.com/modelcontextprotocol/modelcontextprotocol/blob/3c4d91b7e832d9b74338d56eed03403ccc662123/schema/2026-07-28/schema.ts
 - Exact versions for all mentioned npm packages were checked using `https://registry.npmjs.org/<package>` and `/latest`; links to relevant records also appear inline.
+
+## Addendum, 2026-11-10 (output validation re-check)
+
+- **EXPERIMENTAL:** The WebMCP draft is now "Draft Community Group Report, **9 November 2026**" (repo `main` at `f2f2ae2`, 2026-11-09, "Fire `toolactivated` event after invoking execute (#371)"). `ModelContextTool` still declares `object outputSchema`. Quote: "Tool output is expected to conform to the provided schema, and agents may reject outputs that do not validate." No user-agent output validation is defined. An unserializable result maps to `OperationError`. <https://webmachinelearning.github.io/webmcp/>
+- **EXPERIMENTAL:** `webmachinelearning/webmcp-polyfill` `main` at `042327b` (2026-11-09), package `@w3c/webmcp-polyfill@0.1.0` (npm latest 0.1.0): `grep -rn outputSchema` over the source and tests returns **no matches**. The README targets `webmcp-types@0.1.9` and does not mention `outputSchema`. Inference (not verified at runtime): the polyfill neither stores nor exposes output schemas.

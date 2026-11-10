@@ -17,6 +17,7 @@ Status: design prototype, 2026-11-06. This file records **why** the API looks th
 | D6 | **One factory per implementation, taught by docs and examples (no API enforcement).** A tool that needs data is a function of exactly that data (`applyFilterTool({ dashboard })`). Composition happens in the array at the registration site. A shared factory only forwards to per-tool factories. Factories topic closed. | user, 2026-11-10 |
 | D7 | **A user declining a confirmation is a normal business result**, declared by the tool author in the tool's own output schema (`status: "declined"` is only an example; no status name is imposed). There is no SDK mechanism for it. The SDK validates that output like any other. | user, 2026-11-10 |
 | D8 | **No validation-formatting hook in v0.** Input-validation failures use one fixed SDK format. A future hook, if a real case appears, must follow the constraints below. Details in [Validation formatting](#validation-formatting-d8). | design arbitration (Opus), 2026-11-10, after a question from the user |
+| D9 | **Output schema is optional. When declared, the SDK always validates the output, with no off flag.** Without one, the SDK only enforces JSON serializability. `output_invalid` means "ran, result withheld", not "execution failed". Details in [Output validation](#output-validation-d9). | design arbitration (Opus) on the user's stated preference, 2026-11-10 |
 | D3 | **No `defineToolset` unless it earns its place.** Applying the user's rule ("drop it if it is just an array"), the analysis below finds no real utility, so it is dropped. Registration takes a plain array of implementations. | user rule + analysis below |
 
 **Why `defineToolset` is dropped (D3).** Candidate benefits, each checked:
@@ -34,7 +35,7 @@ So it would be pure ceremony today. Reversal criterion: a group-level option tha
 
 ### Proposed, awaiting discussion (in this order)
 
-1. **Errors.** Full proposal in [Errors: proposal under discussion](#errors-proposal-under-discussion). In discussion since 2026-11-10. Declined confirmation is settled (D7). Next: SDK-generated errors vs errors the author transmits, then the `handlerCalled`/retry guarantees and the envelope.
+1. **Errors.** Full proposal in [Errors: proposal under discussion](#errors-proposal-under-discussion). In discussion since 2026-11-10. Declined confirmation is settled (D7). Done so far: D7 (declined), D8 (no formatting hook), D9 (output validation). Next: SDK-generated errors vs errors the author transmits, then the `handlerCalled`/retry guarantees and the envelope.
 2. **JSON Schema capability required at definition time** (vs only at WebMCP registration). Recommendation: at definition. Describing a tool to an LLM is intrinsic to a tool, and type errors stay next to the schema. WebMCP-only constraints (name charset, dialect, envelope, annotation mapping, serialization) move to the registration step.
 3. **Context.** Superseded by the user requirement of 2026-11-09 (R1). Analysis in [Context: requirement and analysis](#context-requirement-and-analysis-2026-11-09). It can be discussed independently of the errors review.
 4. **Generic execution layer.** Recommendation: validation and failure mapping live in a generic, browser-free executor (illustrative `runTool(impl, rawInput, { signal })`) used by the WebMCP binding. `implementTool` stays a pure typed handler, callable directly in tests.
@@ -80,6 +81,32 @@ The SDK formats paths as readable strings (`items[0].sku`, with `"(root)"` when 
 - An empty result still reports `input_invalid`, with a generic issue.
 - If it throws, the SDK falls back to the default format and reports the hook error through `onToolError`. The agent still receives `input_invalid`.
 - **Scope is input only.** Output-validation issues are not sent to the agent under the current proposal (output validation is still to be discussed).
+
+### Output validation (D9)
+
+**Platform facts, re-checked 2026-11-10:**
+
+- **Draft:** the WebMCP draft (Draft CG Report, **9 November 2026**, latest commit `f2f2ae2`) still has `outputSchema` in `ModelContextTool`. Its wording: "Tool output is expected to conform to the provided schema, and agents may reject outputs that do not validate."
+- **Browsers do not validate output.** The only output failure the draft defines is an unserializable result (JSON serialization), which reaches the caller as an opaque `OperationError`.
+- **Polyfill:** the official `@w3c/webmcp-polyfill` (0.1.0, `main` at `042327b`, 2026-11-09) never references `outputSchema` in its source or tests. Native exposure of an output schema therefore cannot be assumed everywhere.
+
+**Decision:**
+
+1. **`output` is optional.** Declaring it means "check this", so the SDK validates every result (awaiting async validators). There is no `validateOutput: false`. Reasons:
+   - The schema is a promise advertised to the agent. A mode where the advertised schema may be violated undermines that promise.
+   - Transforms (e.g. `Date → string`) **require** running the validator to produce the wire value, so "skip validation" is not even well defined.
+   - The cost is negligible for tool-sized results.
+   - Not wanting a check means not declaring the schema.
+2. **Internal validation is independent of native exposure.** The SDK validates whenever `output` is declared, whether or not the platform or polyfill shows `outputSchema` to agents. *Whether* and *how* the descriptor carries `outputSchema` (and the failure-envelope `anyOf`) is decided at the envelope step, which has not been discussed yet.
+3. **Value of a browser-side check:** it guards the page-to-agent contract against drift between app types and the advertised shape, unchecked casts of API JSON, and plain bugs. It **complements, and does not replace,** server-side validation and authorization. The server protects its data, while the page check protects what the agent is told.
+4. **Without an output schema:**
+   - **Types:** the handler returns `JsonValue | void` (compile-time guard only; a cast can bypass it), and consumers see `unknown`.
+   - **Runtime:** no validation. `void`/`undefined` is sent as `null`. The SDK serializes the result to JSON itself, so a failure (cycles, `bigint`) becomes a clear `output_invalid` instead of the browser's opaque `OperationError`.
+   - **Known gap:** `JSON.stringify` is lossy without failing (it drops `undefined` and functions in objects, and turns `Date` into a string via `toJSON`). Declare a schema when the shape matters.
+5. **What `output_invalid` tells the agent:**
+   - **Framing:** "The tool ran, but its result did not match its declared output and was withheld. The action may have been performed. Check the current state before retrying. Retrying the same call may repeat the action and is unlikely to fix this."
+   - **Facts:** `handlerCalled: true`. It is not "execution failed", and the agent is not invited to fix a page bug by retrying.
+   - **Issues** stay out of the agent response (the agent cannot fix them, and messages may echo internal values). They go to the developer hook.
 
 ### Proposed taxonomy: five kinds, each mapped to an agent action
 
