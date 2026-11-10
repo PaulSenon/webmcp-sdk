@@ -16,6 +16,7 @@ Status: design prototype, 2026-11-06. This file records **why** the API looks th
 | D5 | **No SDK context mechanism in v0: dependencies are passed by plain factories.** Handler stays `(input, { signal })` so a `context` property can be added later without breaking. | user, 2026-11-09 |
 | D6 | **One factory per implementation, taught by docs and examples (no API enforcement).** A tool that needs data is a function of exactly that data (`applyFilterTool({ dashboard })`). Composition happens in the array at the registration site. A shared factory only forwards to per-tool factories. Factories topic closed. | user, 2026-11-10 |
 | D7 | **A user declining a confirmation is a normal business result**, declared by the tool author in the tool's own output schema (`status: "declined"` is only an example; no status name is imposed). There is no SDK mechanism for it. The SDK validates that output like any other. | user, 2026-11-10 |
+| D8 | **No validation-formatting hook in v0.** Input-validation failures use one fixed SDK format. A future hook, if a real case appears, must follow the constraints below. Details in [Validation formatting](#validation-formatting-d8). | design arbitration (Opus), 2026-11-10, after a question from the user |
 | D3 | **No `defineToolset` unless it earns its place.** Applying the user's rule ("drop it if it is just an array"), the analysis below finds no real utility, so it is dropped. Registration takes a plain array of implementations. | user rule + analysis below |
 
 **Why `defineToolset` is dropped (D3).** Candidate benefits, each checked:
@@ -60,6 +61,25 @@ Goal (user): the SDK handles input/output validation and every failure in its ow
 - Messages may be localized and are authored by the schema author. The SDK passes them through.
 
 The SDK formats paths as readable strings (`items[0].sku`, with `"(root)"` when absent), caps the number of issues (e.g. 20, with an "N more" count), and never echoes the input back (the agent already has it).
+
+### Validation formatting (D8)
+
+**How Standard Schema unifies errors.** Whatever the library, a failed `validate` returns issues with a `message` and an optional `path`. The current signature is `validate(value, options?: { libraryOptions?: Record<string, unknown> })`, checked against `@standard-schema/spec@1.1.0` and standardschema.dev on 2026-11-10. The SDK can therefore format failures from any library itself, with no per-library adapter. `libraryOptions` is vendor-specific and has no standardized keys, so the SDK does not pass anything through it in v0.
+
+**Decision: no formatting hook in v0.**
+
+- **Messages are already customizable where they belong:** in the schema (`z.string().min(1, "…")`, Valibot or ArkType messages), per tool and per library.
+- **Localization is library configuration** (for example Zod locales), not an SDK concern.
+- **What the SDK owns is fixed and uniform:** readable paths (`items[0].sku`, `(root)`), a cap on the number of issues, and the "the tool did not run" framing. A hook would make that uniform part per-app variable for little gain.
+- **The only real case found:** a schema shared between a UI form and a tool, whose UI-oriented messages (another language, end-user wording) are worse for the agent. It is weak, because LLMs read those messages fine. The workaround is a tool-specific schema or message.
+- **Cost of a hook:** an option in core and React, ordering and failure semantics, tests, and documentation. That is surface without proven value.
+
+**If a hook is ever added (non-breaking registration option), it must respect these constraints:**
+
+- It may rewrite issue **messages and paths only**. It can never turn a failure into a success, drop the failure, or change `handlerCalled: false`.
+- An empty result still reports `input_invalid`, with a generic issue.
+- If it throws, the SDK falls back to the default format and reports the hook error through `onToolError`. The agent still receives `input_invalid`.
+- **Scope is input only.** Output-validation issues are not sent to the agent under the current proposal (output validation is still to be discussed).
 
 ### Proposed taxonomy: five kinds, each mapped to an agent action
 
