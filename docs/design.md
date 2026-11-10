@@ -45,7 +45,7 @@ D1–D15 are settled (D8–D15 validated together by the user on 2026-11-10). Au
 
 **A. User questions, in this order for the oral review**
 
-1. **Interruptions and abort.**
+1. **Interruptions and abort.** *(Revised: see the "Challenge" analysis below. Current recommendation: no abort on removal, no `interrupted`.)*
    - **Recommendation:** drop `cancelled`. When the agent aborts or the page unloads, the browser has already rejected the caller and ignores late results, so the SDK only propagates the `signal` to the handler.
    - **Keep one kind, `interrupted`,** for "this registration ended during the call" (`unregister()`, removal by `update()`, unmount), when the handler then stops or throws. Message: "removed while running; may have partially run; re-discover tools and check state before retrying".
    - **A handler that completes anyway** returns its real result.
@@ -81,6 +81,43 @@ D1–D15 are settled (D8–D15 validated together by the user on 2026-11-10). Au
 **C. Deferred (not v0, no decision needed now)**
 
 Typed error maps in contracts, an SDK context mechanism (D5 reversal criterion), a validation-formatting hook (D8 constraints), `toolset` prefixes (moot with D3), bindings other than React, `useTool(contract)` for typed consumer entries in React.
+
+### Challenge (user, 2026-11-10): is `revision`/`stale` needed? Analysis and recommendation (not decided)
+
+**Two different moments.**
+
+**1. Before the handler starts** (consumer call → `executeTool` → provider). The user's position: a tool that is absent at call time gets a specific error, and a replaced tool validates the arguments against its *current* schema. An incompatible call then fails naturally with `input_invalid`, and the agent adapts once it receives the new catalog. No extra mechanism.
+
+Risks examined:
+
+| risk | does `revision` help? |
+| ---- | --------------------- |
+| new schema accepts the same arguments with a different meaning (`amount` in cents becomes euros; `id` of a project becomes `id` of an org) | yes, if the descriptor changed. This is the only real gain |
+| same schema, different action (identical descriptor) | no: undetectable by any descriptor check |
+| refreshed catalog, but the LLM still holds the old tool list | partly: `stale` forces a re-plan. Without it, only incompatible arguments are caught. It is really a consumer-glue problem (re-send tools on `subscribe`) |
+| dynamic schemas that change often for benign reasons (an `enum` of currently available filters, loaded data) | **harmful:** every benign change makes in-hand handles `stale` and forces re-plans. These would be frequent false positives |
+| a cheap JSON Schema comparison instead of a hash | same false-positive problem; proves nothing about semantics |
+
+**Recommendation: drop `revision` and `stale` from v0. Keep the user's minimal model:**
+
+- **Absent tool:** the consumer returns `not_found` (nothing executed). This covers both the SDK-side check against the latest snapshot and native `NotFoundError`.
+- **Replaced tool:** validation against the current schema decides (`input_invalid` from an SDK provider). For known contracts, `find(contract)` also validates input locally and output on return.
+- **Convention, not mechanism (documented for publishers):** *a name is a contract*. Changing the meaning of a tool means changing its name (`transfer_money_v2`). Refining it (new enum values, better description) keeps the name.
+- **Consumer glue (documented, shown in examples):** on `subscribe`, re-send the tool list to the LLM.
+- **Ids stay `<sourceKey>__<name>`.** `revision` can be re-added later as an *opt-in* `call(id, input, { expect })` without breaking anything.
+
+**2. A call already running when its tool is unregistered or replaced** (the original question).
+
+- **Capture at start.** A call keeps the definition and handler it started with: input was validated with that schema, the handler runs, and the output is validated with **that** definition's output schema. Nothing is swapped mid-call. This is already implied by D12.
+- **Recommendation: removal does *not* abort running calls.** Registration lifetime and execution lifetime are separate, as in the draft, where removing a tool does not cancel a running callback. Aborting on removal would *create* partial effects: a re-render that replaces the definition, or a route change, would cut a purchase half-way through an action the agent asked for. Finishing is the truthful default.
+- **The handler's `signal` is only the native execution signal:** the agent or browser cancelled, or the page is unloading. The registration's own `AbortController` (D12) removes the tool and never touches running calls.
+- **Outcome:**
+  - **The handler completes:** its real result (validated) is returned.
+  - **It throws:** normal mapping (`tool_error` / `internal`).
+  - **After a native abort:** the browser has already rejected the caller and ignores late results, so the SDK only reports to `onToolError`.
+- **No rollback is ever promised.** If a handler needs to stop when its component goes away, it uses its own lifecycle (an `AbortController` captured by the factory). The SDK does not decide that for it.
+- **Consequence for the taxonomy:** `cancelled` and `interrupted` both disappear. That leaves **four kinds**: `input_invalid` (`handlerCalled: false`), `tool_error`, `internal`, `output_invalid`. The consumer adds `not_found` on its side. This supersedes A.1 above, if the user agrees.
+- **Implementation-pass check:** the draft says removal does not cancel the callback. That the late result is still *delivered* to the caller is implied but must be verified against the spec text and the polyfill before the README states it.
 
 ### Resume point after the review
 
