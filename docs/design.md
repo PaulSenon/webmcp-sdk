@@ -21,7 +21,8 @@ Status: design prototype, 2026-11-06. This file records **why** the API looks th
 | D10 | **Author-transmitted failures are thrown as `ToolError` (or a subclass), recognized by a brand, with a field whitelist: `message` required, `code` and `data` optional.** Every other throw is a defect: the agent gets a generic message, the details go to the developer hook. No Result return type. Details in [Handler errors](#handler-errors-d10). | design arbitration (Opus) on the user's principle, 2026-11-10 |
 | D11 | **React: one registration per tool, keyed by definition identity.** When the list changes, only added or removed tools are registered or unregistered. Unchanged tools are never touched. There is no group re-registration and no group rollback. Details in [React list changes](#react-list-changes-d11). | design arbitration (Opus) on the user's "keep it simplest", 2026-11-10 |
 | D12 | **Framework-agnostic core with one registration primitive: `registerTools(tools)` returns a `ToolRegistration` handle with `update(tools)` (explicit reconcile), `unregister()`, `subscribe`/`getSnapshot` and `settled()`.** Tools are matched by definition identity, never by array identity, and the core never observes mutations. Framework bindings only call `update`/`unregister` from their own effect system. Details in [Core registration and bindings](#core-registration-and-bindings-d12). | design arbitration (Opus) on the user's TanStack-style direction, 2026-11-10 |
-| D13 | **Consumer ids: one stable string per (source, name), always prefixed from the start: `<sourceKey>__<name>`.** `sourceKey` is `self`, or `f<n>` assigned once per source (WindowProxy + origin) and never reused. Re-registering under the same name in the same source keeps the id. A separate `revision` lets snapshot-bound calls refuse a changed descriptor. Discovery API stays close to native (`getTools({ fromOrigins })` + change subscription + `call`). Replaces the pass-1 consumer identity model. Details in [Consumer ids and discovery](#consumer-ids-and-discovery-d13). | design arbitration (Opus) on user feedback, 2026-11-10; to present to the user |
+| D13 | **Consumer ids: one stable string per (source, name), always prefixed from the start: `<sourceKey>__<name>`.** `sourceKey` is `self`, or `f<n>` assigned once per source (WindowProxy + origin) and never reused. Re-registering under the same name in the same source keeps the id. A separate `revision` lets snapshot-bound calls refuse a changed descriptor. Discovery API stays close to native (`getTools({ fromOrigins })` + change subscription + `call`). Replaces the pass-1 consumer identity model. Details in [Consumer ids and discovery](#consumer-ids-and-discovery-d13). | design arbitration (Opus) on user feedback, 2026-11-10. **Consumer topic still in discussion:** the user has more input; this is not a validated need |
+| D14 | **Schemas: the SDK requires both Standard Schema capabilities from entry (`defineTool`): validation (`~standard.validate`) and JSON Schema conversion (`~standard.jsonSchema`).** Libraries plug in through the standard interface, with a documented adapter where conversion is not native (e.g. Valibot `toStandardJsonSchema`). The SDK keeps the **original validator** and runs it through the Standard Schema API. It **never rebuilds a validator from JSON Schema**: JSON Schema is only for description and protocol transfer. | user (considered settled), 2026-11-10 |
 | D3 | **No `defineToolset` unless it earns its place.** Applying the user's rule ("drop it if it is just an array"), the analysis below finds no real utility, so it is dropped. Registration takes a plain array of implementations. | user rule + analysis below |
 
 **Why `defineToolset` is dropped (D3).** Candidate benefits, each checked:
@@ -40,7 +41,7 @@ So it would be pure ceremony today. Reversal criterion: a group-level option tha
 ### Proposed, awaiting discussion (in this order)
 
 1. **Errors.** Full proposal in [Errors: proposal under discussion](#errors-proposal-under-discussion). In discussion since 2026-11-10. Declined confirmation is settled (D7). Done so far: D7 (declined), D8 (no formatting hook), D9 (output validation), D10 (handler errors). Next: the `handlerCalled`/retry guarantees (including abort/interrupted), then the envelope.
-2. **JSON Schema capability required at definition time** (vs only at WebMCP registration). Recommendation: at definition. Describing a tool to an LLM is intrinsic to a tool, and type errors stay next to the schema. WebMCP-only constraints (name charset, dialect, envelope, annotation mapping, serialization) move to the registration step.
+2. ~~JSON Schema capability at definition time~~ Decided (D14). Detail (Opus): the capability is required **at the type level** in `defineTool`, while conversion **runs lazily** at registration. The result is cached per definition and target dialect, and a failure is reported for that tool only (D11/D12 per-tool semantics). `toJSONSchema(definition)` runs it eagerly in tests/CI. Agent-side inputs are validated by the original validator, never by the JSON Schema.
 3. **Context.** Superseded by the user requirement of 2026-11-09 (R1). Analysis in [Context: requirement and analysis](#context-requirement-and-analysis-2026-11-09). It can be discussed independently of the errors review.
 4. **Generic execution layer.** Recommendation: validation and failure mapping live in a generic, browser-free executor (illustrative `runTool(impl, rawInput, { signal })`) used by the WebMCP binding. `implementTool` stays a pure typed handler, callable directly in tests.
 5. **React binding details.** Mostly settled by D11 (list changes). Remaining: hook naming and the shape of the returned state.
@@ -207,7 +208,39 @@ catalog.dispose();
 
 - **Removed from pass 1:** `refresh()` (`getTools()` is the refresh), `snapshot.get(uniqueName)` (use `find`), `formatName` (replaced by the fixed id plus `toProviderName`), and the fingerprint-in-id `ToolId`.
 - **Permissions:** the SDK passes `fromOrigins` through unchanged, and `call` hands the stored native `RegisteredTool` to `executeTool`. Exposure (`exposedTo`), origin checks and the permissions policy stay entirely native.
-- **`bindContract`** (typed known tools) is unchanged in principle and resolves by name, with `pick` for multiple sources.
+- **Typed known tools:** see the revision below (`find(contract)`).
+
+### Revision 2026-11-10 (user input; consumer still in discussion)
+
+**Stay isomorphic with WebMCP where it is already simple:**
+
+| native WebMCP | SDK | difference |
+| ------------- | --- | ---------- |
+| `registerTool(tool, { signal, exposedTo })` | `registerTools(impls, { signal, exposedTo })` + `update()` | same option names; adds validation, the list and reconcile (D12) |
+| `getTools({ fromOrigins })` | `catalog.getTools()` with `fromOrigins` passed through (catalog option) | same filter; adds normalized entries + `id` + `revision` |
+| `executeTool(registeredTool, input, { signal })` | `catalog.call(id, input, { signal })` | **main gain: a stable string id instead of a native object reference** |
+| `toolchange` event | `catalog.subscribe(listener)` | re-queries and hands over the new list |
+
+**The id is a plain `string`** (not a branded type). An agent framework maps tool names back from LLM output as strings. An unknown id returns a `stale` result (nothing executed), never a throw.
+
+**Typed calls come from a known contract, never from discovery.** Discovery happens at runtime, so on its own it can only give `unknown`. A contract you import (shared with the publisher) gives types, and the SDK checks that claim at runtime:
+
+```ts nocheck
+// dynamic: what an LLM agent uses; types are unknown, the provider validates
+for (const t of await catalog.getTools()) {
+  t.call(argsFromLLM);                    // input: unknown → ToolCallResult<unknown>
+}
+
+// known contract: typed and validated on both sides
+import { searchProducts } from "@shop/contracts";            // the same defineTool() the page implements
+const [search] = await catalog.find(searchProducts);          // entries whose name === contract.name, typed
+const r = await search.call({ q: "red shoes" });              // input typed from the contract and validated locally before sending
+if (r.ok) r.value.hits;                                       // output validated with the contract's output schema → typed
+```
+
+- **`find(contract)` replaces pass-1 `bindContract`.** It returns **id- and revision-bound** typed entries (several when several sources expose that name; the caller chooses), instead of a name-at-call-time binding. That is consistent with the id model: a typed handle never silently retargets.
+- **What validation buys:** input errors are caught before any `executeTool`, as a local `input_invalid` with `handlerCalled: false` (nothing sent). Output that does not match the contract becomes `output_invalid` rather than a lie in the types. The provider may still reject input with its own envelope if its schema differs from yours.
+- **What is not promised:** the SDK does not compare the advertised JSON Schema with the contract (JSON Schema equivalence is not decidable in general). Agreement is checked by validating real values.
 
 Not adopted: no consumer-side delay or "grace period" rule. Earlier React discussions created no consumer requirement.
 
