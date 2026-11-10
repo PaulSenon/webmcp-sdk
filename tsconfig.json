@@ -15,8 +15,7 @@
     "noEmit": true,
     "paths": {
       "webmcp-sdk": ["./src/index.ts"],
-      "webmcp-sdk/react": ["./src/react/index.ts"],
-      "webmcp-sdk/consumer": ["./src/consumer/index.ts"]
+      "webmcp-sdk/react": ["./src/react/index.ts"]
     }
   },
   "include": ["src", "type-tests", "examples"]

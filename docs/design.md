@@ -2,7 +2,7 @@
 
 Status: design prototype, 2026-11-06. This file records **why** the API looks the way it does. Facts about the platform are in [`research.md`](research.md), with dates and sources.
 
-> **Reading guide (updated 2026-11-10).** The code, the type tests and the README still show **pass 1** (`contract → implement().handler → toolset.register()`). Decisions taken since then are recorded below and are **not implemented yet**. No API refactor or runtime work starts until every open point has been discussed with the user, one at a time.
+> **Reading guide (updated 2026-11-10, pass 2).** The sources, type tests and README now implement the decisions below as types plus `NotImplementedError` stubs. Sections marked as pass-1 history are kept for rationale only. The [Pass 2 surface](#pass-2-surface) section maps each decision to the API.
 
 ## Decision status
 
@@ -26,6 +26,7 @@ Status: design prototype, 2026-11-06. This file records **why** the API looks th
 | D15 | **Consumer lifecycle: a lazy, framework-agnostic catalog (core) plus `useTools({ fromOrigins })` (React).** The core owns discovery, the `toolchange` subscription, origin updates, race handling and identities. React only orchestrates lifecycle and reactivity. Source keys come from a **page-wide** identity table, so ids are identical across catalogs and survive remounts. Details in [Consumer lifecycle and React](#consumer-lifecycle-and-react-d15). | validated by the user, 2026-11-10 (arbitration: Opus) |
 | D16 | **Removing a tool's availability is not cancelling its calls.** Unregistering or replacing a tool removes it for future calls only. A running call keeps the definition and handler it started with and is **not** aborted by the SDK. The handler's `signal` is exactly the native execution signal (caller cancelled, caller unloaded). A handler that depends on a destroyed component handles that through its own lifecycle. No stop or rollback is ever guaranteed. There is no `interrupted` kind. Details in [Unregister vs running calls](#unregister-vs-running-calls-d16). | design arbitration (Opus), 2026-11-10. The user questioned this, he did not decide it (correction of an earlier note) |
 | D17 | **No `revision`/`stale` in v0.** A tool absent at call time returns `not_found` (nothing executed). A tool replaced before the call is **called in its current version** if the arguments pass its current schema; otherwise it returns `input_invalid`. This is intended semantics. Ids stay `<sourceKey>__<name>`. | user, 2026-11-10 |
+| D18 | **Envelope details.** Success is sent as-is. Failure is `{ isError: true, error: { kind, message, handlerCalled, … } }`, with kind-specific `issues` (at most 20, plus `omittedIssues`) or `code`/`data`. There is no `retryable`. `outputSchema` is advertised as `anyOf [output, envelope]` when an output is declared, none otherwise. `isToolFailureEnvelope` requires `isError === true`, a known `kind` and a string `message`. **No schema restriction:** an output whose successful values look exactly like an envelope is documented as an ambiguity rather than forbidden (the earlier idea of rejecting a root `isError` property was dropped as too blunt). | the user agreed in principle; details are Opus's arbitration, 2026-11-10 |
 | D3 | **No `defineToolset` unless it earns its place.** Applying the user's rule ("drop it if it is just an array"), the analysis below finds no real utility, so it is dropped. Registration takes a plain array of implementations. | user rule + analysis below |
 
 **Why `defineToolset` is dropped (D3).** Candidate benefits, each checked:
@@ -41,108 +42,35 @@ So it would be pure ceremony today. Reversal criterion: a group-level option tha
 
 **R1. Context is a real need.** A tool must be able to require page-side data (context) that its implementation reads. The developer must **not** be able to wire a tool where that data is missing (a compile-time guarantee). The agent never knows about or provides context: it is distinct from LLM arguments and never appears in any exposed schema. *Not decided:* where the requirement is declared (definition vs implementation), where it is provided (toolset, registration, per call), the exact syntax. The oRPC-style `.$context<T>()` builder stays rejected (D2).
 
-### Remaining arbitrations (audit, 2026-11-10)
+### Remaining arbitrations
 
-D1–D15 are settled (D8–D15 validated together by the user on 2026-11-10). Audit of the docs and exchanges: only the items below remain.
+All review points are closed (2026-11-10). Names validated: `defineTool`, `implementTool`, `registerTools`, `createToolCatalog`, `useRegisterTools`, `useToolCatalog`, plus `<RegisterTools>` (the component form required by the original brief). Only the **license** remains, and it must be chosen before any publication.
 
-**A. User questions, in this order for the oral review**
+## Pass 2 surface
 
-1. ~~Interruptions and abort~~ Decided (D16, D17). The taxonomy is `input_invalid`, `tool_error`, `internal`, `output_invalid` (`cancelled` and `interrupted` removed). The consumer adds `not_found`.
-2. **`handlerCalled` and retry** *(folded into the envelope discussion, since both are envelope fields)*.
-   - **Recommendation:** add `handlerCalled: boolean` to every failure. It is a fact the SDK knows exactly.
-   - **Remove `retryable`.** The SDK cannot know whether a retry is safe, and the author can say so in the `ToolError` message.
-   - Only `input_invalid` (and validator crashes, `internal` with `handlerCalled: false`) may say "did not run".
-3. **Envelope and `outputSchema`.**
-   - **Recommendation:** keep the in-band envelope `{ isError: true, error: { kind, message, ... } }` with four kinds: `input_invalid`, `tool_error`, `internal`, `output_invalid` (after D16).
-   - **Advertise `outputSchema`** as `anyOf [declared output, envelope]` when an output is declared. Advertise none otherwise.
-   - **Consumer side:** a result is recognized as a failure only if `isError === true` and the kind is known.
-   - **The platform does not enforce it** (polyfill ignores `outputSchema`; see research addendum). This is the most agent-implementer-dependent choice, so it is worth a short confirmation.
-4. **Public names (DX-visible).** Recommendation:
-   - definition and implementation: `defineTool`, `implementTool`;
-   - publisher core: `registerTools`, and publisher React: `useRegisterTools(tools, options?)`;
-   - consumer core: `createToolCatalog`, and consumer React: `useToolCatalog({ fromOrigins })`.
+| decision | where in the API |
+| -------- | ---------------- |
+| D2, D3, D14 | `defineTool` (`src/define.ts`) → `implementTool(definition, handler)` (`src/implement.ts`). No toolset. Schemas must be `StandardSchemaV1 & StandardJSONSchemaV1` |
+| D5, D6 | the handler is `(input, { signal })`; dependencies come from per-implementation factories (README "Dependencies") |
+| D7 | declined outcomes are ordinary outputs (README "Outcomes are outputs") |
+| D8 | no formatting option anywhere |
+| D9 | optional `output`, always validated; `JsonValue | void` without one |
+| D10, D18 | `ToolError`, `isToolError`, `ToolFailure`, `ToolFailureEnvelope`, `isToolFailureEnvelope` (`src/errors.ts`) |
+| D1, D11, D12, D16 | `registerTools` → `ToolRegistration` (`update`, `unregister`, `getSnapshot`, `subscribe`, `settled`) in `src/register.ts`. No throw; per-tool states; running calls never cancelled |
+| D13, D15, D17 | `createToolCatalog` → `ToolCatalog` (`getTools`, `subscribe`, `update`, `call`, `find`, `dispose`), `toProviderName` in `src/catalog.ts`. Ids `<source>__<name>`, `not_found`, no revision |
+| React | `useRegisterTools`, `<RegisterTools>`, `useToolCatalog` (`src/react/index.ts`) |
+| testing | `runTool` (exported executor), `toJSONSchema` |
 
-   This avoids the confusing pair `useWebMCPTools` / `useTools`, where one publishes and the other discovers. `defineTool` stays despite the "no handler" nuance: it is the most guessable name, and the docs say "definition = contract".
-5. **License** (non-blocking for the next pass). Not chosen. Needed before any public use beyond review.
+**Type-level finding during pass 2.** With `handler: ToolHandler<D>`, TypeScript 7 widened literal returns (`z.enum`, discriminated unions) because it checks the handler's return before resolving `D`. That forced `as const` in handlers. The fix is `handler: NoInfer<ToolHandler<D>>`: `D` comes from the definition only, so literals are kept and wrong returns are still rejected. Regression tests are in `type-tests/define.test-d.ts`. The alternatives were probed and rejected:
 
-**B. Details Opus settles directly (recorded here, no user question)**
+- `ToolHandler<NoInfer<D>>`: literals still widened.
+- A separate return type parameter `R extends Out`: literals still widened.
+- `const R`: forces readonly arrays.
+- A phantom with `Out` inferred from both arguments: accepted outputs with missing fields.
 
-- **Strict mode:** `ifUnsupported` is removed (D1). The state says `"unsupported"`, and an app that requires WebMCP checks it itself.
-- **Developer hook:** `onToolError(error, { toolName, kind, handlerCalled })`, as a `registerTools` option. It receives originals (defects, output issues, unserializable `data`, failing validators), never shows them to agents, and its own throws are swallowed and logged.
-- **Definition-time checks:** `defineTool` throws `WebMCPError("invalid_definition")` for an invalid name (WebMCP charset, 1–128) or an empty description. These are programming errors. Registration failures are per-tool states in the snapshot (D12), never throws.
-- **Generic execution layer:** validation and failure mapping live in a browser-free executor used by the registration code. Whether it is exported (for tests) is decided while writing the types.
-- **Formatting:** issue paths are readable (`items[0].sku`, `(root)`), with at most 20 issues plus an "N more" count. JSON Schema target `draft-2020-12`, converted lazily and cached (D14).
-- **Annotations:** the WebMCP hint names (`readOnlyHint`, `consequentialHint`, `untrustedContentHint`, `debugging`) are used as-is in `defineTool`.
-- **`exposedTo`** is a per-registration option. Tools needing different exposure use separate registrations.
-- **Packaging:** one package with subpaths `webmcp-sdk` (core: publisher + consumer), `webmcp-sdk/react` (both hooks). The consumer is marked experimental. Not published.
+### Resume point after the review (done: pass 2, 2026-11-10)
 
-**C. Deferred (not v0, no decision needed now)**
-
-Typed error maps in contracts, an SDK context mechanism (D5 reversal criterion), a validation-formatting hook (D8 constraints), `toolset` prefixes (moot with D3), bindings other than React, `useTool(contract)` for typed consumer entries in React.
-
-### Challenge (user, 2026-11-10): is `revision`/`stale` needed? *(Resolved by D16/D17.)*
-
-**Two different moments.**
-
-**1. Before the handler starts** (consumer call → `executeTool` → provider). The user's position: a tool that is absent at call time gets a specific error, and a replaced tool validates the arguments against its *current* schema. An incompatible call then fails naturally with `input_invalid`, and the agent adapts once it receives the new catalog. No extra mechanism.
-
-Risks examined:
-
-| risk | does `revision` help? |
-| ---- | --------------------- |
-| new schema accepts the same arguments with a different meaning (`amount` in cents becomes euros; `id` of a project becomes `id` of an org) | yes, if the descriptor changed. This is the only real gain |
-| same schema, different action (identical descriptor) | no: undetectable by any descriptor check |
-| refreshed catalog, but the LLM still holds the old tool list | partly: `stale` forces a re-plan. Without it, only incompatible arguments are caught. It is really a consumer-glue problem (re-send tools on `subscribe`) |
-| dynamic schemas that change often for benign reasons (an `enum` of currently available filters, loaded data) | **harmful:** every benign change makes in-hand handles `stale` and forces re-plans. These would be frequent false positives |
-| a cheap JSON Schema comparison instead of a hash | same false-positive problem; proves nothing about semantics |
-
-**Recommendation: drop `revision` and `stale` from v0. Keep the user's minimal model:**
-
-- **Absent tool:** the consumer returns `not_found` (nothing executed). This covers both the SDK-side check against the latest snapshot and native `NotFoundError`.
-- **Replaced tool:** validation against the current schema decides (`input_invalid` from an SDK provider). For known contracts, `find(contract)` also validates input locally and output on return.
-- **Convention, not mechanism (documented for publishers):** *a name is a contract*. Changing the meaning of a tool means changing its name (`transfer_money_v2`). Refining it (new enum values, better description) keeps the name.
-- **Consumer glue (documented, shown in examples):** on `subscribe`, re-send the tool list to the LLM.
-- **Ids stay `<sourceKey>__<name>`.** `revision` can be re-added later as an *opt-in* `call(id, input, { expect })` without breaking anything.
-
-**2. A call already running when its tool is unregistered or replaced** (the original question).
-
-- **Capture at start.** A call keeps the definition and handler it started with: input was validated with that schema, the handler runs, and the output is validated with **that** definition's output schema. Nothing is swapped mid-call. This is already implied by D12.
-- **Recommendation: removal does *not* abort running calls.** Registration lifetime and execution lifetime are separate, as in the draft, where removing a tool does not cancel a running callback. Aborting on removal would *create* partial effects: a re-render that replaces the definition, or a route change, would cut a purchase half-way through an action the agent asked for. Finishing is the truthful default.
-- **The handler's `signal` is only the native execution signal:** the agent or browser cancelled, or the page is unloading. The registration's own `AbortController` (D12) removes the tool and never touches running calls.
-- **Outcome:**
-  - **The handler completes:** its real result (validated) is returned.
-  - **It throws:** normal mapping (`tool_error` / `internal`).
-  - **After a native abort:** the browser has already rejected the caller and ignores late results, so the SDK only reports to `onToolError`.
-- **No rollback is ever promised.** If a handler needs to stop when its component goes away, it uses its own lifecycle (an `AbortController` captured by the factory). The SDK does not decide that for it.
-- **Consequence for the taxonomy:** `cancelled` and `interrupted` both disappear. That leaves **four kinds**: `input_invalid` (`handlerCalled: false`), `tool_error`, `internal`, `output_invalid`. The consumer adds `not_found` on its side. This supersedes A.1 above, if the user agrees.
-- **Implementation-pass check:** the draft says removal does not cancel the callback. That the late result is still *delivered* to the caller is implied but must be verified against the spec text and the polyfill before the README states it.
-
-### Unregister vs running calls (D16)
-
-**Native semantics** (draft 9 Nov 2026, checked 2026-11-10). WebMCP has **two separate signals**:
-
-- **Registration signal** (`registerTool(tool, { signal })`) controls **availability**. Aborting it unregisters the tool, or rejects a registration that has not settled yet. It does not compare instances: it removes whatever is registered under that name (issue #92).
-- **Execution signal** (`execute(input, { signal })`) controls **one call**. It is aborted when the caller's `executeTool` signal aborts, or when the caller document unloads. Whether a *target* unload aborts it is not specified (the caller gets `AbortError` either way).
-- **The bridge between them:** "Unregistering a tool does not cancel an execution that has already invoked its" callback. Delivery of the late result is implied by the algorithms but not stated as a guarantee, so it is to verify in the implementation pass.
-
-**Decision: mirror the platform.**
-
-- **Availability ≠ cancellation.** `unregister()`, removal by `update()`, a replacement and an unmount all remove the tool for future calls only.
-- **A running call is not touched.** It keeps its captured definition and handler, and its output is validated with that definition. Its outcome is whatever the handler produces. The handler's `signal` is the native execution signal and nothing else.
-- **Why not abort on removal:**
-  - A re-render that replaces a definition, or a route change, would cut through actions the agent asked for, such as a purchase half-way. Aborting *creates* partial effects.
-  - It would also diverge from native semantics, with no guarantee in exchange, since cancellation is only cooperative anyway.
-- **A handler that depends on a component that is going away:**
-  - With React 18+, a `setState` after unmount is a harmless no-op.
-  - If the handler must stop when the component unmounts, its factory receives the component's own signal and combines it: `AbortSignal.any([signal, mountSignal])`. That is a documented pattern, not an SDK feature.
-  - If the handler then throws, the normal mapping applies: `internal`, or `tool_error` if the author throws a `ToolError` ("The view was closed").
-- **Native cancellation:** the browser has already rejected the caller and ignores late results. The SDK only reports to `onToolError`.
-- **No rollback is ever promised.**
-- **Implementation constraint, from issue #92:** because a registration abort removes whatever is under that name, the SDK must abort the old registration and wait for it to settle **before** registering a replacement with the same name. The per-name queue of D11/D12 already does this.
-
-### Resume point after the review
-
-Once A.1–A.4 are settled (A.5 can wait), the next pass is:
+The agreed next pass, now executed:
 
 1. **Types/interfaces** for the whole surface (core publisher, core consumer, React publisher and consumer hooks), with TODO implementations that throw `NotImplementedError`. Type tests: positive and negative.
 2. **README rewritten as general library documentation**, not a design report. It covers plain TypeScript **and** the React bindings, with compiling examples checked by `pnpm check`, and DX reviewed.
@@ -766,7 +694,7 @@ This is the most compact form. It does not separate contract from implementation
 
 **B. Contract object + `implement(contract).handler()`** ✅ chosen
 
-```ts
+```ts nocheck
 import { z } from "zod";
 import { contract, implement, tool } from "webmcp-sdk";
 

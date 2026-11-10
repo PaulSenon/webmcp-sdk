@@ -1,30 +1,12 @@
 /**
- * Minimal structural types for the WebMCP `ModelContext` interface, as specified in the
- * WebMCP Draft Community Group Report of 2026-11-02 (webmachinelearning/webmcp
- * @ 6cd745a). EXPERIMENTAL: this is a CG draft, not a W3C standard. Browser support is
- * partial and flag- or origin-trial-gated. See docs/research.md.
+ * Minimal structural types for WebMCP's `ModelContext` (`document.modelContext`), after the
+ * WebMCP Draft Community Group Report of 9 November 2026. EXPERIMENTAL: a CG draft, not a W3C
+ * standard; browser support is partial (see docs/research.md).
  *
- * The SDK depends on these shapes **structurally** and never on a global type, so you
- * can pass the native object, `@w3c/webmcp-polyfill`, or a test double anywhere a
- * `ModelContextLike` is accepted.
- *
- * Notable facts from the draft that shape this SDK:
- * - Entry point is `document.modelContext` (secure contexts only). `navigator.modelContext`
- *   is a deprecated Chromium-era name, not part of the draft.
- * - `registerTool()` returns `Promise<undefined>`. Removal = aborting the `signal` passed at
- *   registration. There is no `unregisterTool`, `provideContext`, or `clearContext`.
- * - Duplicate names (per document) reject with `InvalidStateError`.
- * - `execute(input, { signal })` returns any JSON-serializable value. A callback rejection
- *   reaches the caller as an opaque `OperationError` and **its message is not forwarded**.
- *   That is why this SDK returns agent-facing failures in-band (see `ToolFailureEnvelope`).
- * - The consumer half (`getTools`, `executeTool`, `toolchange`) is typed in
- *   `webmcp-sdk/consumer`, not here.
- * - Removing a tool does **not** cancel callbacks already running.
- * - The browser does not validate inputs or outputs against the schemas.
+ * The SDK depends on these shapes structurally, so the native object, a polyfill such as
+ * `@w3c/webmcp-polyfill`, or a test double can be passed wherever a `modelContext` option exists.
  */
-
-import type { ToolAnnotations } from "./contract.js";
-import { notImplemented } from "./not-implemented.js";
+import type { ToolAnnotations } from "./define.js";
 
 /** `ModelContextTool` dictionary (draft). */
 export interface ModelContextTool {
@@ -37,20 +19,31 @@ export interface ModelContextTool {
   readonly execute: (input: object, options: { readonly signal: AbortSignal }) => Promise<unknown>;
 }
 
-/** The provider half of `ModelContext`: what the core SDK needs to register tools. */
+/** Provider half: what registration needs. */
 export interface ModelContextLike {
+  /** Resolves when registered; aborting `signal` unregisters (draft). */
   registerTool(
     tool: ModelContextTool,
     options?: { readonly signal?: AbortSignal; readonly exposedTo?: readonly string[] },
   ): Promise<undefined | void>;
 }
 
-/**
- * Intended behaviour: returns `document.modelContext` when present, or `undefined` (SSR,
- * workers, insecure contexts, unsupported browsers). Never throws.
- *
- * Prototype: not implemented, throws `NotImplementedError` like every other runtime entry point.
- */
-export function getModelContext(): ModelContextLike | undefined {
-  return notImplemented("getModelContext");
+/** `RegisteredTool` dictionary returned by `getTools()` (draft). Carries no callable and no registration id. */
+export interface RegisteredTool {
+  readonly name: string;
+  readonly title?: string;
+  readonly description: string;
+  readonly inputSchema?: object;
+  readonly outputSchema?: object;
+  readonly annotations?: ToolAnnotations;
+  /** The window of the document that registered the tool. */
+  readonly window: Window;
+  readonly origin: string;
+}
+
+/** Consumer half: discovery, execution, `toolchange`. */
+export interface ModelContextConsumerLike extends EventTarget {
+  getTools(options?: { readonly fromOrigins?: readonly string[] }): Promise<readonly RegisteredTool[]>;
+  /** Resolves to the JSON-serialized result **string**. */
+  executeTool(tool: RegisteredTool, input?: object, options?: { readonly signal?: AbortSignal }): Promise<string>;
 }

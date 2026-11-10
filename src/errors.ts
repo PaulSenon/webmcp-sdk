@@ -1,135 +1,139 @@
-/**
- * Errors come in two audiences, and the SDK keeps them apart:
- *
- * 1. **Agent-facing** ({@link ToolFailure}): what an agent sees when a tool call fails.
- *    Short, actionable, and free of internals. Stacks, `cause` chains and unknown
- *    error messages are never sent.
- * 2. **Developer-facing** ({@link WebMCPError}): thrown into your code when a definition
- *    or registration is wrong. These never reach an agent.
+import { notImplemented } from "./not-implemented.js";
+import type { JsonValue } from "./schema.js";
+
+/*
+ * Two audiences, kept apart:
+ * - Agent-facing: a failed call returns a ToolFailureEnvelope. It is short and actionable,
+ *   and never contains stacks, causes or unexpected error messages.
+ * - Developer-facing: WebMCPError for definition and registration problems. It never
+ *   reaches an agent.
  */
 
-/**
- * Where a tool call failed. Each kind tells the agent what to do next:
- *
- * | kind               | meaning                                              | agent should              |
- * | ------------------ | ---------------------------------------------------- | ------------------------- |
- * | `input_invalid`    | arguments failed the input schema                    | fix arguments using `issues`, retry |
- * | `execution_failed` | the handler threw                                    | read `message`/`code`; retry only if `retryable` |
- * | `output_invalid`   | the handler returned data that failed the output schema | not retry: page bug    |
- * | `cancelled`        | the browser aborted the call (agent cancel, page unload) and the handler stopped | not retry unless asked |
- * | `unavailable`      | this registration ended (unregister, abort, React unmount) before or during the call, and the handler did not complete | re-discover tools |
- *
- * A failing `context()` resolver is `execution_failed` with `code: "context_unavailable"`.
- * In practice, a caller whose own signal aborted has already been rejected by the browser
- * and never sees `cancelled`. The kind exists for every other path.
- */
-export type ToolFailureKind =
-  | "input_invalid"
-  | "execution_failed"
-  | "output_invalid"
-  | "cancelled"
-  | "unavailable";
-
-/** One validation problem, flattened from Standard Schema issues. */
+/** One input-validation problem, flattened from Standard Schema issues. */
 export interface ToolIssue {
-  /** JSON Pointer into the arguments, e.g. `"/items/0/quantity"`. `""` is the root. */
+  /** Readable path into the arguments, e.g. `"items[0].sku"`, or `"(root)"` when the issue has none. */
   readonly path: string;
+  /** The schema library's message, passed through. */
   readonly message: string;
 }
 
-/** The structured, serializable failure an agent receives. */
+/**
+ * Why a call failed, as the agent sees it. `handlerCalled` is a fact the SDK knows exactly.
+ * It is **not** a promise about side effects.
+ *
+ * | kind             | handlerCalled | meaning |
+ * | ---------------- | ------------- | ------- |
+ * | `input_invalid`  | `false`       | arguments failed the input schema; the tool did not run |
+ * | `tool_error`     | `true`        | the handler threw a `ToolError`: the author's message, code, data |
+ * | `internal`       | `true`/`false`| an unexpected error (a defect, or a validator that crashed); no details |
+ * | `output_invalid` | `true`        | the tool ran, but its result failed the declared output schema and was withheld |
+ */
 export type ToolFailure =
   | {
       readonly kind: "input_invalid";
+      readonly handlerCalled: false;
       readonly message: string;
       readonly issues: readonly ToolIssue[];
+      /** How many issues were left out (at most 20 are sent). */
+      readonly omittedIssues?: number;
     }
   | {
-      readonly kind: "execution_failed";
-      /** The `ToolError` message, or a generic message for unexpected errors. */
+      readonly kind: "tool_error";
+      readonly handlerCalled: true;
       readonly message: string;
-      /** The `ToolError` code. `"internal"` for unexpected errors, `"context_unavailable"` when `context()` failed. */
-      readonly code: string;
-      readonly retryable: boolean;
-      /** Extra JSON data from `ToolError`, if any. */
-      readonly data?: unknown;
+      readonly code?: string;
+      readonly data?: JsonValue;
     }
-  | { readonly kind: "output_invalid"; readonly message: string }
-  | { readonly kind: "cancelled"; readonly message: string }
-  | { readonly kind: "unavailable"; readonly message: string };
+  | { readonly kind: "internal"; readonly handlerCalled: boolean; readonly message: string }
+  | { readonly kind: "output_invalid"; readonly handlerCalled: true; readonly message: string };
+
+/** The kinds above, as a type. */
+export type ToolFailureKind = ToolFailure["kind"];
 
 /**
- * The JSON value returned to the browser when a call fails.
+ * The JSON value a failed call returns to the browser (in-band).
  *
- * Why in-band rather than a rejected promise: in the WebMCP draft, a rejected `execute`
- * callback reaches the caller as an opaque `OperationError` whose message is **not**
- * forwarded, so the agent would learn nothing actionable. A returned value is
- * serialized and delivered as-is.
- *
- * So that strict agents do not drop it as malformed, a tool with an `output` schema
- * advertises `outputSchema: { anyOf: [<output>, <ToolFailureEnvelope schema>] }`. A tool
- * without one advertises no `outputSchema`. See README "Open questions" #1.
+ * In-band, because in WebMCP a rejected `execute` reaches the caller as an opaque
+ * `OperationError` and the message is dropped. When the tool declares an `output`
+ * schema, the advertised `outputSchema` is `anyOf: [<output>, <this envelope>]`, so strict
+ * agents do not discard failures as malformed results. Successful results are sent
+ * as-is, never wrapped.
  */
 export interface ToolFailureEnvelope {
-  /** Discriminator. Consumers must check `isError === true` **and** a known `error.kind`. */
   readonly isError: true;
   readonly error: ToolFailure;
 }
 
+/**
+ * `true` if `value` is a failure envelope: `isError === true`, and `error` carries a known
+ * `kind` and a string `message`. A successful result that happens to have exactly this
+ * shape is indistinguishable on the wire (see the README's limitations).
+ */
+export function isToolFailureEnvelope(value: unknown): value is ToolFailureEnvelope {
+  return notImplemented("isToolFailureEnvelope");
+}
+
 export interface ToolErrorOptions {
-  /** Stable machine-readable code, e.g. `"OUT_OF_STOCK"`. Defaults to `"tool_error"`. */
+  /** Stable machine-readable code, e.g. `"OUT_OF_STOCK"`. Omitted from the response when absent. */
   readonly code?: string;
-  /** Whether calling again with the same arguments may succeed. Defaults to `false`. */
-  readonly retryable?: boolean;
-  /** Extra JSON-serializable data for the agent. */
-  readonly data?: unknown;
-  /** Kept locally for logging (`onToolError`). **Never** sent to the agent. */
+  /** Structured facts for the agent. Dropped (and reported to `onToolError`) if it cannot be serialized. */
+  readonly data?: JsonValue;
+  /** For your logs only (`onToolError`). Never sent. */
   readonly cause?: unknown;
 }
 
 /**
- * Throw this from a handler to send an agent-readable failure.
+ * Throw this (or a subclass) from a handler to tell the agent why the call failed.
  *
- * Only `ToolError` messages reach the agent. Any other thrown value becomes
- * `{ kind: "execution_failed", code: "internal", message: "The tool failed unexpectedly." }`,
- * and the original goes to the `onToolError` callback you passed at registration.
+ * Only `message`, `code` and `data` are sent. `name`, `stack`, `cause` and any other
+ * property, including subclass fields, are not. Anything you write into `message` or
+ * `data` is sent as-is: do not forward third-party error messages blindly.
+ *
+ * Any other thrown value is a defect. The agent gets `{ kind: "internal" }` with a generic
+ * message, and the original goes to `onToolError`.
  *
  * @example
- * throw new ToolError("Only 2 left in stock. Retry with quantity <= 2.", {
- *   code: "OUT_OF_STOCK",
- *   data: { available: 2 },
- * });
+ * throw new ToolError(`Only ${left} left. Ask for at most ${left}.`, { code: "OUT_OF_STOCK", data: { left } });
  */
 export class ToolError extends Error {
-  override readonly name = "ToolError";
-  readonly code: string;
-  readonly retryable: boolean;
-  readonly data: unknown;
+  override name = "ToolError";
+  readonly code: string | undefined;
+  readonly data: JsonValue | undefined;
 
   constructor(message: string, options: ToolErrorOptions = {}) {
     super(message, { cause: options.cause });
-    this.code = options.code ?? "tool_error";
-    this.retryable = options.retryable ?? false;
+    this.code = options.code;
     this.data = options.data;
   }
 }
 
-/** Developer-facing error codes. These are bugs or environment problems, not agent mistakes. */
+/**
+ * Recognizes a `ToolError` (or a subclass) by a brand (`Symbol.for("webmcp-sdk.tool-error")`),
+ * so it also works when two copies of this package are bundled, where `instanceof` fails.
+ */
+export function isToolError(value: unknown): value is ToolError {
+  return notImplemented("isToolError");
+}
+
+/** Developer-facing error codes. Bugs or environment problems, never agent mistakes. */
 export type WebMCPErrorCode =
-  /** No WebMCP implementation (`document.modelContext`) in this environment (SSR, insecure context, unsupported browser). */
-  | "unsupported"
-  /** A tool with this name is already registered in this document, by you or someone else (browser `InvalidStateError`). */
-  | "duplicate_name"
-  /** A schema could not be converted to JSON Schema (see `cause`). */
-  | "json_schema_unavailable"
-  /** Malformed definition: empty description, invalid name, non-object input schema... */
+  /** Thrown by `defineTool`: invalid name, empty description, non-object input root. */
   | "invalid_definition"
-  /** The browser rejected the registration for another reason, e.g. `NotAllowedError` from the `tools` permissions policy (see `cause`). */
+  /** Registration: the name is already registered in this document (browser `InvalidStateError`). */
+  | "duplicate_name"
+  /** Registration: a schema could not be converted to JSON Schema (see `cause`). */
+  | "json_schema_unavailable"
+  /** Registration: the browser rejected the tool for another reason, e.g. `NotAllowedError` from the permissions policy (see `cause`). */
   | "registration_failed";
 
-/** Thrown into developer code. Never serialized to agents. */
+/**
+ * Developer-facing error. Thrown only by `defineTool`. Registration problems are
+ * **reported** per tool in the registration snapshot, never thrown.
+ */
 export class WebMCPError extends Error {
-  override readonly name = "WebMCPError";
+  override name = "WebMCPError";
+  readonly toolName: string | undefined;
+
   constructor(
     readonly code: WebMCPErrorCode,
     message: string,
@@ -138,5 +142,4 @@ export class WebMCPError extends Error {
     super(message, { cause: options?.cause });
     this.toolName = options?.toolName;
   }
-  readonly toolName: string | undefined;
 }

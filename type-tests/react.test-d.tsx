@@ -1,53 +1,32 @@
 import { useState } from "react";
 import { z } from "zod";
-import { contract, implement, tool, toolset } from "webmcp-sdk";
-import { useTool, useToolset, RegisterToolset } from "webmcp-sdk/react";
+import { defineTool, implementTool, type ToolRegistrationSnapshot } from "webmcp-sdk";
+import { RegisterTools, useRegisterTools, useToolCatalog } from "webmcp-sdk/react";
 import type { Equal, Expect } from "./_utils.js";
 
-interface Cart { size: number }
+interface Cart { items: string[] }
+const viewCart = defineTool({ name: "view_cart", description: "List cart items.", output: z.object({ items: z.array(z.string()) }) });
+const checkout = defineTool({ name: "checkout", description: "Go to checkout." });
+const viewCartTool = ({ cart }: { cart: Cart }) => implementTool(viewCart, () => ({ items: cart.items }));
+const checkoutTool = ({ cart }: { cart: Cart }) => implementTool(checkout, () => cart.items.length);
 
-const getCart = implement(contract({ name: "get_cart", description: "Cart size." }))
-  .$context<{ cart: Cart }>()
-  .handler(({ context }) => context.cart.size);
-const cartTools = toolset([getCart]);
-const ping = toolset([tool({ name: "ping", description: "Ping." }).handler(() => "pong")]);
+export function Shop({ cart }: { cart: Cart }) {
+  const [n, setN] = useState(0);
+  const snap = useRegisterTools([viewCartTool({ cart })], { enabled: n >= 0, exposedTo: ["https://a.example"] });
+  type _s = Expect<Equal<typeof snap, ToolRegistrationSnapshot>>;
+  // @ts-expect-error duplicate names
+  useRegisterTools([viewCartTool({ cart }), viewCartTool({ cart })]);
 
-const addTodo = contract({
-  name: "add_todo",
-  description: "Add a todo.",
-  input: z.object({ text: z.string().min(1) }),
-  output: z.object({ count: z.number() }),
-});
-
-export function Component({ cart }: { cart: Cart }) {
-  const [todos, setTodos] = useState<string[]>([]);
-
-  const status = useToolset(cartTools, { context: { cart } });
-  if (status.state === "error") {
-    type _e = Expect<Equal<typeof status.error.code, import("webmcp-sdk").WebMCPErrorCode>>;
-  }
-  useToolset(ping);
-  useToolset(ping, { enabled: false, ifUnsupported: "throw", exposedTo: ["https://example.com"] });
-  // A new wrapper around the same tools is fine to pass (re-registration is keyed on the tool list).
-  useToolset(toolset([getCart]), { context: { cart } });
-  // @ts-expect-error context required
-  useToolset(cartTools);
-  // @ts-expect-error context is a value in React, not a getter
-  useToolset(cartTools, { context: () => ({ cart }) });
-
-  useTool(addTodo, ({ input }) => {
-    setTodos((t) => [...t, input.text]);
-    return { count: todos.length + 1 };
-  });
-  // @ts-expect-error wrong return type
-  useTool(addTodo, () => ({ count: "1" }));
+  const { status, tools, find } = useToolCatalog({ fromOrigins: ["https://widgets.example"] });
+  void find(viewCart);
+  setN(tools.length);
 
   return (
     <>
-      <RegisterToolset toolset={cartTools} context={{ cart }} />
-      <RegisterToolset toolset={ping} />
-      {/* @ts-expect-error context required */}
-      <RegisterToolset toolset={cartTools} />
+      {status === "ready" && <p>{tools.length} tools</p>}
+      {cart.items.length > 0 && <RegisterTools tools={[checkoutTool({ cart })]} />}
+      {/* @ts-expect-error duplicate names in the component too */}
+      <RegisterTools tools={[checkoutTool({ cart }), checkoutTool({ cart })]} />
     </>
   );
 }

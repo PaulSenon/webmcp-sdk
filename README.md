@@ -2,211 +2,150 @@
 
 # webmcp-sdk
 
-[WebMCP](https://webmachinelearning.github.io/webmcp/) lets a web page expose functions ("tools") to AI agents running in the browser, through `document.modelContext`. **webmcp-sdk** gives you a typed, validated, contract-first way to define those tools, built on [Standard Schema](https://standardschema.dev) (Zod, Valibot, ArkType, Effect…). The API is inspired by [oRPC](https://orpc.dev) and [TanStack](https://tanstack.com).
+Type-safe [WebMCP](https://webmachinelearning.github.io/webmcp/) tools for TypeScript.
+
+WebMCP lets a web page expose functions ("tools") to AI agents through `document.modelContext`. With **webmcp-sdk** you:
+
+- **define** tools with [Standard Schema](https://standardschema.dev) (Zod, Valibot, ArkType, Effect…);
+- **implement** them with fully inferred types;
+- **register** them with automatic input/output validation and agent-readable errors;
+- **discover and call** the tools of a page from an in-page agent.
+
+The core is framework-agnostic. React bindings are included.
 
 > [!WARNING]
-> **Design prototype: types only, nothing runs.** Every runtime function throws `NotImplementedError` (only the error classes have real constructors), and nothing is published to npm. This repo is for reviewing the API before it is built.
-> WebMCP is itself an **experimental** W3C Community Group draft (see [Platform status](#platform-status)).
+> **Design prototype, not usable yet.** This repository contains the complete typed API and its documentation. Every runtime function throws `NotImplementedError`, and nothing is published to npm. WebMCP itself is an experimental W3C Community Group draft (see [Platform status](#platform-status)).
+
+```ts nocheck
+defineTool({...})   →   implementTool(definition, handler)   →   registerTools([...])
+   what (contract)          how (your code)                       where & when
+```
+
+**Contents:**
+[Quick start](#quick-start) ·
+[Defining tools](#defining-tools) ·
+[Implementing tools](#implementing-tools) ·
+[Errors](#errors) ·
+[Registering tools](#registering-tools) ·
+[React](#react) ·
+[Discovering and calling tools](#discovering-and-calling-tools-experimental) ·
+[Testing](#testing) ·
+[What agents receive](#what-agents-receive) ·
+[Limitations](#limitations) ·
+[Platform status](#platform-status)
+
+---
 
 ## Quick start
 
 ```ts
 import { z } from "zod";
-import { tool, toolset } from "webmcp-sdk";
+import { defineTool, implementTool, registerTools } from "webmcp-sdk";
 
 const todos: string[] = [];
 
-const addTodo = tool({
+// 1. Define: the agent-facing contract
+const addTodo = defineTool({
   name: "add_todo",
   title: "Add todo",
   description: "Add an item to the user's todo list. Returns the new item count.",
   input: z.object({ text: z.string().min(1) }),
   output: z.object({ count: z.number() }),
-}).handler(({ input }) => {
-  todos.push(input.text); // input.text: string, already validated
-  return { count: todos.length }; // checked against `output` at compile time and runtime
 });
 
-const registration = await toolset([addTodo]).register();
-// ...later
+// 2. Implement: input and output types come from the definition
+const addTodoTool = implementTool(addTodo, ({ text }) => {
+  todos.push(text);
+  return { count: todos.length };
+});
+
+// 3. Register: safe everywhere, a no-op where WebMCP is unavailable
+const registration = registerTools([addTodoTool]);
+// later
 registration.unregister();
 ```
 
-- **Arguments are validated** before your handler runs. The browser does not validate them. Invalid arguments go back to the agent as an actionable [`input_invalid`](#errors-agents-can-act-on) failure, with paths.
-- **The agent sees a JSON Schema** generated from the same schema.
-- **It is safe where WebMCP does not exist** (SSR, most browsers today): `register()` resolves with `state: "unsupported"` and registers nothing.
+Here is what the SDK does for you:
 
-### The model
-
-```ts nocheck
-contract({...})  ──►  implement(contract).handler(fn)  ──►  toolset([...])  ──►  .register()
-   what                  how                                 which, together       where, when
-```
-
-`tool({...})` is shorthand for `implement(contract({...}))`. Start with `tool`, then split out the contract when something else needs it.
-
-**Contents:**
-[Contract first](#contract-first) ·
-[Toolsets](#toolsets) ·
-[Context](#context) ·
-[Schemas](#schemas-validation-vs-json-schema) ·
-[Errors](#errors-agents-can-act-on) ·
-[Lifetime and dynamic tools](#register-unregister-and-dynamic-tools) ·
-[React](#react) ·
-[Consumer](#consumer-discovering-and-calling-tools-optional) ·
-[Testing](#testing) ·
-[Limitations](#limitations-and-non-goals) ·
-[Open questions](#open-questions) ·
-[Status](#implementation-status)
-
-> [!NOTE]
-> **The API below is pass 1.** Decisions taken since (definition helpers + `implementTool` + separate registration, progressive enhancement) and proposals under discussion (errors, context, React) are recorded in [`docs/design.md`](docs/design.md#decision-status) and are not implemented yet.
-
-Design rationale and rejected alternatives are in [`docs/design.md`](docs/design.md). Dated platform research is in [`docs/research.md`](docs/research.md).
+- **Validates arguments** before your handler runs. The browser does not. Invalid arguments come back to the agent with field paths, and your handler is not called.
+- **Validates your result** against `output` when you declare one.
+- **Publishes a JSON Schema** of the input (and output) generated from the same schemas.
+- **Turns failures into short, actionable messages** for the agent, without leaking internals.
+- **Never breaks your app.** Without WebMCP (most browsers today, SSR), nothing is registered and nothing throws.
 
 ---
 
-## Contract first
+## Defining tools
 
-A contract is **what** a tool is: name, metadata, schemas. It has no code and no browser dependency, so tests, a typed in-page agent, or a shared package can import it.
+A definition is a plain object: name, metadata and schemas. It has no code and no browser dependency, so you can share it between the page that implements the tool, your tests, and code that calls the tool.
 
-```ts file=contracts.ts
-// contracts.ts
+```ts file=definitions.ts
+// definitions.ts
 import { z } from "zod";
-import { contract } from "webmcp-sdk";
+import { defineTool } from "webmcp-sdk";
 
-export const addToCart = contract({
-  name: "add_to_cart",
-  title: "Add to cart",
-  description: "Add a product to the shopping cart by SKU. Returns the new item count.",
+export const searchProducts = defineTool({
+  name: "search_products",
+  title: "Search products",
+  description: "Search the catalog by keyword. Returns at most `limit` products.",
   input: z.object({
-    sku: z.string().regex(/^[A-Z0-9-]+$/),
-    quantity: z.number().int().min(1).default(1),
+    q: z.string().min(1),
+    limit: z.number().int().min(1).max(50).default(10),
   }),
+  output: z.object({ hits: z.array(z.object({ sku: z.string(), title: z.string() })) }),
+  annotations: { readOnlyHint: true },
+});
+
+export const addToCart = defineTool({
+  name: "add_to_cart",
+  description: "Add a product to the cart by SKU. Returns the new item count.",
+  input: z.object({ sku: z.string(), quantity: z.number().int().min(1).default(1) }),
   output: z.object({ itemCount: z.number().int() }),
 });
 ```
 
-```ts
-// tools.ts
-import { implement } from "webmcp-sdk";
-import { addToCart } from "./contracts.js";
-declare const api: { addToCart(sku: string, qty: number): Promise<{ items: unknown[] }> };
+| field | |
+| ----- | - |
+| `name` | unique in the document; 1–128 of `A–Z a–z 0–9 _ - .`. **A name is a contract:** if a tool's meaning changes, give it a new name |
+| `title` | optional human-readable label |
+| `description` | what the tool does and when to use it; agents read this to choose |
+| `input` | optional object schema for the arguments |
+| `output` | optional schema for the result. If declared, every result is validated against it |
+| `annotations` | WebMCP hints: `readOnlyHint`, `consequentialHint`, `untrustedContentHint`, `debugging` |
 
-export const addToCartTool = implement(addToCart).handler(async ({ input, signal }) => {
-  //                                                               input: { sku: string; quantity: number }
-  const cart = await api.addToCart(input.sku, input.quantity);
-  return { itemCount: cart.items.length };
-});
-```
+### Schemas: any Standard Schema library
 
-The handler receives `{ input, context, signal }`. `signal` aborts when the browser cancels the call or when you unregister.
-
----
-
-## Toolsets
-
-A toolset is a group of tools registered and unregistered **together, all or nothing**. Names must be unique, and the compiler checks literal names:
-
-```ts
-import { tool, toolset } from "webmcp-sdk";
-
-const listProducts = tool({
-  name: "list_products",
-  description: "List products in the catalog.",
-  annotations: { readOnlyHint: true },
-}).handler(() => [{ sku: "TEE-1", title: "T-shirt" }]);
-
-const openProduct = tool({ name: "open_product", description: "Open a product page by SKU." })
-  .handler(() => null);
-
-export const catalogTools = toolset([listProducts, openProduct]);
-
-const twin = tool({ name: "list_products", description: "Duplicate." }).handler(() => []);
-// @ts-expect-error Potential duplicate tool name "list_products" in toolset
-toolset([listProducts, twin]);
-```
-
-`annotations` are the WebMCP hints: `readOnlyHint`, `consequentialHint`, `untrustedContentHint`, `debugging`. They differ from MCP's set.
-
----
-
-## Context
-
-Handlers can simply close over module state. Use **context** when the same tools must run against **different instances**: one per widget, per React subtree, or a fake one in tests.
-
-`$context<T>()` is **type-only**. It declares what the handler needs, and `register()` must then supply it.
-
-```ts
-import { tool, toolset } from "webmcp-sdk";
-
-interface CartStore { list(): { sku: string; qty: number }[] }
-
-const viewCart = tool({ name: "view_cart", description: "List cart items." })
-  .$context<{ cart: CartStore }>()
-  .handler(({ context }) => context.cart.list());
-
-const whoAmI = tool({ name: "who_am_i", description: "The signed-in user's display name." })
-  .$context<{ user: { name: string } }>()
-  .handler(({ context }) => context.user.name);
-
-const shopTools = toolset([viewCart, whoAmI]);
-
-declare const cart: CartStore;
-declare const session: { user: { name: string } };
-
-// Required type: { cart: CartStore } & { user: { name: string } }.
-// The getter runs on every call, so handlers never see stale values.
-await shopTools.register({ context: () => ({ cart, user: session.user }) });
-
-// @ts-expect-error context is required because tools declared one
-await shopTools.register();
-```
-
----
-
-## Schemas: validation vs JSON Schema
-
-A tool needs two separate things from a schema:
-
-| capability | used for | standard |
-| ---------- | -------- | -------- |
-| **validate** | checking agent input, and your output, at runtime | `StandardSchemaV1` (`~standard.validate`) |
-| **JSON Schema export** | telling the agent what to send | `StandardJSONSchemaV1` (`~standard.jsonSchema`) |
-
-Validation does **not** imply export, so the SDK requires **both, at compile time**:
+A tool schema needs two capabilities. **Validation** checks values at runtime. **JSON Schema conversion** describes the tool to agents. The compiler requires both.
 
 | library | how |
 | ------- | --- |
-| Zod ≥ 4.2, ArkType ≥ 2.1 | native: pass the schema |
-| Valibot | `toStandardJsonSchema(schema)` from `@valibot/to-json-schema` |
+| Zod ≥ 4.2, ArkType ≥ 2.1 | pass the schema directly |
+| Valibot | wrap with `toStandardJsonSchema(schema)` from `@valibot/to-json-schema` |
 | Effect 4 | `Schema.toStandardJSONSchemaV1(schema)` |
-| anything else / hand-written JSON Schema | `withJsonSchema(schema, { input, output? })` |
+| anything else | `withJsonSchema(schema, { input, output? })` |
 
 ```ts
 import * as v from "valibot";
 import { toStandardJsonSchema } from "@valibot/to-json-schema";
 import { type } from "arktype";
-import { contract, withJsonSchema, type StandardSchemaV1 } from "webmcp-sdk";
+import { defineTool, withJsonSchema, type StandardSchemaV1 } from "webmcp-sdk";
 
-contract({
-  name: "search",
-  description: "Search the catalog.",
+defineTool({ name: "lookup", description: "Find an order by id.", input: type({ id: "string" }) });
+
+defineTool({
+  name: "search_docs",
+  description: "Search the documentation.",
   input: toStandardJsonSchema(v.object({ query: v.pipe(v.string(), v.minLength(1)) })),
 });
 
-contract({ name: "lookup", description: "Find by id.", input: type({ id: "string" }) });
-
-declare const legacy: StandardSchemaV1<{ q: string }>; // validates, cannot describe itself
-contract({
+declare const legacy: StandardSchemaV1<{ q: string }>; // validates, but cannot describe itself
+defineTool({
   name: "legacy_search",
-  description: "Search (legacy validator).",
-  input: withJsonSchema(legacy, {
-    input: { type: "object", properties: { q: { type: "string" } }, required: ["q"] },
-  }),
+  description: "Search with the legacy validator.",
+  input: withJsonSchema(legacy, { input: { type: "object", properties: { q: { type: "string" } }, required: ["q"] } }),
 });
 
-contract({
+defineTool({
   name: "nope",
   description: "x",
   // @ts-expect-error Property 'jsonSchema' is missing: validation-only schema
@@ -214,429 +153,469 @@ contract({
 });
 ```
 
-`withJsonSchema` is a promise *you* make. The SDK does not check that the JSON Schema matches the validator.
+- **Your validator is the source of truth.** The SDK always runs your original validator through the Standard Schema API. The JSON Schema only describes the tool to agents. With `withJsonSchema`, keeping the two in sync is up to you.
+- **Input must describe an object.** `z.string()`, arrays, `z.any()` and `z.never()` are compile errors.
 
-The input schema must describe an **object**. `z.string()`, arrays, `z.any()` and `z.never()` are compile errors.
+### Input side and output side
 
-### Input side vs output side
+Transforms and defaults give a schema two types. The SDK uses the right one on each side:
 
-Schemas with transforms or defaults have two types, and the SDK uses the right side of each:
+| | the agent sees (JSON Schema) | your handler sees |
+| - | ---------------------------- | ----------------- |
+| `input` | the **input** side (`limit` optional) | the **output** side (`limit: number`, defaults applied) |
+| `output` | the **output** side | it returns the **input** side |
 
 ```ts
 import { z } from "zod";
-import { implement, contract, type InferToolInput, type InferToolOutput } from "webmcp-sdk";
+import { defineTool, implementTool, type InferToolInput, type InferToolOutput } from "webmcp-sdk";
 
-const schedule = contract({
+const scheduleMeeting = defineTool({
   name: "schedule_meeting",
   description: "Schedule a meeting. `start` is an ISO 8601 date-time.",
-  input: z.object({
-    start: z.iso.datetime(),               // agent sends a string
-    minutes: z.number().int().default(30), // optional for the agent
-  }),
-  output: z.object({
-    id: z.string(),
-    start: z.date().transform((d) => d.toISOString()), // handler returns a Date, agent gets a string
-  }),
+  input: z.object({ start: z.iso.datetime(), minutes: z.number().int().default(30) }),
+  output: z.object({ id: z.string(), start: z.date().transform((d) => d.toISOString()) }),
 });
 
-type AgentSends = InferToolInput<typeof schedule>; // { start: string; minutes?: number | undefined }
-type AgentGets = InferToolOutput<typeof schedule>; // { id: string; start: string }
+type AgentSends = InferToolInput<typeof scheduleMeeting>; // { start: string; minutes?: number | undefined }
+type AgentGets = InferToolOutput<typeof scheduleMeeting>; // { id: string; start: string }
 
-implement(schedule).handler(({ input }) => {
-  input.minutes; // number: defaults applied
-  return { id: "m_1", start: new Date(input.start) };
+implementTool(scheduleMeeting, ({ start, minutes }) => {
+  // minutes: number (default applied); return a Date, the agent receives a string
+  return { id: "m_1", start: new Date(Date.parse(start) + minutes * 60_000) };
 });
 ```
 
-| | advertised to the agent (JSON Schema) | seen by your handler |
-| - | ------------------------------------- | -------------------- |
-| `input` schema | **input** side | receives the **output** side |
-| `output` schema | **output** side | returns the **input** side |
-
-Without an `output` schema, a handler may return any `JsonValue` (or nothing, which is sent as `null`). `Date`, `bigint` and functions are compile errors. Declare an `output` schema to send richer types through a transform.
-
 ### Async validation and refinements
 
-`validate` may return a promise, and the SDK always awaits it. Refinements are **not** visible in JSON Schema, so state the rule in the description too:
+Validators may be async, and the SDK always awaits them. Refinements are **not** expressible in JSON Schema, so repeat the rule in the description:
 
 ```ts
 import { z } from "zod";
-import { tool } from "webmcp-sdk";
+import { defineTool } from "webmcp-sdk";
 declare function skuExists(sku: string): Promise<boolean>;
 
-tool({
+defineTool({
   name: "reorder",
-  description: "Reorder a product. The SKU must exist (see list_products).",
+  description: "Reorder a product. The SKU must exist (see search_products).",
   input: z.object({ sku: z.string() }).refine(async ({ sku }) => skuExists(sku), {
-    message: "Unknown SKU. Call list_products to find valid SKUs.",
+    message: "Unknown SKU. Call search_products to find valid SKUs.",
     path: ["sku"],
   }),
-}).handler(({ input }) => ({ reordered: input.sku }));
+});
 ```
 
 ### Schemas that cannot become JSON Schema
 
-The types only say a library *can* convert. A given schema can still fail, for example Zod `z.date()` on the advertised side. Conversion runs in `register()`, and a failure rejects with `WebMCPError("json_schema_unavailable")` **before anything is registered**. You can catch it in CI with [`contract.toJSONSchema()`](#testing). The fix is always explicit: change the wire type (`z.iso.datetime()`) or use `withJsonSchema`. The SDK never silently weakens a schema to `{}`.
+The types only check that a library *can* convert. A particular schema can still fail at runtime, for example Zod `z.date()` on the advertised side. Conversion runs when the tool is registered. A failure marks that tool `"error"` (`json_schema_unavailable`) and registers nothing for it. Catch it in CI with [`toJSONSchema`](#testing). Fix it by choosing a wire type (`z.iso.datetime()`) or using `withJsonSchema`. The SDK never weakens a schema silently.
 
 ---
 
-## Errors agents can act on
+## Implementing tools
+
+`implementTool(definition, handler)` attaches your code to a definition. The handler receives the validated input and `{ signal }`, and returns the output (sync or async):
+
+```ts
+import { implementTool } from "webmcp-sdk";
+import { searchProducts } from "./definitions.js";
+declare const api: { search(q: string, limit: number, signal: AbortSignal): Promise<{ sku: string; title: string }[]> };
+
+export const searchProductsTool = implementTool(searchProducts, async ({ q, limit }, { signal }) => {
+  return { hits: await api.search(q, limit, signal) };
+});
+```
+
+### Dependencies: one factory per implementation
+
+When a tool needs data from your app (a store, the current user, a component's state), make the implementation a function of exactly that data:
+
+```ts
+import { implementTool } from "webmcp-sdk";
+import { addToCart } from "./definitions.js";
+
+interface Cart { add(sku: string, quantity: number): Promise<number> }
+
+export const addToCartTool = ({ cart }: { cart: Cart }) =>
+  implementTool(addToCart, async ({ sku, quantity }) => ({ itemCount: await cart.add(sku, quantity) }));
+
+// Composition happens where you register:
+declare const cart: Cart;
+const tools = [addToCartTool({ cart })];
+```
+
+- **Each tool stays isolated** and testable: `addToCartTool({ cart: fakeCart })`.
+- **Forgetting a dependency is a compile error.**
+- **Agents never see these dependencies.** They are not arguments.
+- If several places register the same set, write a function that calls the per-tool factories.
+
+### Without an output schema
+
+A handler may return any JSON value, or nothing (sent as `null`). `Date`, `bigint` and functions are compile errors. The SDK serializes the result itself, so a runtime failure (a cycle, for example) becomes a clear [`output_invalid`](#what-agents-receive). Note that `JSON.stringify` is lossy without failing: it drops `undefined` and functions in objects, and turns `Date` into a string. Declare an `output` schema when the shape matters.
+
+### Outcomes are outputs: user confirmation
+
+A user declining a confirmation is a normal result, not an error. Declare it in your output:
+
+```ts
+import { z } from "zod";
+import { defineTool, implementTool } from "webmcp-sdk";
+declare function confirmDialog(text: string): Promise<boolean>;
+declare function placeOrder(): Promise<string>;
+
+const checkout = defineTool({
+  name: "checkout",
+  description: "Place the order. The user is asked to confirm; if they decline, do not retry unless they ask.",
+  annotations: { consequentialHint: true },
+  output: z.discriminatedUnion("status", [
+    z.object({ status: z.literal("placed"), orderId: z.string() }),
+    z.object({ status: z.literal("declined"), message: z.string() }),
+  ]),
+});
+
+export const checkoutTool = implementTool(checkout, async () => {
+  if (!(await confirmDialog("Place this order?"))) {
+    return { status: "declined", message: "The user declined. Do not retry unless they ask again." };
+  }
+  return { status: "placed", orderId: await placeOrder() };
+});
+```
+
+The confirmation UI is your page's own code: WebMCP's current draft has no API for it.
+
+---
+
+## Errors
 
 Throw `ToolError` for failures the agent should understand. Anything else stays private.
 
 ```ts
-import { z } from "zod";
-import { tool, ToolError } from "webmcp-sdk";
-declare const stock: { available(sku: string): Promise<number> };
+import { implementTool, ToolError } from "webmcp-sdk";
+import { addToCart } from "./definitions.js";
+declare const stock: { available(sku: string): Promise<number>; reserve(sku: string, n: number): Promise<number> };
 
-tool({
-  name: "reserve_item",
-  description: "Reserve units of a product by SKU.",
-  input: z.object({ sku: z.string(), quantity: z.number().int().min(1) }),
-}).handler(async ({ input }) => {
-  const available = await stock.available(input.sku);
-  if (available < input.quantity) {
-    throw new ToolError(`Only ${available} left. Retry with quantity <= ${available}.`, {
-      code: "OUT_OF_STOCK",
-      data: { available },
-    });
+export const addToCartTool = implementTool(addToCart, async ({ sku, quantity }) => {
+  const left = await stock.available(sku);
+  if (left < quantity) {
+    throw new ToolError(`Only ${left} left. Ask for at most ${left}.`, { code: "OUT_OF_STOCK", data: { left } });
   }
-  return { reserved: input.quantity };
+  return { itemCount: await stock.reserve(sku, quantity) };
 });
 ```
 
-What the agent receives at each boundary:
+- **`message`** (required) is what the agent reads, so make it say what to do next.
+- **`code`** (optional) is a stable identifier for programs.
+- **`data`** (optional) carries JSON facts.
+- **`cause`** stays local.
 
-| `error.kind` | agent sees | when | agent should |
-| ------------ | ---------- | ---- | ------------ |
-| `input_invalid` | message + `issues: [{ path: "/quantity", message }]` | arguments fail the input schema | fix the arguments and retry |
-| `execution_failed` | your `ToolError` message, `code`, `retryable`, `data` | the handler threw a `ToolError` | follow the message |
-| `execution_failed` | `"The tool failed unexpectedly."`, `code: "internal"` | the handler threw anything else (the original goes to `onToolError` only) | not retry blindly |
-| `execution_failed` | `code: "context_unavailable"` | your `context()` getter threw | not retry blindly |
-| `output_invalid` | generic message | your return value fails the output schema (a page bug) | not retry |
-| `cancelled` | message | the browser aborted the call (page unload…) and the handler stopped | stop |
-| `unavailable` | message | you unregistered during the call and the handler did not complete | re-discover tools |
+Only these three fields are sent: never `stack`, `cause`, or other properties.
 
-Stacks, `cause` chains, and non-`ToolError` messages are never sent.
-
-**Failures are delivered in-band.** In the WebMCP draft, a rejected `execute` reaches the caller as an opaque `OperationError`, and the message is dropped. The SDK therefore *returns* failures:
-
-```json
-{ "isError": true, "error": { "kind": "execution_failed", "code": "OUT_OF_STOCK", "message": "Only 2 left. Retry with quantity <= 2.", "retryable": false, "data": { "available": 2 } } }
-```
-
-To keep strict agents from dropping this as malformed output, a tool with an `output` schema advertises `outputSchema: { anyOf: [<your output>, <failure envelope>] }`. See [Open questions](#open-questions) #1.
-
-Developer mistakes are separate. They throw **`WebMCPError`** into *your* code, with `code` set to `unsupported`, `duplicate_name`, `json_schema_unavailable`, `invalid_definition` or `registration_failed`, and they never reach agents.
-
----
-
-## Register, unregister, and dynamic tools
+Subclasses work the same way. Put whatever should reach the agent in `data`:
 
 ```ts
-import { tool, toolset, WebMCPError } from "webmcp-sdk";
+import { ToolError } from "webmcp-sdk";
 
-const tools = toolset([tool({ name: "ping", description: "Ping." }).handler(() => "pong")]);
-
-// Handle: explicit, idempotent unregister
-const reg = await tools.register();
-if (reg.state === "unsupported") {
-  /* no WebMCP here: nothing registered, nothing thrown */
-}
-reg.unregister();
-
-// Signal: idiomatic DOM lifetime; it also cancels a registration still pending
-const controller = new AbortController();
-void tools.register({ signal: controller.signal });
-controller.abort();
-
-// Registration errors carry a code
-try {
-  await tools.register({ ifUnsupported: "throw" });
-} catch (e) {
-  if (e instanceof WebMCPError && e.code === "duplicate_name") console.warn(`${e.toolName} is taken`);
-}
-```
-
-Guarantees:
-
-- **All or nothing.** All JSON Schemas are resolved first. If the browser rejects any tool, the ones it already accepted are removed.
-- **Ordered per name.** A registration waits until any previous SDK registration of the same name on the same model context has settled. That makes unregister-then-register deterministic (hot reload, StrictMode). Names owned by other code are never taken over.
-- **Unregister ≠ kill.** WebMCP does not stop running callbacks when a tool is removed. The SDK aborts the handler's `signal`, but cancellation is cooperative. A handler that finishes anyway returns its real result.
-
-**Dynamic tools.** Toolsets are immutable, so model tools that come and go as separate registrations. A signal makes this race-free, because aborting also cancels a pending registration:
-
-```ts
-import { tool, toolset } from "webmcp-sdk";
-
-const checkoutTools = toolset([
-  tool({ name: "checkout", description: "Start checkout.", annotations: { consequentialHint: true } })
-    .handler(() => ({ redirect: "/checkout" })),
-]);
-
-let checkout: AbortController | undefined;
-function onCartChange(itemCount: number) {
-  if (itemCount > 0 && !checkout) {
-    checkout = new AbortController();
-    void checkoutTools.register({ signal: checkout.signal });
-  } else if (itemCount === 0 && checkout) {
-    checkout.abort();
-    checkout = undefined;
+export class OutOfStockError extends ToolError {
+  constructor(readonly sku: string, left: number) {
+    super(`Only ${left} left for ${sku}. Ask for at most ${left}.`, { code: "OUT_OF_STOCK", data: { sku, left } });
   }
 }
 ```
+
+**Anything else thrown is a defect.** The agent gets a generic message (`"internal"`), and you get the original via `onToolError`:
+
+```ts
+import { registerTools } from "webmcp-sdk";
+import { addToCartTool, type Cart } from "./tools.js";
+declare const cart: Cart;
+
+registerTools([addToCartTool({ cart })], {
+  onToolError: (error, { toolName, kind, handlerCalled }) => console.error(toolName, kind, handlerCalled, error),
+});
+```
+
+`ToolError` is recognized by a brand (`isToolError`), so it also works if two copies of the package end up in your bundle. **What you write explicitly** in `message` or `data` is sent as-is. Do not forward third-party error messages blindly.
+
+---
+
+## Registering tools
+
+`registerTools(tools, options?)` registers tools in the current document and returns a **handle**:
+
+```ts
+import { registerTools } from "webmcp-sdk";
+import { addToCartTool, checkoutTool, searchProductsTool, type Cart } from "./tools.js";
+declare const cart: Cart;
+declare const nextCart: Cart;
+
+const reg = registerTools([searchProductsTool, addToCartTool({ cart })]);
+
+// The desired list changed: declare it again, and the SDK reconciles
+reg.update([searchProductsTool, addToCartTool({ cart }), checkoutTool]);
+
+// Fresh dependencies for the same definitions: handlers refreshed, nothing re-registered
+reg.update([searchProductsTool, addToCartTool({ cart: nextCart }), checkoutTool]);
+
+// Per-tool state
+await reg.settled();
+for (const t of reg.getSnapshot().tools) {
+  if (t.state === "error") console.warn(t.name, t.error?.code); // duplicate_name, json_schema_unavailable, registration_failed
+}
+const unsubscribe = reg.subscribe((snapshot) => console.log(snapshot.supported, snapshot.tools));
+
+// Remove everything (or abort the `signal` option)
+reg.unregister();
+unsubscribe();
+```
+
+```ts file=tools.ts
+// tools.ts (used above)
+import { defineTool, implementTool } from "webmcp-sdk";
+import { addToCart, searchProducts } from "./definitions.js";
+export interface Cart { add(sku: string, quantity: number): Promise<number> }
+export const searchProductsTool = implementTool(searchProducts, () => ({ hits: [] }));
+export const addToCartTool = ({ cart }: { cart: Cart }) =>
+  implementTool(addToCart, async ({ sku, quantity }) => ({ itemCount: await cart.add(sku, quantity) }));
+export const checkoutTool = implementTool(defineTool({ name: "checkout", description: "Go to checkout." }), () => null);
+```
+
+
+How `update` reconciles:
+
+- **Tools are matched by definition identity, not by array.** Recreating implementations (factories) only refreshes their handlers.
+- **Removed definitions are unregistered first,** then added ones are registered. A replacement with the same name waits for the old one to be gone.
+- **Each tool succeeds or fails on its own.** One failure does not roll back the others.
+- **`update` copies the list.** Mutating the array afterwards has no effect until the next `update`.
+- **Calls already running are never cancelled** by `update` or `unregister`. They finish with the definition and handler they started with. The handler's `signal` only aborts when the *caller* cancels or unloads.
+- **Duplicate names** are a compile error for literal names, and a per-tool `duplicate_name` state otherwise. The SDK never takes over a name registered by other code.
+
+Options: `signal` (aborting it means `unregister()`), `modelContext` (a polyfill or test double), `exposedTo` (origins allowed to see these tools from other frames, enforced by the browser), `onToolError`.
+
+**Progressive enhancement.** Without WebMCP, `snapshot.supported` is `false` and every tool is `"unsupported"`. Nothing throws, and `update` stays cheap. To *require* WebMCP, check `supported` yourself. No polyfill is installed automatically. To use one, pass it as `modelContext` or install it before registering.
 
 ---
 
 ## React
 
-`webmcp-sdk/react` is optional, and the core never imports React. Registration happens in effects, so nothing runs during SSR.
+`webmcp-sdk/react` contains thin bindings over the same core.
 
 ```tsx
 import { useState } from "react";
 import { z } from "zod";
-import { contract, tool, toolset } from "webmcp-sdk";
-import { RegisterToolset, useTool, useToolset } from "webmcp-sdk/react";
+import { defineTool, implementTool } from "webmcp-sdk";
+import { RegisterTools, useRegisterTools } from "webmcp-sdk/react";
 
-interface Cart { items: string[] }
-
-// Module scope: stable identities
-const cartTools = toolset([
-  tool({ name: "view_cart", description: "List cart items." })
-    .$context<{ cart: Cart }>()
-    .handler(({ context }) => context.cart.items),
-]);
-const checkoutTools = toolset([tool({ name: "checkout", description: "Go to checkout." }).handler(() => "ok")]);
-const addNote = contract({
-  name: "add_note",
-  description: "Add a note.",
-  input: z.object({ text: z.string().min(1) }),
-  output: z.object({ count: z.number() }),
+// Module scope: stable definitions
+const applyFilter = defineTool({
+  name: "apply_filter",
+  description: "Filter the dashboard by status.",
+  input: z.object({ status: z.enum(["open", "closed", "all"]) }),
+  output: z.object({ visible: z.number() }),
 });
+const exportCsv = defineTool({ name: "export_csv", description: "Download the visible rows as CSV." });
 
-export function Shop({ cart }: { cart: Cart }) {
-  // Changing `context` never re-registers. Handlers read the latest value on each call.
-  const { state, error } = useToolset(cartTools, { context: { cart } });
-
-  // Handler defined inside the component: it sees current state, and redefining it never re-registers.
-  const [notes, setNotes] = useState<string[]>([]);
-  useTool(addNote, ({ input }) => {
-    setNotes((n) => [...n, input.text]);
-    return { count: notes.length + 1 };
+// One factory per implementation: dependencies are explicit parameters
+const applyFilterTool = ({ setStatus, rows }: { setStatus: (s: string) => void; rows: { status: string }[] }) =>
+  implementTool(applyFilter, ({ status }) => {
+    setStatus(status);
+    return { visible: status === "all" ? rows.length : rows.filter((r) => r.status === status).length };
   });
+const exportCsvTool = ({ rows }: { rows: unknown[] }) => implementTool(exportCsv, () => ({ exported: rows.length }));
+
+export function Dashboard({ rows }: { rows: { status: string }[] }) {
+  const [status, setStatus] = useState("all");
+
+  // Registered on mount, unregistered on unmount. Re-renders refresh handlers without re-registering.
+  const { supported, tools } = useRegisterTools([applyFilterTool({ setStatus, rows })]);
 
   return (
     <>
-      {state === "error" && <p>Tools unavailable: {error.code}</p>}
-      {/* registered while mounted */}
-      {cart.items.length > 0 && <RegisterToolset toolset={checkoutTools} />}
+      {supported && <small>AI tools: {tools.map((t) => `${t.name} (${t.state})`).join(", ")}</small>}
+      <p>Showing {status}</p>
+      {/* Available only while rendered */}
+      {rows.length > 0 && <RegisterTools tools={[exportCsvTool({ rows })]} />}
     </>
   );
 }
 ```
 
-Lifecycle (full contract in [`src/react/index.ts`](src/react/index.ts)):
+| | behaviour |
+| - | --------- |
+| SSR / first render | nothing happens; `supported: undefined` |
+| mount / unmount | register / unregister |
+| re-render | `update(tools)` after commit: handlers refreshed, only added/removed definitions change |
+| a call starting between a render and its commit | uses the previous handler |
+| StrictMode double mount | register → unregister → register; no spurious `duplicate_name` |
+| unmount while a call runs | the call finishes; to stop it, combine your own signal: `AbortSignal.any([signal, mountSignal])` |
+| no WebMCP | `supported: false`, tools `"unsupported"`; nothing throws |
+| errors | never thrown during render; per tool in the returned snapshot |
 
-| concern | behaviour |
-| ------- | --------- |
-| SSR / first render | `state: "idle"`; no `document` access |
-| mount / unmount | register in an effect; abort that effect's own signal in cleanup |
-| StrictMode double mount | register(A) → abort(A) → register(B); the per-name queue prevents a spurious `duplicate_name` |
-| re-registers when | the **list of tools** changes (shallow), or `contract`, `enabled`, `modelContext`, `exposedTo`, `ifUnsupported`, `jsonSchemaTarget` change |
-| never re-registers on | `context`, `handler`, `onToolError`: read from a ref on each call, so no stale closures |
-| inline contracts/tools | re-register every render; logs a dev warning. Keep them at module scope |
-| `<Activity mode="hidden">` | effects unmount, so tools are unregistered while hidden |
-| unsupported browser | `state: "unsupported"` (not an error) |
-| name already taken | `state: "error"`, `duplicate_name`; never replaces the other tool; retried automatically when that registration ends |
-| errors | never thrown during render; reported via `state`/`error` and `onRegistrationError` |
+Keep **definitions** at module scope. Implementations can be recreated freely. A definition created during render is a new tool on every render, so it is re-registered every time (a dev warning is logged).
+
+Options: `enabled` (`false` unregisters), plus `modelContext`, `exposedTo` and `onToolError` as in core.
 
 ---
 
-## Consumer: discovering and calling tools (optional)
+## Discovering and calling tools (experimental)
 
-`webmcp-sdk/consumer` is for **in-page agents**, such as a chat widget or copilot running *inside* the page that wants the page's tools and those of its frames. It wraps the draft's `getTools()`, `executeTool()` and `toolchange` (**EXPERIMENTAL**). It is a separate entry point, and the core does not depend on it.
-
-### Plug the list into any agent framework
+For **in-page agents**, such as a chat widget or a copilot running in the page, that need the tools exposed by the page and its frames. This wraps the draft's `getTools()`, `executeTool()` and `toolchange`.
 
 ```ts
-import { createToolCatalog } from "webmcp-sdk/consumer";
+import { createToolCatalog, toProviderName } from "webmcp-sdk";
 
-declare const agent: { setTools(tools: unknown[]): void }; // any framework
+declare const agent: { setTools(tools: { name: string; description: string; parameters: object }[]): void };
 
-const catalog = createToolCatalog();
+const catalog = createToolCatalog({ fromOrigins: ["https://widgets.example"] });
+const byName = new Map<string, string>(); // provider name → id
 
+// Re-send the tool list to your LLM whenever it changes
 catalog.subscribe(({ tools }) => {
+  byName.clear();
   agent.setTools(
-    tools.map((t) => ({
-      name: t.uniqueName,          // unique in this snapshot, even across frames
-      description: t.description,
-      parameters: t.inputSchema,   // JSON Schema, as published by the tool's page
-      execute: async (args: unknown) => {
-        const result = await t.call(args);
-        return result.ok ? result.value : { error: result.error };
-      },
-    })),
+    tools.map((t) => {
+      const name = toProviderName(t.id, { maxLength: 64 });
+      byName.set(name, t.id);
+      return { name, description: t.description, parameters: t.inputSchema };
+    }),
   );
 });
+
+// When the LLM calls a tool
+async function onToolCall(name: string, args: unknown) {
+  const result = await catalog.call(byName.get(name) ?? name, args);
+  return result.ok ? result.value : { error: result.error };
+}
 ```
 
-`subscribe`/`getSnapshot` follow the React external-store contract, so they plug straight into `useSyncExternalStore`. Other frameworks need a one-line adapter, because `subscribe` does not emit immediately. Svelte, for example: `readable(catalog.getSnapshot(), (set) => catalog.subscribe(set))`.
+**Ids.** Each tool gets a stable string id, `<source>__<name>`. The source is `self` for this page, or `f1`, `f2`… for other frames, assigned once per frame and origin and never reused.
 
-```tsx
-import { useSyncExternalStore } from "react";
-import { createToolCatalog } from "webmcp-sdk/consumer";
+- **Same name in two frames:** `self__search` and `f1__search` stay distinct, whatever order they register in.
+- **Re-registration:** a tool re-registered under the same name keeps its id.
+- **Scope:** ids are stable for the page session. Never persist them.
+- **`title` and `name`** are display data and may repeat.
+
+**Calls go to the tool currently registered under that id.**
+
+- **Replaced tool:** if it was replaced, the new version is called, and it validates your arguments against its current schema.
+- **Gone tool:** if it no longer exists, you get `{ ok: false, error: { kind: "not_found" } }` and nothing runs.
+- **Never throws:** failures are values (`tool_failed`, `rejected`, `not_found`).
+
+**Known tools are typed by their definition.** Discovery happens at runtime, so on its own it only knows `unknown`. If you share the definition with the page that implements it, `find` gives you typed calls, validated on both sides:
+
+```ts
+import { createToolCatalog } from "webmcp-sdk";
+import { searchProducts } from "./definitions.js";
 
 const catalog = createToolCatalog();
+const [search] = await catalog.find(searchProducts); // one entry per source exposing "search_products"
+if (search) {
+  const r = await search.call({ q: "red shoes" }); // typed; validated locally before sending
+  if (r.ok) console.log(r.value.hits.map((h) => h.title)); // validated against the definition's output
+}
+```
+
+**React:**
+
+```tsx
+import { useToolCatalog } from "webmcp-sdk/react";
+
 export function ToolList() {
-  const { tools } = useSyncExternalStore(catalog.subscribe, catalog.getSnapshot);
+  const { status, tools } = useToolCatalog({ fromOrigins: ["https://widgets.example"] });
+  if (status === "unsupported") return null;
   return <ul>{tools.map((t) => <li key={t.id}>{t.title ?? t.name} <small>{t.source.origin}</small></li>)}</ul>;
 }
 ```
 
-### Identity, collisions, and stale ids
+`useToolCatalog` handles initial discovery, `toolchange` updates and cleanup. `fromOrigins` is compared by value, so inline arrays are fine. Ids are unaffected by remounts.
 
-| | what | unique within | stable |
-| - | ---- | ------------- | ------ |
-| `name` | the provider's name | one document | as long as the provider keeps it |
-| `title` | display label | nothing | no |
-| `uniqueName` | name for the LLM: `name`, or `name__f1` on collision | one snapshot | until collisions change |
-| `id` | observed source + name + descriptor fingerprint | the catalog | never reassigned to another tool |
-
-The guarantees come in three levels, and only the first is a promise:
-
-1. **The SDK never remaps an id.** If the latest snapshot no longer has that exact source, name and descriptor (unregistered, schema or description changed, source gone), `call` returns `{ kind: "stale" }` **without calling the browser**.
-2. **Change detection is best-effort.** A same-origin frame that navigates is detected. A cross-origin frame is opaque: if it navigates to a page with identical tools, the SDK cannot see it. An identical descriptor re-registered under the same name keeps its id, because the platform exposes no registration instance id.
-3. **There is no atomic check-and-call.** `executeTool` resolves by name in the owner document. A change the catalog has not yet observed can slip in between the check and the call. The browser still enforces origin and exposure.
-
-Two frames exposing `search` get `search__self` and `search__f1`, and each call goes to its own document. Discovered tools are **unknown at compile time**: inputs and results are `unknown`. Never persist ids.
-
-```ts
-import { createToolCatalog } from "webmcp-sdk/consumer";
-
-const catalog = createToolCatalog();
-const snapshot = await catalog.refresh();
-const search = snapshot.get("search");
-if (search) {
-  const r = await search.call({ q: "red shoes" });
-  if (!r.ok && r.error.kind === "stale") await catalog.refresh(); // re-plan with the new tool list
-}
-```
-
-### Known tools: typed by contract, checked at runtime
-
-When you *know* a tool's contract, `bindContract` gives static types. Discovery cannot prove them, so the SDK validates input before sending and output on return:
-
-```ts
-import { z } from "zod";
-import { contract } from "webmcp-sdk";
-import { createToolCatalog } from "webmcp-sdk/consumer";
-
-const searchContract = contract({
-  name: "search",
-  description: "Search products.",
-  input: z.object({ q: z.string() }),
-  output: z.object({ hits: z.array(z.object({ sku: z.string(), title: z.string() })) }),
-});
-
-const catalog = createToolCatalog();
-const search = catalog.bindContract(searchContract, {
-  pick: (candidates) => candidates.find((t) => t.source.isSelf), // several frames? choose explicitly
-});
-
-const r = await search.call({ q: "red shoes" });
-if (r.ok) r.value.hits[0]?.sku; // typed
-else if (r.error.kind === "output_invalid") {
-  /* a tool by that name exists but does not honour the contract */
-}
-```
-
-`bindContract` resolves by **name at call time**. That is an explicit "whichever tool implements this contract" binding, unlike an id. Ambiguity without `pick` returns `unresolved` and nothing runs.
-
-**Security.** The catalog sees only what `getTools()` returns. Cross-origin tools appear only when the owner registered with `exposedTo` **and** you pass `fromOrigins`. The browser and permissions policy remain the only authority.
+**Security.** `fromOrigins` only filters what you ask for. A cross-origin tool appears only if its page registered it with `exposedTo` your origin. The browser and its permissions policy remain the only authority.
 
 ---
 
 ## Testing
 
-Contracts are plain values, so most tests need no browser:
+Definitions and implementations are plain values, so tests need no browser:
 
 ```ts
-import { z } from "zod";
-import { contract } from "webmcp-sdk";
+import { runTool, toJSONSchema } from "webmcp-sdk";
+import { addToCartTool, type Cart } from "./tools.js";
+import { addToCart } from "./definitions.js";
 
-const c = contract({
-  name: "remind_me",
-  description: "Set a reminder.",
-  input: z.object({ when: z.date() }), // not representable in JSON Schema
-});
+const fakeCart: Cart = { add: async () => 1 };
 
-// In a unit test: fail in CI, not at registration in production.
-const { input } = c.toJSONSchema();
-if (!input.ok) throw new Error(`${input.side} schema: ${input.message}`);
+// Exactly what a registration would run: validate input → handler → validate output → map failures
+const ok = await runTool(addToCartTool({ cart: fakeCart }), { sku: "TEE-1" });
+const bad = await runTool(addToCartTool({ cart: fakeCart }), { sku: 42 });
+if (!bad.ok && bad.failure.kind === "input_invalid") console.log(bad.failure.issues);
+
+// Catch non-convertible schemas in CI
+const { input } = toJSONSchema(addToCart);
+if (!input.ok) throw new Error(`${input.side}: ${input.message}`);
 ```
 
 For registration tests, pass any object with a `registerTool` method as `modelContext`, or install [`@w3c/webmcp-polyfill`](https://github.com/webmachinelearning/webmcp-polyfill).
 
 ---
 
-## Limitations and non-goals
+## What agents receive
 
-- **No runtime yet.** This repo is a design review artifact.
-- **Types are compile-time only.** They describe *validated* values. Runtime truth comes from Standard Schema validation on every call: input always, output when an `output` schema is set.
+**On success:** your validated output, as-is.
+
+**On failure:** an envelope, returned rather than thrown. In WebMCP, a thrown error reaches the agent as an opaque `OperationError` without its message.
+
+```json
+{ "isError": true, "error": { "kind": "input_invalid", "handlerCalled": false,
+  "message": "Arguments rejected; the tool did not run. Fix the fields below and call again.",
+  "issues": [{ "path": "quantity", "message": "Too small: expected number to be >=1" }] } }
+```
+
+| `kind` | `handlerCalled` | when | extra fields |
+| ------ | --------------- | ---- | ------------ |
+| `input_invalid` | `false` | arguments failed the input schema; the tool did not run | `issues` (≤ 20, readable paths) |
+| `tool_error` | `true` | the handler threw a `ToolError` | `code`, `data` |
+| `internal` | `true` / `false` | an unexpected error (a defect, or a validator that crashed); no details | — |
+| `output_invalid` | `true` | the tool ran, but its result failed the declared output and was withheld; **the action may have been performed** | — |
+
+- **`handlerCalled`** is a fact, not a promise. When it is `true`, effects may have happened, so agents should check the current state before retrying. The SDK never claims a retry is safe.
+- **`outputSchema`:** when a tool declares an `output`, it is advertised as `anyOf: [<your output>, <the envelope>]`, so strict agents do not discard failures as malformed. Without one, no `outputSchema` is advertised.
+- **Detection:** `isToolFailureEnvelope(value)` checks `isError === true`, a known `kind` and a string `message`.
+
+---
+
+## Limitations
+
+- **Not usable yet.** This is a typed design, so everything throws `NotImplementedError`.
+- **Types are compile-time only.** Runtime truth comes from your validators, which run on every call.
 - **JSON Schema is only as good as your library's converter.** Refinements and transforms are not expressible, so say them in `description`.
-- **No MCP envelope.** WebMCP returns plain JSON, so MCP's `CallToolResult`/`structuredContent` do not apply.
-- **No security layer.** Tools are same-origin by default. Cross-origin access goes only through the platform's `exposedTo`, `fromOrigins` and permissions policy.
-- **Out of scope for v0:** declarative (HTML form) tools, workers, middleware, MCP transports. See `@modelcontextprotocol/sdk` or MCP-B for bridges.
-
-## Open questions
-
-These are the decisions that would change the product. Recommendations are in [`docs/design.md`](docs/design.md#recommendations-on-open-questions).
-
-1. **Failure envelope vs `outputSchema`.** Advertising `anyOf [output, envelope]` keeps strict agents happy but makes the schema noisier. The alternative is to omit `outputSchema` whenever failures are possible. This needs input from agent implementers.
-2. **Typed error maps in contracts** (oRPC `.errors({...})`). Today errors use an untyped `ToolError(code)`. Typed maps can be added later without breaking anything.
-3. **Toolset name prefixes** (`toolset(tools, { prefix: "cart." })`) for widgets mounted twice. Not included.
-4. **Consumer packaging.** Ship `/consumer` in this package or separately? The draft's `getTools()` frame traversal is still unsettled (its prose and algorithm disagree).
-
-## Implementation status
-
-| export | status |
-| ------ | ------ |
-| `contract`, `implement`, `tool`, `toolset`, `.register()`, `withJsonSchema`, `contract.toJSONSchema()` | types for review · runtime throws `NotImplementedError` |
-| `ToolError`, `WebMCPError`, `NotImplementedError` | plain classes (implemented) |
-| `getModelContext()` | types · runtime throws |
-| `webmcp-sdk/react`: `useToolset`, `useTool`, `RegisterToolset` | types · runtime throws |
-| `webmcp-sdk/consumer`: `createToolCatalog`, `bindContract` | types · runtime throws |
-
-`pnpm check` typechecks the sources, the [type tests](type-tests/) (positive and `@ts-expect-error` negative cases), and every TypeScript block in this README and `docs/design.md` not marked `nocheck`. No license has been chosen yet.
+- **Envelope ambiguity.** A *successful* result shaped exactly like `{ isError: true, error: { kind, message } }`, with a known `kind`, is indistinguishable from a failure on the wire. The SDK does not restrict your schemas; avoid that shape in outputs.
+- **Cancellation is cooperative.** No stop or rollback is ever guaranteed. Removing a tool does not stop calls already running.
+- **Discovery identity is best-effort.** The platform has no registration id. A tool replaced by an identical one, or a same-origin frame navigating to a page with the same tool, is indistinguishable.
+- **No security layer.** Cross-origin access is entirely the browser's `exposedTo` / `fromOrigins` / permissions-policy model.
+- **Out of scope for now:** declarative (HTML form) tools, workers, bindings other than React, MCP transports.
 
 ## Platform status
 
-As of 2026-11-06 (details, quotes and links in [`docs/research.md`](docs/research.md)):
+As of 2026-11-10 (details and sources in [`docs/research.md`](docs/research.md)):
 
-- **Spec:** [WebMCP Draft CG Report, 2 Nov 2026](https://webmachinelearning.github.io/webmcp/). EXPERIMENTAL, not on the W3C standards track.
-  - Entry point `document.modelContext` (secure contexts only). `navigator.modelContext` is a deprecated Chromium name.
-  - `registerTool(tool, { signal, exposedTo })` returns `Promise<undefined>`. Removal is by aborting `signal`.
-  - Consumer side: `getTools()`, `executeTool()`, the `toolchange` event.
-- **Chrome:** origin trial from Chrome 149, plus `chrome://flags/#enable-webmcp-testing`. Chrome Status metadata is inconsistent, so do not assume general availability.
-- **Other engines:** no confirmed shipping implementation.
-- **Polyfill:** official [`@w3c/webmcp-polyfill`](https://github.com/webmachinelearning/webmcp-polyfill) 0.1.0. `@mcp-b/*` packages are community projects.
+- **Spec:** [WebMCP Draft CG Report, 9 Nov 2026](https://webmachinelearning.github.io/webmcp/). **Experimental**, not on the W3C standards track.
+  - Entry point `document.modelContext` (secure contexts).
+  - `registerTool(tool, { signal, exposedTo })`.
+  - `getTools({ fromOrigins })` / `executeTool()` / `toolchange`.
+- **Chrome:** origin trial (from 149) and `chrome://flags/#enable-webmcp-testing`. No confirmed shipping in other engines.
+- **Polyfill:** [`@w3c/webmcp-polyfill`](https://github.com/webmachinelearning/webmcp-polyfill) 0.1.0. It currently ignores `outputSchema`.
 
-## Sources
+## Project status
 
-All accessed 2026-11-06:
+| | |
+| - | - |
+| API surface (core + React) | typed, documented, type-tested |
+| runtime | not implemented (`NotImplementedError`) |
+| npm | not published |
+| license | not chosen yet |
 
-- WebMCP draft <https://webmachinelearning.github.io/webmcp/> · source pinned at [`6cd745a`](https://github.com/webmachinelearning/webmcp/blob/6cd745ac8a186122bd3f4aeaeb1d6cfa820251d2/index.bs)
-- Chrome WebMCP <https://developer.chrome.com/docs/ai/webmcp> · Chrome Status <https://chromestatus.com/feature/5117755740913664>
-- Official polyfill <https://github.com/webmachinelearning/webmcp-polyfill>
-- Standard Schema / Standard JSON Schema <https://standardschema.dev> · `@standard-schema/spec@1.1.0`
-- Zod <https://zod.dev/json-schema> · Valibot <https://valibot.dev/guides/json-schema/> · ArkType <https://arktype.io/docs/configuration>
-- oRPC contract-first (v1) <https://v1.orpc.dev/docs/contract-first/implement-contract>
-- TanStack Query options <https://tanstack.com/query/latest/docs/framework/react/guides/query-options>
-- MCP tools (2026-07-28) <https://modelcontextprotocol.io/specification/2026-07-28/server/tools>
+Design rationale and decisions: [`docs/design.md`](docs/design.md).
 
 ## Development
 
 ```sh
 pnpm install
-pnpm check   # sources + type tests + README/docs code blocks
+pnpm check   # typecheck sources, type tests, and every TypeScript block in this README
 ```

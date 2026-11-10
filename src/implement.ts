@@ -1,100 +1,78 @@
 import type {
-  AnyContract,
-  ContractDefinitionArg,
+  AnyToolDefinition,
   InferHandlerInput,
   InferHandlerOutput,
-  ToolContract,
-} from "./contract.js";
+  InferToolOutput,
+} from "./define.js";
+import type { ToolFailure } from "./errors.js";
 import { notImplemented } from "./not-implemented.js";
-import type { AnyInputSchema, AnyOutputSchema } from "./schema.js";
 
-/** Everything a handler receives for one call. */
-export interface ToolHandlerArgs<C extends AnyContract, TContext> {
-  /** Validated, transformed arguments. */
-  readonly input: InferHandlerInput<C>;
-  /** The context supplied by whoever registered the toolset (`register({ context })`). */
-  readonly context: TContext;
+/** What a handler receives besides its input. */
+export interface ToolCallContext {
   /**
-   * Aborted when the agent cancels the call (the browser's execute signal) **or** when
-   * this toolset is unregistered. The browser does not cancel running calls on
-   * unregister, so the SDK adds that. Pass the signal to `fetch` and other async work.
-   * Cancellation is cooperative: if your handler completes anyway, its result is returned.
+   * The call's native execution signal: aborted when the caller cancels or the caller's
+   * page unloads. Cancellation is cooperative. **Unregistering the tool does not abort
+   * it**, because a call that has started runs to completion.
    */
   readonly signal: AbortSignal;
 }
 
-/** A handler may be sync or async. Validation of its result runs either way. */
-export type ToolHandler<C extends AnyContract, TContext> = (
-  args: ToolHandlerArgs<C, TContext>,
-) => InferHandlerOutput<C> | Promise<InferHandlerOutput<C>>;
-
 /**
- * A contract plus its handler: one ready-to-register tool.
- * `TContext` is what the handler needs from the registration site.
+ * The handler of a tool. It may be sync or async. It receives validated input (output
+ * side of the input schema) and returns the input side of the output schema.
  */
-export interface ToolImplementation<C extends AnyContract = AnyContract, TContext = any> {
+export type ToolHandler<D extends AnyToolDefinition> = (
+  input: InferHandlerInput<D>,
+  call: ToolCallContext,
+) => InferHandlerOutput<D> | Promise<InferHandlerOutput<D>>;
+
+/** A definition plus its handler: one registrable tool. */
+export interface ToolImplementation<D extends AnyToolDefinition = AnyToolDefinition> {
   readonly "~webmcp": "implementation";
-  readonly contract: C;
-  readonly name: C["name"];
-  /** @internal Type carrier only; no runtime value. */
-  readonly "~context"?: (context: TContext) => void;
+  readonly definition: D;
+  readonly name: D["name"];
 }
 
 /** Any implementation, for constraints. */
-export type AnyToolImplementation = ToolImplementation<AnyContract, any>;
-
-/** The context type an implementation requires. */
-export type InferToolContext<T> = T extends ToolImplementation<any, infer Ctx> ? Ctx : never;
+export type AnyToolImplementation = ToolImplementation<AnyToolDefinition>;
 
 /**
- * Builds the implementation of one contract. The builder steps are type-only except
- * `.handler()`.
- */
-export interface Implementer<C extends AnyContract, TContext = {}> {
-  /**
-   * Declares what the handler needs from the registration site. Type-only, no runtime
-   * effect. Optional: skip it if your handler closes over what it needs.
-   *
-   * @example
-   * implement(addToCart)
-   *   .$context<{ cart: CartStore }>()
-   *   .handler(({ input, context }) => context.cart.add(input.sku, input.quantity));
-   */
-  $context<TNewContext extends object>(): Implementer<C, TNewContext>;
-
-  /** Attaches the handler and returns a registrable tool. */
-  handler(handler: ToolHandler<C, TContext>): ToolImplementation<C, TContext>;
-}
-
-/**
- * Starts implementing an existing contract.
+ * Implements a definition. Input and output types come from the definition.
+ *
+ * Dependencies come from a plain factory, one per implementation:
  *
  * @example
- * export const addToCartTool = implement(addToCart).handler(async ({ input }) => {
- *   const cart = await api.add(input.sku, input.quantity);
- *   return { cartSize: cart.items.length };
- * });
+ * export const addToCartTool = ({ cart }: { cart: Cart }) =>
+ *   implementTool(addToCart, async ({ sku, quantity }) => ({ itemCount: await cart.add(sku, quantity) }));
  */
-export function implement<C extends AnyContract>(contract: C): Implementer<C> {
-  return notImplemented("implement");
+export function implementTool<D extends AnyToolDefinition>(
+  definition: D,
+  // NoInfer around the whole handler type: D is inferred from the definition only, and the
+  // handler is then checked against the resolved types. This keeps literal return types
+  // (enums, discriminated unions) without `as const`, and still rejects wrong returns.
+  handler: NoInfer<ToolHandler<D>>,
+): ToolImplementation<D> {
+  return notImplemented("implementTool");
 }
 
+/** The outcome of {@link runTool}. */
+export type ToolRunResult<D extends AnyToolDefinition> =
+  | { readonly ok: true; readonly value: InferToolOutput<D> }
+  | { readonly ok: false; readonly failure: ToolFailure };
+
 /**
- * Shorthand for `implement(contract(definition))`: define and implement in one place.
- * Use it when nothing else needs the contract on its own.
+ * Runs a tool exactly as a registration would (validate input → handler → validate
+ * output → map failures), without a browser. Use it in unit tests.
+ * `rawInput` is `unknown` on purpose: it is what an agent would send.
  *
  * @example
- * const getTime = tool({
- *   name: "get_time",
- *   description: "Current time in ISO 8601.",
- * }).handler(() => new Date().toISOString());
+ * const r = await runTool(addToCartTool({ cart: fakeCart }), { sku: "TEE-1" });
+ * expect(r).toEqual({ ok: true, value: { itemCount: 1 } });
  */
-export function tool<
-  const TName extends string,
-  TInput extends AnyInputSchema | undefined = undefined,
-  TOutput extends AnyOutputSchema | undefined = undefined,
->(
-  definition: ContractDefinitionArg<TName, TInput, TOutput>,
-): Implementer<ToolContract<TName, TInput, TOutput>> {
-  return notImplemented("tool");
+export function runTool<D extends AnyToolDefinition>(
+  tool: ToolImplementation<D>,
+  rawInput: unknown,
+  options?: { readonly signal?: AbortSignal },
+): Promise<ToolRunResult<D>> {
+  return notImplemented("runTool");
 }
