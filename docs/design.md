@@ -24,6 +24,8 @@ Status: design prototype, 2026-11-06. This file records **why** the API looks th
 | D13 | **Consumer ids: one stable string per (source, name), always prefixed from the start: `<sourceKey>__<name>`.** `sourceKey` is `self`, or `f<n>` assigned once per source (WindowProxy + origin) and never reused. Re-registering under the same name in the same source keeps the id. A separate `revision` lets snapshot-bound calls refuse a changed descriptor. Discovery API stays close to native (`getTools({ fromOrigins })` + change subscription + `call`). Replaces the pass-1 consumer identity model. Details in [Consumer ids and discovery](#consumer-ids-and-discovery-d13). | validated by the user, 2026-11-10 (arbitration: Opus) |
 | D14 | **Schemas: the SDK requires both Standard Schema capabilities from entry (`defineTool`): validation (`~standard.validate`) and JSON Schema conversion (`~standard.jsonSchema`).** Libraries plug in through the standard interface, with a documented adapter where conversion is not native (e.g. Valibot `toStandardJsonSchema`). The SDK keeps the **original validator** and runs it through the Standard Schema API. It **never rebuilds a validator from JSON Schema**: JSON Schema is only for description and protocol transfer. | validated by the user, 2026-11-10 (arbitration: Opus) |
 | D15 | **Consumer lifecycle: a lazy, framework-agnostic catalog (core) plus `useTools({ fromOrigins })` (React).** The core owns discovery, the `toolchange` subscription, origin updates, race handling and identities. React only orchestrates lifecycle and reactivity. Source keys come from a **page-wide** identity table, so ids are identical across catalogs and survive remounts. Details in [Consumer lifecycle and React](#consumer-lifecycle-and-react-d15). | validated by the user, 2026-11-10 (arbitration: Opus) |
+| D16 | **A tool unregistered (or replaced) while a call is running aborts that call's handler `signal`: cooperative, best-effort cancellation.** A handler that ignores the signal is the author's responsibility, and no stop or rollback is guaranteed. The call keeps the definition and handler it started with (output validated with that definition). If the handler **completes** anyway, its validated result is returned normally. If it **rejects** after that abort, the agent gets `interrupted` (`handlerCalled: true`, may have partially run), unless it threw a `ToolError`, whose explicit message wins (`tool_error`). | user, 2026-11-10 (details: Opus) |
+| D17 | **No `revision`/`stale` in v0.** A tool absent at call time returns `not_found` (nothing executed). A tool replaced before the call is **called in its current version** if the arguments pass its current schema; otherwise it returns `input_invalid`. This is intended semantics. Ids stay `<sourceKey>__<name>`. | user, 2026-11-10 |
 | D3 | **No `defineToolset` unless it earns its place.** Applying the user's rule ("drop it if it is just an array"), the analysis below finds no real utility, so it is dropped. Registration takes a plain array of implementations. | user rule + analysis below |
 
 **Why `defineToolset` is dropped (D3).** Candidate benefits, each checked:
@@ -45,12 +47,8 @@ D1–D15 are settled (D8–D15 validated together by the user on 2026-11-10). Au
 
 **A. User questions, in this order for the oral review**
 
-1. **Interruptions and abort.** *(Revised: see the "Challenge" analysis below. Current recommendation: no abort on removal, no `interrupted`.)*
-   - **Recommendation:** drop `cancelled`. When the agent aborts or the page unloads, the browser has already rejected the caller and ignores late results, so the SDK only propagates the `signal` to the handler.
-   - **Keep one kind, `interrupted`,** for "this registration ended during the call" (`unregister()`, removal by `update()`, unmount), when the handler then stops or throws. Message: "removed while running; may have partially run; re-discover tools and check state before retrying".
-   - **A handler that completes anyway** returns its real result.
-   - **Nothing is promised** about the absence of side effects after an abort.
-2. **`handlerCalled` and retry.**
+1. ~~Interruptions and abort~~ Decided (D16, D17). The taxonomy is `input_invalid`, `tool_error`, `internal`, `output_invalid`, `interrupted` (`cancelled` removed). The consumer adds `not_found`.
+2. **`handlerCalled` and retry** *(folded into the envelope discussion, since both are envelope fields)*.
    - **Recommendation:** add `handlerCalled: boolean` to every failure. It is a fact the SDK knows exactly.
    - **Remove `retryable`.** The SDK cannot know whether a retry is safe, and the author can say so in the `ToolError` message.
    - Only `input_invalid` (and validator crashes, `internal` with `handlerCalled: false`) may say "did not run".
@@ -82,7 +80,7 @@ D1–D15 are settled (D8–D15 validated together by the user on 2026-11-10). Au
 
 Typed error maps in contracts, an SDK context mechanism (D5 reversal criterion), a validation-formatting hook (D8 constraints), `toolset` prefixes (moot with D3), bindings other than React, `useTool(contract)` for typed consumer entries in React.
 
-### Challenge (user, 2026-11-10): is `revision`/`stale` needed? Analysis and recommendation (not decided)
+### Challenge (user, 2026-11-10): is `revision`/`stale` needed? *(Resolved by D16/D17. Where this analysis differs, for example "no abort on removal", the decisions win.)*
 
 **Two different moments.**
 
