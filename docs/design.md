@@ -225,7 +225,7 @@ This sketch shows the boundary, not final code. Options handling and the empty f
 **What the platform actually provides** (draft 9 Nov 2026, checked 2026-11-10; see research addendum):
 
 - `RegisteredTool` has `name`, `title`, `description`, schemas, `annotations`, **`window`** ("the Window of the document that registered the tool") and **`origin`**. There is **no registration id or generation**. The spec itself tells callers to inspect `origin` and `window` to tell same-named tools apart.
-- `executeTool(tool)` resolves `tool.window` to its document, rejects `NotFoundError` if the origin no longer matches, then looks the tool up **by name**. The spec states that a quick unregister plus re-register under the same name "is *not* protected against" (issue #92).
+- `executeTool(tool)` resolves `tool.window` to its document, rejects `NotFoundError` if the origin no longer matches, then looks the tool up **by name**. The spec states that a quick unregister plus re-register under the same name "is *not* protected against" (spec note on fast re-registration, which links issue #92 "Who owns the validation layer?").
 - *Inference, not verified:* JavaScript code receives the `window` member as a **WindowProxy** (WebIDL/HTML convention), which survives navigation of that browsing context. After a **same-origin** navigation, an old `RegisteredTool` could therefore reach the new document's same-named tool. After a cross-origin navigation, it would hit the origin check.
 - `toolchange` carries no payload and its timing relative to other tasks is not guaranteed. Discovery results are sorted by name.
 
@@ -246,7 +246,7 @@ So "name + origin + window" is the native disambiguation, but **not** a native i
 - **What remains impossible to guarantee:**
   - An identical descriptor re-registered is indistinguishable from the original.
   - A same-origin navigation to a page exposing an identical tool is indistinguishable.
-  - Check-then-`executeTool` is not atomic (issue #92). The browser's origin and exposure checks still apply.
+  - Check-then-`executeTool` is not atomic (spec note on fast re-registration, which links issue #92 "Who owns the validation layer?"). The browser's origin and exposure checks still apply.
 - **Scope of stability:** the catalog's lifetime (one page session). Ids are **not** stable across reloads (keys follow discovery order), so never persist them.
 - **Provider name limits** (e.g. `^[a-zA-Z0-9_-]{1,64}$`): ids can exceed 64 characters and may contain `.`, so ids stay SDK identity. The SDK ships a small deterministic mapper, `toProviderName(id, { maxLength, pattern })`. It sanitizes, truncates, and appends a short hash whenever it altered the id, which keeps distinct ids distinct.
 - **Memory:** sources live in a `WeakMap`. Snapshot entries hold the latest `RegisteredTool` objects only, replaced on each refresh. `dispose()` removes the `toolchange` listener.

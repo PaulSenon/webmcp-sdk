@@ -437,3 +437,23 @@ Source: WebMCP Draft CG Report, 9 November 2026 (<https://webmachinelearning.git
 - §6.3.4.2 advises callers to inspect `origin` and `window` "to disambiguate tools when multiple subframes or origins expose tools with the same name."
 - `toolchange`: fired from register/unregister via "notify documents of a tool change" at the ModelContext of eligible documents. It has no payload, and "the timing between firing the toolchange event, and other tasks queued after this algorithm, cannot be relied upon."
 - **UNVERIFIED inference:** under WebIDL/HTML conventions, the JS value of a `Window`-typed member is the browsing context's WindowProxy, which survives navigation. The spec text fetched does not address this.
+
+## Addendum, 2026-11-11 (unregister during execution; subagent audit, spot-checked)
+
+Spec `main` [`aa1b51cf`](https://github.com/webmachinelearning/webmcp/blob/aa1b51cf61aef6ed849b0e9e732617fd57872757/index.bs), 2026-11-10. All EXPERIMENTAL (CG draft).
+
+- **NORMATIVE** [unregister a tool, L635–667](https://github.com/webmachinelearning/webmcp/blob/aa1b51cf61aef6ed849b0e9e732617fd57872757/index.bs#L635-L667): removes `tool map[tool name]`, then notifies (only if the owner is fully active). It touches no pending execution. **NOTE** L650–654: "Unregistering a tool does not cancel an execution that has already invoked its ToolExecuteCallback, including when the callback itself performs the unregistration."
+- **NORMATIVE** [registration abort steps, L865–877](https://github.com/webmachinelearning/webmcp/blob/aa1b51cf61aef6ed849b0e9e732617fd57872757/index.bs#L865-L877): unregister, then reject the *registration* promise with the abort reason. An already-aborted signal rejects before insertion (L847–849).
+- **NORMATIVE** [callback invocation, L573–626](https://github.com/webmachinelearning/webmcp/blob/aa1b51cf61aef6ed849b0e9e732617fd57872757/index.bs#L573-L626): a separate per-call controller. Settlement is guarded by the local execution map (L600, L622), not by the registry. [completion, L1166–1193](https://github.com/webmachinelearning/webmcp/blob/aa1b51cf61aef6ed849b0e9e732617fd57872757/index.bs#L1166-L1193) resolves the caller, unless the pending entry is gone. **DEDUCTION:** after unregistration, the late result is delivered.
+- **NORMATIVE** [executeTool signal, L1109–1123](https://github.com/webmachinelearning/webmcp/blob/aa1b51cf61aef6ed849b0e9e732617fd57872757/index.bs#L1109-L1123): reject with the abort reason, then cancel in parallel. [cancel, L343–388](https://github.com/webmachinelearning/webmcp/blob/aa1b51cf61aef6ed849b0e9e732617fd57872757/index.bs#L343-L388): removes the entries, aborts the callback's controller, fires `toolcancel`. The late result is ignored. Issue #299 (deliver the result after an abort) was closed, declined.
+- **NORMATIVE + SILENT** [unload cleanup, L394–432](https://github.com/webmachinelearning/webmcp/blob/aa1b51cf61aef6ed849b0e9e732617fd57872757/index.bs#L394-L432):
+  - target-only unload completes with "target document unloaded" (`AbortError`), but does **not** abort the callback controller;
+  - caller-only unload cancels (abort + `toolcancel`);
+  - same-document unload only removes the entry.
+  - Whether the callback code itself continues is not specified.
+- **Issues:**
+  - #218 / PR #248 (merged 2026-08-19): preserve in-flight executions after unregistration.
+  - #300 / PR #311: self-unregistration clarification.
+  - #346 (open): ordering of parallel operations.
+  - #92 is titled "Who owns the validation layer?" (open). The spec's fast re-registration note links to it.
+- **POLYFILL** (`webmcp-polyfill` `main` `042327b`, 2026-11-08, static reading): registration abort deletes the tool, notifies, and does not touch running callbacks. Caller abort rejects with the reason, then aborts the callback controller if it is unfinished, and late results are dropped. **It fires no `toolcancel`** (unlike the spec).

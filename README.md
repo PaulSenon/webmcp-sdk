@@ -417,7 +417,8 @@ How `update` reconciles:
 - **Removed definitions are unregistered first,** then added ones are registered. A replacement with the same name waits for the old one to be gone.
 - **Each tool succeeds or fails on its own.** One failure does not roll back the others.
 - **`update` copies the list.** Mutating the array afterwards has no effect until the next `update`.
-- **Calls already running are never cancelled** by `update` or `unregister`. They finish with the definition and handler they started with. The handler's `signal` only aborts when the *caller* cancels or unloads.
+- **Calls already running are never cancelled** by `update` or `unregister`, exactly as in WebMCP. They finish with the definition and handler they started with, and their result is still delivered.
+- **The handler's `signal` is WebMCP's execution signal.** It aborts when the *caller* cancels or its page unloads, and the browser then discards any late result. It does not abort when this page unloads: the caller gets an `AbortError`, and WebMCP does not specify more.
 - **Duplicate names** are a compile error for literal names in array literals (also after a conditional spread), and a per-tool `duplicate_name` state otherwise (`.map()`, dynamic arrays). The SDK never takes over a name registered by other code.
 
 Each tool's `state` is one of:

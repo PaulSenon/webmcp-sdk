@@ -11,9 +11,13 @@ import { notImplemented } from "./not-implemented.js";
 /** What a handler receives besides its input. */
 export interface ToolCallContext {
   /**
-   * The call's native execution signal: aborted when the caller cancels or the caller's
-   * page unloads. Cancellation is cooperative. **Unregistering the tool does not abort
-   * it**, because a call that has started runs to completion.
+   * The call's native WebMCP execution signal. It is aborted when the caller cancels or the
+   * caller's page unloads; the browser then rejects the caller and ignores any late result.
+   * Cancellation is cooperative.
+   *
+   * It is **not** aborted when the tool is unregistered: a call that has started keeps
+   * running, and its result is still delivered. It is also not aborted when this page
+   * unloads (the caller gets an `AbortError`, and WebMCP does not specify more).
    */
   readonly signal: AbortSignal;
 }
