@@ -1,4 +1,5 @@
-import { notImplemented } from "./not-implemented.js";
+import { WebMCPError } from "./errors.js";
+import { resolveSchemas } from "./schema.js";
 import type {
   AnyInputSchema,
   AnyOutputSchema,
@@ -167,7 +168,13 @@ export function defineTool<
   TInput extends AnyInputSchema | undefined = undefined,
   TOutput extends AnyOutputSchema | undefined = undefined,
 >(definition: ToolDefinitionArg<TName, TInput, TOutput>): ToolDefinition<TName, TInput, TOutput> {
-  return notImplemented("defineTool");
+  if (typeof definition.name !== "string" || !/^[A-Za-z0-9_.-]{1,128}$/.test(definition.name) ||
+      typeof definition.description !== "string" || !definition.description.trim()) {
+    throw new WebMCPError("invalid_definition", "A valid tool name and non-empty description are required.");
+  }
+  return Object.freeze({ "~webmcp": "definition", name: definition.name, title: definition.title,
+    description: definition.description, input: definition.input as TInput,
+    output: definition.output as TOutput, annotations: definition.annotations });
 }
 
 /**
@@ -178,5 +185,5 @@ export function toJSONSchema(definition: AnyToolDefinition): {
   readonly input: JSONSchemaResolution;
   readonly output: JSONSchemaResolution | undefined;
 } {
-  return notImplemented("toJSONSchema");
+  return resolveSchemas(definition);
 }

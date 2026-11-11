@@ -8,7 +8,9 @@
 import type { ToolAnnotations } from "./define.js";
 import type { ToolFailure } from "./errors.js";
 import type { ModelContextConsumerLike } from "./model-context.js";
-import { notImplemented } from "./not-implemented.js";
+import { isToolFailureEnvelope } from "./errors.js";
+import { defaultContext } from "./runtime.js";
+import type { RegisteredTool } from "./model-context.js";
 import type { JSONSchema } from "./schema.js";
 
 /**
@@ -140,5 +142,132 @@ export interface ToolCatalog {
 
 /** Creates a catalog you own. Throws `TypeError` / `RangeError` for an invalid `namePrefix`. */
 export function createToolCatalog(options?: ToolCatalogOptions): ToolCatalog {
-  return notImplemented("createToolCatalog");
+  const prefix = options?.namePrefix ?? "";
+  const max = options?.maxNameLength ?? 64;
+  if (!/^[A-Za-z0-9_-]*$/.test(prefix)) throw new TypeError("Invalid namePrefix charset.");
+  if (prefix.length > max / 2) throw new RangeError("namePrefix exceeds half of maxNameLength.");
+  let origins = [...new Set(options?.fromOrigins ?? [])].sort();
+  let context = options?.modelContext;
+  let listening: ModelContextConsumerLike | undefined;
+  let disposed = false, queried = false, sequence = 0, frameCounter = 0;
+  let active = 0, pendingEvent = false;
+  let snapshot: ToolCatalogSnapshot = { status: "idle", tools: [], version: 0 };
+  const subscribers = new Set<(snapshot: ToolCatalogSnapshot) => void>();
+  const issued = new Set<string>();
+  const sources = new WeakMap<Window, Map<string, { tag: string; names: Map<string, string> }>>();
+  let current = new Map<string, RegisteredTool>();
+  const ownWindow = typeof document === "undefined" ? undefined : document.defaultView;
+  const publish = (next: Omit<ToolCatalogSnapshot, "version">) => {
+    snapshot = { ...next, version: snapshot.version + 1 };
+    for (const listener of subscribers) {
+      try { listener(snapshot); } catch (error) { console.error("webmcp-sdk catalog subscriber threw", error); }
+    }
+  };
+  const listen = () => {
+    if (context && subscribers.size && !listening && !disposed) {
+      context.addEventListener("toolchange", onChange); listening = context;
+    }
+  };
+  const stop = () => { listening?.removeEventListener("toolchange", onChange); listening = undefined; pendingEvent = false; };
+  const onChange = () => {
+    if (active) pendingEvent = true;
+    else void query();
+  };
+  const nameFor = (tool: RegisteredTool) => {
+    let byOrigin = sources.get(tool.window);
+    if (!byOrigin) { byOrigin = new Map(); sources.set(tool.window, byOrigin); }
+    let source = byOrigin.get(tool.origin);
+    if (!source) {
+      // Only the first origin of our own window may use self; navigation is a new source.
+      source = { tag: tool.window === ownWindow && !byOrigin.size ? "self" : `f${++frameCounter}`, names: new Map() };
+      byOrigin.set(tool.origin, source);
+    }
+    const old = source.names.get(tool.name);
+    if (old) return old;
+    const head = `${prefix}${source.tag}__`;
+    const normalized = tool.name.replace(/[^A-Za-z0-9_-]/g, "_");
+    let suffix = "", n = 1, name: string;
+    do {
+      if (head.length + suffix.length >= max) throw new RangeError("maxNameLength cannot fit a source and tool name.");
+      name = head + normalized.slice(0, max - head.length - suffix.length) + suffix;
+      suffix = `_${++n}`;
+    } while (issued.has(name));
+    source.names.set(tool.name, name); issued.add(name);
+    return name;
+  };
+  async function query(): Promise<readonly CatalogTool[]> {
+    if (disposed) return [];
+    queried = true;
+    const seq = ++sequence;
+    active++;
+    // Initial loading is asynchronous so subscribe never invokes its listener inline.
+    await Promise.resolve();
+    if (seq === sequence && !disposed && snapshot.status === "idle") publish({ status: "loading", tools: snapshot.tools });
+    try {
+      context ??= defaultContext();
+      listen();
+      if (!context) {
+        if (seq === sequence && !disposed) { current = new Map(); publish({ status: "unsupported", tools: snapshot.tools.length ? [] : snapshot.tools }); }
+        return [];
+      }
+      const tools = await context.getTools({ fromOrigins: origins });
+      if (seq !== sequence || disposed) return snapshot.tools;
+      const registry = new Map<string, RegisteredTool>();
+      const mapped = tools.map(tool => {
+        const name = nameFor(tool);
+        registry.set(name, tool);
+        return { name, title: tool.title, description: tool.description,
+          inputSchema: (tool.inputSchema ?? { type: "object", properties: {} }) as JSONSchema,
+          outputSchema: tool.outputSchema as JSONSchema | undefined, annotations: tool.annotations ?? {},
+          origin: tool.origin, isSameDocument: tool.window === ownWindow, webmcpName: tool.name };
+      });
+      current = registry;
+      const stable = JSON.stringify(mapped) === JSON.stringify(snapshot.tools) ? snapshot.tools : Object.freeze(mapped);
+      publish({ status: "ready", tools: stable });
+      return stable;
+    } catch (error) {
+      if (seq === sequence && !disposed) { current = new Map(); publish({ status: "error", tools: snapshot.tools.length ? [] : snapshot.tools,
+        error: error instanceof Error ? error : new Error("Tool discovery failed.", { cause: error }) }); }
+      return [];
+    } finally {
+      active--;
+      if (!active && pendingEvent && subscribers.size && !disposed) { pendingEvent = false; void query(); }
+    }
+  }
+  const failure = (error: ToolCallError): ToolCallResult => ({ ok: false, error });
+  return {
+    getTools: query,
+    getSnapshot: () => snapshot,
+    subscribe(listener) {
+      if (disposed) return () => {};
+      const first = !subscribers.size;
+      subscribers.add(listener);
+      if (first) { listen(); void query(); }
+      return () => { subscribers.delete(listener); if (!subscribers.size) stop(); };
+    },
+    isCatalogTool: name => issued.has(name),
+    async callTool(name, input, callOptions) {
+      try {
+        if (disposed) return failure({ kind: "unavailable", message: "The tool is no longer available." });
+        if (!issued.has(name)) return failure({ kind: "unknown_tool", message: "Unknown tool name." });
+        if (!queried) await query();
+        const tool = current.get(name);
+        if (!tool || !context) return failure({ kind: "unavailable", message: "The tool is no longer available." });
+        if (input === undefined) input = {};
+        if (!input || typeof input !== "object" || (Object.getPrototypeOf(input) !== Object.prototype && Object.getPrototypeOf(input) !== null))
+          return failure({ kind: "invalid_arguments", message: "Tool arguments must be a plain object." });
+        const value: unknown = JSON.parse(await context.executeTool(tool, input, callOptions));
+        return isToolFailureEnvelope(value) ? failure({ kind: "tool_failed", message: value.error.message, failure: value.error }) : { ok: true, value };
+      } catch (error) {
+        const name = error && typeof error === "object" && "name" in error ? String(error.name) : "Error";
+        return name === "NotFoundError" ? failure({ kind: "unavailable", message: "The tool is no longer available." })
+          : failure({ kind: "rejected", message: "The browser rejected the tool call.", domException: name });
+      }
+    },
+    update(next) {
+      const value = [...new Set(next.fromOrigins ?? [])].sort();
+      if (JSON.stringify(value) !== JSON.stringify(origins)) { origins = value; if (!disposed) void query(); }
+    },
+    dispose() { disposed = true; sequence++; stop(); subscribers.clear(); current.clear(); },
+  };
 }

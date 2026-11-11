@@ -1,5 +1,5 @@
 import type { StandardJSONSchemaV1, StandardSchemaV1 } from "@standard-schema/spec";
-import { notImplemented } from "./not-implemented.js";
+import type { AnyToolDefinition } from "./define.js";
 
 export type { StandardJSONSchemaV1, StandardSchemaV1 };
 
@@ -78,7 +78,11 @@ export function withJsonSchema<S extends StandardSchemaV1>(
     readonly output?: JSONSchema;
   },
 ): S & StandardJSONSchemaV1<InferSchemaInput<S>, InferSchemaOutput<S>> {
-  return notImplemented("withJsonSchema");
+  return Object.assign(Object.create(Object.getPrototypeOf(schema)), schema, {
+    "~standard": { ...schema["~standard"], jsonSchema: {
+      input: () => jsonSchema.input, output: () => jsonSchema.output ?? jsonSchema.input,
+    } },
+  });
 }
 
 /**
@@ -94,3 +98,24 @@ export type JSONSchemaResolution =
       readonly message: string;
       readonly cause: unknown;
     };
+
+// Conversion belongs to a definition, not to a validator or a global schema library.
+const resolutions = new WeakMap<AnyToolDefinition, { input: JSONSchemaResolution; output: JSONSchemaResolution | undefined }>();
+export function resolveSchemas(definition: AnyToolDefinition) {
+  const cached = resolutions.get(definition);
+  if (cached) return cached;
+  const convert = (schema: AnyOutputSchema, side: "input" | "output"): JSONSchemaResolution => {
+    try {
+      const result = schema["~standard"].jsonSchema[side]({ target: "draft-2020-12" });
+      if (side === "input" && result.type !== "object") throw new Error('Input JSON Schema root must have type "object".');
+      return { ok: true, schema: result };
+    } catch (cause) {
+      return { ok: false, message: cause instanceof Error ? cause.message : "JSON Schema conversion failed.", cause };
+    }
+  };
+  const result = { input: definition.input ? convert(definition.input, "input") :
+    { ok: true as const, schema: { type: "object", properties: {} } },
+    output: definition.output ? convert(definition.output, "output") : undefined };
+  resolutions.set(definition, result);
+  return result;
+}

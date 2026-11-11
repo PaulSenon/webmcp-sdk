@@ -1,4 +1,4 @@
-import { notImplemented } from "./not-implemented.js";
+
 import type { JsonValue } from "./schema.js";
 
 /*
@@ -70,7 +70,10 @@ export interface ToolFailureEnvelope {
  * shape is indistinguishable on the wire (see the README's limitations).
  */
 export function isToolFailureEnvelope(value: unknown): value is ToolFailureEnvelope {
-  return notImplemented("isToolFailureEnvelope");
+  if (!value || typeof value !== "object") return false;
+  const v = value as ToolFailureEnvelope;
+  return v.isError === true && !!v.error && typeof v.error.message === "string" &&
+    ["input_invalid", "tool_error", "internal", "output_invalid"].includes(v.error.kind);
 }
 
 export interface ToolErrorOptions {
@@ -112,7 +115,8 @@ export class ToolError extends Error {
  * so it also works when two copies of this package are bundled, where `instanceof` fails.
  */
 export function isToolError(value: unknown): value is ToolError {
-  return notImplemented("isToolError");
+  return !!value && (typeof value === "object" || typeof value === "function") &&
+    (value as Record<symbol, unknown>)[Symbol.for("webmcp-sdk.tool-error")] === true;
 }
 
 /** Developer-facing error codes. Bugs or environment problems, never agent mistakes. */
@@ -147,3 +151,5 @@ export class WebMCPError extends Error {
     this.toolName = options?.toolName;
   }
 }
+
+Object.defineProperty(ToolError.prototype, Symbol.for("webmcp-sdk.tool-error"), { value: true });

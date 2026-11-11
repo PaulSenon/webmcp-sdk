@@ -2,7 +2,7 @@
   "name": "webmcp-sdk",
   "version": "0.0.0-design",
   "private": true,
-  "description": "Design prototype: contract-first, Standard Schema-based TypeScript SDK for WebMCP tools. Not functional, not published.",
+  "description": "Prototype: contract-first, Standard Schema-based TypeScript SDK for WebMCP tools. Core implemented; React pending; not published.",
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
@@ -13,7 +13,9 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
     "check:docs": "node scripts/check-readme.mjs",
-    "check": "pnpm typecheck && pnpm check:docs"
+    "check": "pnpm typecheck && pnpm check:docs",
+    "test": "vitest run",
+    "test:browser": "vitest run --config vitest.browser.config.ts"
   },
   "peerDependencies": {
     "react": ">=18"
@@ -30,12 +32,15 @@
     "@ai-sdk/react": "^4.0.169",
     "@types/react": "^19.3.0",
     "@valibot/to-json-schema": "^1.8.0",
+    "@vitest/browser-playwright": "5.1.0",
     "@w3c/webmcp-polyfill": "0.1.0",
     "ai": "^7.0.165",
     "arktype": "^2.2.9",
+    "playwright": "1.59.1",
     "react": "^19.3.1",
     "typescript": "^7.0.2",
     "valibot": "^1.5.0",
+    "vitest": "5.1.0",
     "zod": "^4.6.7"
   }
 }

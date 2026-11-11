@@ -14,7 +14,7 @@ WebMCP lets a web page expose functions ("tools") to AI agents through `document
 The core is framework-agnostic. React bindings are included.
 
 > [!WARNING]
-> **Design prototype, not usable yet.** This repository contains the complete typed API and its documentation. Every runtime function throws `NotImplementedError`, and nothing is published to npm. WebMCP itself is an experimental W3C Community Group draft (see [Platform status](#platform-status)).
+> **Unpublished prototype.** The framework-independent core is implemented and tested. React bindings remain typed stubs that throw `NotImplementedError`. Nothing is published to npm. WebMCP itself is an experimental W3C Community Group draft (see [Platform status](#platform-status)).
 
 ```ts nocheck
 defineTool({...})   →   implementTool(definition, handler)   →   registerTool(tool, { signal })
@@ -75,7 +75,7 @@ Here is what the SDK does for you:
 - **Turns failures into short, actionable messages** for the agent, without leaking internals.
 - **Stays out of the way without WebMCP.** In most browsers today, and during SSR, registration resolves `"unsupported"` and does nothing. Real failures (a duplicate name, for example) reject, like the native call.
 
-**Requirements:** TypeScript ≥ 5.4, a Standard Schema library with JSON Schema support (e.g. Zod ≥ 4.2), and React ≥ 18 for the bindings. **To try it** (once implemented), you need a browser with WebMCP enabled, or the official polyfill: see [Platform status](#platform-status).
+**Requirements:** TypeScript ≥ 5.4, a Standard Schema library with JSON Schema support (e.g. Zod ≥ 4.2), and React ≥ 18 for the bindings. **To try the core**, you need a browser with WebMCP enabled, or the official polyfill: see [Platform status](#platform-status).
 
 ---
 
@@ -365,6 +365,8 @@ await registerTool(addToCartTool({ cart }), {
 | `internal` | `true` / `false` | an unexpected error (a defect, or a validator that crashed); no details | — |
 | `output_invalid` | `true` | the tool ran, but its result failed the declared output and was withheld; **the action may have been performed** | — |
 
+The generic `internal` message after handler invocation is "The tool failed unexpectedly. It may have partially run; check the current state before retrying." Before invocation it is "The tool failed unexpectedly before running. The tool did not run." For `output_invalid`: "The tool ran, but its result failed validation. The action may have been performed; check the current state before retrying."
+
 - **`handlerCalled`** is a fact, not a promise. When it is `true`, effects may have happened, so agents should check the current state before retrying. The SDK never claims a retry is safe.
 - **`outputSchema`:** when a tool declares an `output`, it is advertised as `anyOf: [<your output>, <the envelope>]`, so strict agents do not discard failures as malformed. Without one, no `outputSchema` is advertised.
 - **Detection:** `isToolFailureEnvelope(value)` checks `isError === true`, a known `kind` and a string `message`.
@@ -422,6 +424,7 @@ shop.abort(); // removes every tool registered by this call
 - **Abort timing:** both reject with `signal.reason` if the signal is already aborted or aborts while registering.
 - **Running calls are never cancelled by `abort()`,** exactly as in WebMCP. They finish with the handler they started with, and their result is still delivered.
 - **The handler's `signal`** aborts when the caller cancels, or when the caller's page unloads; the browser then discards any late result. It does not abort when the tool is removed, nor when the page hosting the tool unloads (the caller then gets an `AbortError`, and WebMCP specifies nothing more).
+- **Internal coordination:** pending SDK registrations are tracked per model context and name. A replacement waits for an aborted registration’s native promise to settle before registering. This does not take over names owned by other code.
 - **Changing a tool** (a new handler or a new definition) in plain TypeScript: abort it and register the new implementation. Calls for the same name are ordered internally.
 - **Duplicate names** are a compile error for literal arrays passed to `registerTools`, and a `duplicate_name` error at runtime otherwise. The SDK never takes over a name registered by other code.
 
@@ -795,9 +798,11 @@ As of 2026-11-11 (details and sources in [`docs/research.md`](docs/research.md))
 | | |
 | - | - |
 | API surface (core + React) | typed, documented, type-tested |
-| runtime | not implemented (`NotImplementedError`) |
+| runtime | core implemented; React remains `NotImplementedError` stubs |
 | npm | not published |
 | license | [MIT](LICENSE) |
+
+Test coverage, polyfill observations and unverified platform behavior: [`docs/implementation-log.md`](docs/implementation-log.md).
 
 Design rationale and decisions: [`docs/design.md`](docs/design.md).
 
@@ -806,6 +811,8 @@ Design rationale and decisions: [`docs/design.md`](docs/design.md).
 ```sh
 pnpm install
 pnpm check   # typecheck sources, type tests, and every TypeScript block in this README
+pnpm test    # unit tests against a clearly labeled in-memory FAKE
+pnpm test:browser # official polyfill in real Chromium (not native WebMCP)
 ```
 
 ## License

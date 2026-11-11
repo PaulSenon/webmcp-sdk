@@ -1,7 +1,6 @@
 /**
- * Every runtime entry point in this design prototype throws this error.
- * The prototype ships types and signatures only. Nothing in it is executable yet,
- * and nothing fakes success.
+ * The deferred React runtime entry points throw this error.
+ * The framework-independent core is implemented; React bindings remain typed stubs.
  */
 export class NotImplementedError extends Error {
   override readonly name = "NotImplementedError";
