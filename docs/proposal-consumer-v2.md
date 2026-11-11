@@ -396,6 +396,48 @@ if (tool?.webmcpName === searchProducts.name) {
 - **Arguments are unknown** unless you bring the definition.
 - **Names are unique per instance only** (§7).
 
+## 9. One `callTool`, two uses: opaque model calls and manual calls with known contracts (proposal)
+
+**Need (user):** a pattern independent of the AI SDK for:
+
+1. **an opaque tool call from a model:** route by name, with `unknown` input and output;
+2. **a hand-written call with a contract known locally:** autocompletion, input inferred from what you call, matching output.
+
+**Key constraint:** the names the catalog exposes (`search_products`, `search_products_f1`) are assigned **at runtime**, so they cannot be string literals in types. What is known statically is the **definition** you import. A string-keyed typed API (`callTool("search_products", …)`) would also need a registry of definitions passed to the catalog, and a loose `string` overload next to it would silently accept wrong arguments for a known name whenever the typed overload fails. **Rejected.**
+
+**Proposal: discriminate by the type of the first argument.**
+
+```ts nocheck
+// 1. opaque (model): exposed name, unknown in and out
+const r1 = await catalog.callTool(toolCall.toolName, toolCall.input);                    // ToolCallResult<unknown>
+
+// 1b. opaque, but you recognize the contract: validate both ways, type the output
+const r2 = await catalog.callTool(toolCall.toolName, toolCall.input, { definition: searchProducts }); // ToolCallResult<{ hits: … }>
+
+// 2. manual, known contract: definition first, typed input and output
+const r3 = await catalog.callTool(searchProducts, { q: "red shoes" });                    // input typed, output typed
+await catalog.callTool(searchProducts, { q: "x" }, { origin: "https://widgets.example" }); // pick a source
+```
+
+- **No silent fallback.** A definition object can never match the `string` overload, so wrong arguments for a known contract are a compile error. Verified with a type probe on TS 7.0.2:
+  - `callTool(searchProducts, { query: "x" })` is rejected;
+  - `callTool(searchProducts, {})` is rejected (missing `q`);
+  - opaque calls accept anything, and the result stays `unknown`.
+- **Resolution for form 2:** the tools in the latest snapshot whose `webmcpName === definition.name`, optionally filtered by `origin`.
+  - **One match:** it is called, with input validated locally and output validated.
+  - **None:** `unavailable`.
+  - **Several:** `ambiguous` (the error carries the candidate names). It never picks one silently. Pass `origin` to choose.
+- **Form 1b** is §8 unchanged: the name pins the exact tool the model chose, and a different `webmcpName` gives `definition_mismatch`.
+- **The contract source is explicit:** the definition you import (shared package, same module as the page). Discovery alone never produces types.
+- **Real value of form 2, challenged:**
+  - **Same document:** code can usually call its own functions directly, so the value is small.
+  - **Cross-frame:** a host page driving a widget's tools with a shared definitions package. Here the value is real: typed, validated, no name bookkeeping.
+  - **Cost:** one overload, no registry, no new concept. **Kept.**
+- **Planned type tests (negative):**
+  - wrong or missing fields with a definition;
+  - the result type for each form;
+  - `origin` only allowed with a definition.
+
 ## 6. Open points for the user (one at a time)
 
 0. Publisher 5c (current point): `registerTool` + `registerTools` sharing `{ signal }` as the only cleanup, with per-tool results for groups?
