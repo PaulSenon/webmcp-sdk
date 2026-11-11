@@ -250,9 +250,53 @@ That logic lives in the binding, built on `registerTool`. TypeScript users never
 
 **Open point for the user:** withdraw `registerTools(...).update(...)` in favour of `registerTool(impl, { signal })` (native-like) plus the React hooks?
 
+## 5c. Publisher: one tool or a group, one cleanup (proposal, point 1: shape and cleanup)
+
+**Need (user):** registering several tools at once is common, so plain TS must support one tool **and** a list. A group is registered in one operation and removed in one operation. Not requested: atomicity or rollback. No public `update`.
+
+**Proposed shape: two names, the same options, the same cleanup.**
+
+```ts nocheck
+// one tool
+const ac = new AbortController();
+await registerTool(searchTool, { signal: ac.signal });   // "registered" | "unsupported"
+
+// a group: one call, one lifetime
+const shop = new AbortController();
+const results = await registerTools([searchTool, addToCartTool({ cart }), checkoutTool], { signal: shop.signal });
+// results: one entry per tool, in order: { name, status: "registered" | "unsupported" | "error", error? }
+
+// removal: one call removes the whole group
+shop.abort();
+```
+
+**Why two names rather than one overloaded function:** `registerTool` mirrors the native call, and `registerTools` reads as "several". Overloading one function on "item or array" saves a name but makes types and error messages murkier. The group version adds the compile-time duplicate-name check for literal arrays.
+
+**Why `signal` as the only cleanup:**
+
+- **Native:** it is the platform's own idiom, so the SDK adds nothing to learn.
+- **One mechanism:** it works the same for one tool and for a group, so there is never a second cleanup (the earlier confusion).
+- **Composable:** it plugs into existing lifetimes (a route's or component's `AbortController`, `AbortSignal.any([...])`, `AbortSignal.timeout`).
+- **The alternative,** a returned `unregister()` handle, would mean two ways to do the same thing, or giving up `signal`, which every native caller already knows. Rejected.
+
+**Responsibilities:**
+
+- **Whoever owns the `AbortController` owns the group.** Aborting removes every tool of the call that got registered. There is nothing to keep apart from the controller.
+- **Several independent lifetimes** use several calls with different signals. Nothing is shared implicitly.
+- **Running calls are not cancelled by `abort()`** (D16, native).
+
+**Partial failure (no rollback, no transaction):**
+
+- **`registerTools` never rejects for an individual tool.** It resolves once every tool has settled, with one result per tool, like `Promise.allSettled`, but typed and named.
+- **The tools that succeeded stay registered** under the shared signal, and failed ones need no cleanup. If you want "all or nothing", check the results and call `abort()` yourself. That is one line, and opt-in.
+- **`registerTool` (single) rejects** on failure, exactly like the native call (`WebMCPError`: `duplicate_name`, `json_schema_unavailable`, `registration_failed`).
+- **Both:** no WebMCP resolves `"unsupported"` (D1). A signal that is already aborted, or aborted while registering, rejects with `signal.reason`, like the native call.
+
+**React is unchanged:** `useRegisterTools([...])` / `<RegisterTools>` own their controllers internally (5b).
+
 ## 6. Open points for the user (one at a time)
 
-0. Publisher 5b: native-like `registerTool(impl, { signal })`, with reconciliation kept inside React?
+0. Publisher 5c (current point): `registerTool` + `registerTools` sharing `{ signal }` as the only cleanup, with per-tool results for groups?
 1. Is the **single sticky exposed name** acceptable, given that the first-seen tool gets the plain name, so names depend on discovery order and are not stable across reloads?
 2. **Predicate names:** `isCatalogTool(name)` (membership) and `isAvailable(name)` (availability)?
 
