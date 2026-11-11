@@ -11,21 +11,29 @@ The current catalog has **two strings per tool**:
 
 The name sent to the model is therefore not something the catalog can resolve, so the caller had to keep `providerName → id`. The bug is architectural: **the catalog must issue the name it later resolves.**
 
-## 2. Proposed model: one name, issued and resolved by the catalog
+## 2. Proposed model: one name per tool, issued and resolved by the catalog (revised 2026-11-11, user direction)
 
-Each discovered tool gets exactly **one exposed `name`**:
+**Source, in plain words:** the document a tool comes from, meaning one browser window or frame at one origin. Formally the pair (WindowProxy, origin). A frame that navigates to another origin counts as a new source.
 
-- **unique within the catalog** and **provider-safe**: `[A-Za-z0-9_-]`, at most `maxNameLength` (default 64). That charset is the intersection of the common provider rules, so there is no per-provider regex option;
-- **sticky:** assigned the first time an identity (source window + origin + WebMCP name, as in D13) is seen, and kept for the catalog's lifetime, including across unregister/re-register of that identity;
-- **never reused** for another identity. If the tool disappears, its name is retired: calls return `unavailable`, never another tool.
+Each discovered tool gets exactly **one name**. It is what the model sees and what `callTool` resolves, so callers need no map.
 
-Assignment uses no hash, so it cannot rely on hashes never colliding. Uniqueness comes from the catalog's own registry:
+1. **Every tool of a source carries that source's tag, systematically.** The tag is assigned the first time the catalog sees the source, from a counter local to the catalog: `self` for the catalog's own document, then `f1`, `f2`… for other frames. It is never reused for another source.
 
-1. **Base:** the WebMCP name with invalid characters replaced by `_`, truncated.
-2. **Taken by another identity:** try `${base}_${sourceKey}` (`search_f1`), then `${base}_2`, `_3`…, truncating the base so it still fits.
-3. **First seen wins:** the first identity seen gets the plain name. Names depend on discovery order, so they are stable for a catalog's lifetime but not across page reloads. That is enough, because the model receives a fresh list with each request.
+   **Name = `<tag>__<tool name>`,** e.g. `self__search`, `f1__search`. It is a prefix, chosen so that every tool of one source groups together. Because the tag never depends on what else is registered, registration order is irrelevant: A's `toto` is always `f1__toto`.
+2. **Same source + same WebMCP name gives the same name**, across unregister/re-register, for the catalog's lifetime.
+3. **Provider-safe:** `[A-Za-z0-9_-]`, at most `maxNameLength` (default 64), including `namePrefix` (§7) and the tag.
+   - Invalid characters become `_`.
+   - The tool-name part is truncated when needed; the tag and prefix are never truncated.
+4. **Collisions that the tag cannot prevent** happen inside **one** source, when two distinct WebMCP names normalize or truncate to the same string (`a.b` and `a_b`, or two long names sharing a prefix). The catalog's own registry resolves them: the first one seen keeps the plain normalized name, and the next gets `_2`, `_3`… (truncating further to fit). Assignments are sticky and never reused. There is no hash, so nothing assumes hashes never collide: uniqueness is checked against the registry.
+5. **A source that disappears or changes origin** retires its names. Calls to them answer `unavailable` and are never rerouted, and the new origin gets a new tag.
 
-This **replaces** D13's always-prefixed ids and `toProviderName`. D13's identity rules (source = window + origin; same-origin navigation keeps the source; origin change gives a new source) are kept internally.
+**Scope: per catalog instance, no global state.** Tags, names and the registry live inside the instance you create. Two catalogs may assign different tags to the same frame: use `namePrefix` (§7) when both feed one model.
+
+This **revises D15**, which had a page-wide identity table so that ids matched across catalogs. That module-level table is dropped in favour of instance-owned state, per the "no hidden global state" preference.
+
+- **In React:** `useToolCatalog` keeps one instance across re-renders and the StrictMode double effect (lazy `useState`). A remount creates a new catalog, so names may change. That is fine, because the model gets a fresh list per request.
+
+**Stable for the catalog's lifetime only.** Reloads do not matter, and names are not meant to be persisted.
 
 ## 3. Proposed API (consumer only)
 
@@ -470,7 +478,7 @@ type ToolCallError =               // every variant has `message`
 ## 6. Open points for the user (one at a time)
 
 0. Publisher 5c (current point): `registerTool` + `registerTools` sharing `{ signal }` as the only cleanup, with per-tool results for groups?
-1. Is the **single sticky exposed name** acceptable, given that the first-seen tool gets the plain name, so names depend on discovery order and are not stable across reloads?
+1. ~~Single sticky exposed name~~ Revised per user direction (§2): a systematic source tag, plus an internal suffix only for normalization collisions inside one source.
 2. **Predicate names:** `isCatalogTool(name)` (membership) and `isAvailable(name)` (availability)?
 
 Everything else above is Opus's arbitration and can be applied to types and README once these are confirmed.
