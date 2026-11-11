@@ -30,7 +30,7 @@ This **replaces** D13's always-prefixed ids and `toProviderName`. D13's identity
 ## 3. Proposed API (consumer only)
 
 ```ts nocheck
-const catalog = createToolCatalog({ fromOrigins?, modelContext?, maxNameLength? });
+const catalog = createToolCatalog({ fromOrigins?, modelContext?, maxNameLength?, namePrefix? });
 
 await catalog.getTools();          // fresh query → readonly CatalogTool[]
 catalog.getSnapshot();             // last result, sync (status, tools)
@@ -40,7 +40,8 @@ catalog.isCatalogTool(name);       // membership: was this name issued by this c
 catalog.isAvailable(name);         // availability: is it in the latest snapshot right now?
 await catalog.callTool(name, input, { signal }); // never throws → ToolCallResult
 
-await catalog.findByDefinition(definition);      // typed tools for definitions you know (unchanged idea)
+catalog.getTool(name);             // latest snapshot entry (sync), or undefined
+// typed calls: callTool(name, input, { definition }), see §8
 catalog.update({ fromOrigins });
 catalog.dispose();                 // ends everything, including subscriptions
 ```
@@ -67,7 +68,7 @@ interface CatalogTool {
 | `unavailable` | issued by this catalog, but not currently available (removed, frame gone); nothing executed, **never rerouted** |
 | `tool_failed` | the tool returned a failure envelope (`failure` attached) |
 | `rejected` | the browser rejected the call (`domException`) |
-| `input_invalid` / `output_invalid` | only via `findByDefinition` |
+| `input_invalid` / `output_invalid` / `definition_mismatch` | only with `{ definition }` (§8) |
 
 Why **two** predicates:
 
@@ -80,7 +81,7 @@ What the snapshot can and cannot be:
 
 - **It is descriptions plus JSON Schema.** A remote page's validators cannot cross the page boundary, and the SDK never rebuilds validators from JSON Schema (D14).
 - **It cannot be definitions or implementations.**
-- **Typed calls** still require importing the shared `defineTool` definition (`findByDefinition`).
+- **Typed calls** still require importing the shared `defineTool` definition (`callTool(name, input, { definition })`, §8).
 
 **Removed from the current API:** `id`, `DiscoveredTool.call`, `catalog.call(id)`, `toProviderName`, `find` (renamed `findByDefinition`), `not_found` (split into `unknown_tool` / `unavailable`).
 
@@ -323,6 +324,77 @@ unregister();
 - **Both:** no WebMCP resolves `"unsupported"` (D1). A signal that is already aborted, or aborted while registering, rejects with `signal.reason`, like the native call.
 
 **React is unchanged:** `useRegisterTools([...])` / `<RegisterTools>` own their controllers internally (5b).
+
+## 7. Several catalogs and other tools in the same model (proposal)
+
+**Facts:** names are unique **per catalog instance**, and the same instance must both list the tools and execute them. That is a bounded guarantee, not a global one.
+
+**Default answer: one catalog per model.** A single catalog already spans several origins (`fromOrigins: [...]`), so most apps never need two.
+
+**When a second catalog is real** (another `modelContext` such as a test double or a different implementation, a different origin filter for another panel, or different lifetimes) and both feed the **same** model, their names can collide. The same is true of the model's **non-WebMCP tools** (server tools, other MCP servers): a page tool called `search` and a server tool called `search`.
+
+**Proposal: one explicit option, `namePrefix`.**
+
+```ts nocheck
+const pageTools = createToolCatalog({ namePrefix: "page_" });
+const widgetTools = createToolCatalog({ fromOrigins: ["https://widgets.example"], namePrefix: "widget_" });
+
+// one model, two catalogs: list both, route each call to the catalog that issued its name
+const tools = [...(await pageTools.getTools()), ...(await widgetTools.getTools())];
+const owner = [pageTools, widgetTools].find((c) => c.isCatalogTool(toolCall.toolName));
+```
+
+- **Guarantee:** a catalog only issues names that start with its prefix, and the prefix counts toward `maxNameLength`.
+  - **Two catalogs** with prefixes that do not overlap therefore never issue the same name.
+  - **Your own tools** never collide if you keep them outside every prefix.
+- **What stays your responsibility:** choosing distinct prefixes. The SDK keeps no global registry, singleton or implicit shared state, so it cannot check prefixes across instances. That is stated as a limit.
+- **Rejected:**
+  - a global name registry (hidden state);
+  - automatic merging of catalogs (a new abstraction with little gain);
+  - a `reservedNames` list (a second concept; the prefix covers both cases).
+- **Ownership and lifetime:** the catalog that issued a name owns it until `dispose()`. After `dispose()`, `isCatalogTool(name)` stays `true` and `callTool` answers `unavailable`, so a late call is answered by its owner instead of falling through.
+
+## 8. Narrowing tool calls, unknown vs known contracts (proposal)
+
+The AI SDK hands the client `toolCall.toolName: string` and `toolCall.input: unknown` (dynamic tools). There are two honest levels:
+
+**Level 1: membership only (any discovered tool).**
+
+```ts nocheck
+if (catalog.isCatalogTool(toolCall.toolName)) {
+  const r = await catalog.callTool(toolCall.toolName, toolCall.input); // ToolCallResult<unknown>
+}
+```
+
+`isCatalogTool` is a boolean about the **name** ("this catalog issued it"). It narrows nothing about the arguments, which stay `unknown`, and the provider page validates them.
+
+**Level 2: a known contract (you import the same `defineTool` definition as the page).**
+
+```ts nocheck
+import { searchProducts } from "@shop/tool-definitions";
+
+const tool = catalog.getTool(toolCall.toolName);          // latest snapshot entry, or undefined
+if (tool?.webmcpName === searchProducts.name) {
+  const r = await catalog.callTool(tool.name, toolCall.input, { definition: searchProducts });
+  //    ^ ToolCallResult<{ hits: … }>: input validated locally first (nothing sent if invalid),
+  //      result validated with the definition's output schema (transforms applied), so the type is earned at runtime
+}
+```
+
+- **Static types come from the definition you import,** never from the discovered JSON Schema. The match is by name, which proves nothing about the contract, so `{ definition }` validates the actual values both ways:
+  - **input:** a failure is `input_invalid`, and nothing is sent; the **original** input is sent when valid;
+  - **output:** a failure is `output_invalid`.
+- **A mismatch is an explicit error:** if the tool under that name is not `definition.name`, the result is `definition_mismatch`. It is never rerouted.
+- **This replaces `findByDefinition`,** which is no longer needed: listing known tools is `tools.filter((t) => t.webmcpName === searchProducts.name)`.
+- **New lookup `getTool(name)`:** a sync read of the latest snapshot. It does not check current availability, because `callTool` decides that.
+- **No AI SDK coupling:** these are plain strings and `unknown`, which fit any framework.
+
+**Is "`getTools()` → snapshot to the model → `callTool(name, args)`" the right design?** Yes, with these stated limits:
+
+- **The snapshot can be stale by the time the model calls back.** A removed tool returns `unavailable`. A replaced tool (same identity, new descriptor) is called in its current version and validated (D17).
+- **A model can invent names.** `isCatalogTool` is then `false`, or `callTool` returns `unknown_tool`.
+- **Arguments are unknown** unless you bring the definition.
+- **Names are unique per instance only** (§7).
 
 ## 6. Open points for the user (one at a time)
 
