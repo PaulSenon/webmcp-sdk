@@ -1,3 +1,4 @@
+// Module-level WeakMaps: handlers (implementations), delegates (React wrappers).
 import type {
   AnyToolDefinition,
   InferHandlerInput,
@@ -8,12 +9,20 @@ import type { ToolFailure } from "./errors.js";
 import type { AnyOutputSchema } from "./schema.js";
 import { isToolError } from "./errors.js";
 import type { RegisterToolOptions } from "./register.js";
-const handlers = new WeakMap<AnyToolImplementation, (input: any, call: ToolCallContext) => unknown>();
+/** @internal */
+export type AnyHandler = (input: any, call: ToolCallContext) => unknown;
+const handlers = new WeakMap<AnyToolImplementation, AnyHandler>();
 
+const MESSAGES = {
+  input_invalid: "Arguments rejected; the tool did not run. Fix the fields below and call again.",
+  output_invalid: "The tool ran, but its result failed validation. The action may have been performed; check the current state before retrying.",
+  internalAfter: "The tool failed unexpectedly. It may have partially run; check the current state before retrying.",
+  internalBefore: "The tool failed unexpectedly before running. The tool did not run.",
+} as const;
 const delegates = new WeakMap<AnyToolImplementation, () => ReturnType<typeof implementationHandler>>();
 
-/** Internal only: React wrappers delegate to the latest committed handler. */
-export function implementationHandler(tool: AnyToolImplementation): (input: any, call: ToolCallContext) => unknown {
+/** @internal React wrappers delegate to the latest committed handler. */
+export function implementationHandler(tool: AnyToolImplementation): AnyHandler {
   const delegate = delegates.get(tool);
   if (delegate) return delegate();
   const handler = handlers.get(tool);
@@ -21,7 +30,7 @@ export function implementationHandler(tool: AnyToolImplementation): (input: any,
   return handler;
 }
 
-/** Internal only: construct a wrapper for an already validated definition. */
+/** @internal construct a wrapper for an already validated definition. */
 export function forwardingImplementation(tool: AnyToolImplementation,
   handler: () => ReturnType<typeof implementationHandler>): AnyToolImplementation {
   const wrapper = Object.freeze({ ...tool });
@@ -102,6 +111,7 @@ export type ToolRunResult<D extends AnyToolDefinition> =
 /**
  * Runs a tool exactly as a registration would (validate input → handler → validate
  * output → map failures), without a browser. Use it in unit tests.
+ * `runTool` does not call any hook.
  * `rawInput` is `unknown` on purpose: it is what an agent would send.
  *
  * @example
@@ -116,21 +126,21 @@ export function runTool<D extends AnyToolDefinition>(
   return executePipeline(tool, rawInput, options);
 }
 
-/** Internal shared executor; registration adds diagnostics, never changes agent output. */
+/** @internal Shared executor; registration adds diagnostics, never changes agent output. */
 export async function executePipeline<D extends AnyToolDefinition>(tool: ToolImplementation<D>, rawInput: unknown,
   options?: Pick<RegisterToolOptions, "signal" | "onUnexpectedError">): Promise<ToolRunResult<D>> {
   let handler: ReturnType<typeof implementationHandler>;
   let handlerCalled = false;
   const report = (error: unknown, kind: "internal" | "output_invalid" | "tool_error") => {
-    try { options?.onUnexpectedError?.(error, { toolName: tool.name, kind, handlerCalled }); }
+    try {
+      const returned = options?.onUnexpectedError?.(error, { toolName: tool.name, kind, handlerCalled });
+      void Promise.resolve(returned).catch(hookError => console.error("webmcp-sdk onUnexpectedError threw", hookError));
+    }
     catch (hookError) { console.error("webmcp-sdk onUnexpectedError threw", hookError); }
   };
   const fail = (kind: "internal" | "output_invalid", error: unknown): ToolRunResult<D> => {
     report(error, kind);
-    const message = kind === "output_invalid"
-      ? "The tool ran, but its result failed validation. The action may have been performed; check the current state before retrying."
-      : handlerCalled ? "The tool failed unexpectedly. It may have partially run; check the current state before retrying."
-      : "The tool failed unexpectedly before running. The tool did not run.";
+    const message = kind === "output_invalid" ? MESSAGES.output_invalid : handlerCalled ? MESSAGES.internalAfter : MESSAGES.internalBefore;
     return { ok: false, failure: kind === "output_invalid" ? { kind, handlerCalled: true, message } : { kind, handlerCalled, message } };
   };
   let input = rawInput === undefined ? {} : rawInput;
@@ -145,7 +155,7 @@ export async function executePipeline<D extends AnyToolDefinition>(tool: ToolImp
             return typeof key === "number" ? `[${key}]` : `${i ? "." : ""}${String(key)}`;
           }).join("") || "(root)" }));
         return { ok: false, failure: { kind: "input_invalid", handlerCalled: false,
-          message: "Arguments rejected; the tool did not run. Fix the fields below and call again.", issues,
+          message: MESSAGES.input_invalid, issues,
           ...(result.issues.length > 20 ? { omittedIssues: result.issues.length - 20 } : {}) } };
       }
       input = result.value;
@@ -159,7 +169,7 @@ export async function executePipeline<D extends AnyToolDefinition>(tool: ToolImp
     if (!isToolError(error)) return fail("internal", error);
     let data = error.data;
     if (data !== undefined) {
-      try { assertSerializable(data); } catch (cause) { data = undefined; report(cause, "tool_error"); }
+      try { data = snapshot({ isError: true, error: { data } }).error.data; } catch (cause) { data = undefined; report(cause, "tool_error"); }
     }
     return { ok: false, failure: { kind: "tool_error", handlerCalled: true, message: error.message,
       ...(error.code !== undefined ? { code: error.code } : {}), ...(data !== undefined ? { data } : {}) } };
@@ -167,13 +177,15 @@ export async function executePipeline<D extends AnyToolDefinition>(tool: ToolImp
   try {
     if (tool.definition.output) {
       const result = await tool.definition.output["~standard"].validate(output);
-      if (result.issues) return fail("output_invalid", result.issues);
+      if (result.issues) return fail("output_invalid", new Error("Output validation failed", { cause: result.issues }));
       output = result.value;
     } else if (output === undefined) output = null;
-    assertSerializable(output);
+    output = snapshot(output);
     return { ok: true, value: output as InferToolOutput<D> };
   } catch (error) { return fail("output_invalid", error); }
 }
-function assertSerializable(value: unknown) {
-  if (JSON.stringify(value) === undefined) throw new TypeError("Result cannot be serialized as JSON.");
+function snapshot<T>(value: T): T {
+  const json = JSON.stringify(value);
+  if (json === undefined) throw new TypeError("Result cannot be serialized as JSON.");
+  return JSON.parse(json) as T;
 }

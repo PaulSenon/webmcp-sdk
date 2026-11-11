@@ -9,7 +9,9 @@ import type { ToolAnnotations } from "./define.js";
 import type { ToolFailure } from "./errors.js";
 import type { ModelContextConsumerLike } from "./model-context.js";
 import { isToolFailureEnvelope } from "./errors.js";
-import { defaultContext } from "./runtime.js";
+import { defaultConsumer } from "./context.js";
+import { normalizeOrigins, errorName } from "./internal.js";
+import { createNameIssuer } from "./name-issuer.js";
 import type { RegisteredTool } from "./model-context.js";
 import type { JSONSchema } from "./schema.js";
 
@@ -22,6 +24,8 @@ export interface CatalogTool {
    * The name to give the model and to pass back to `callTool`. It is issued by this catalog:
    * - unique within the catalog;
    * - `[A-Za-z0-9_-]`, at most `maxNameLength`;
+   * - invalid characters become `_`; the tool-name part is truncated to fit;
+   * - collisions receive internal `_2`, `_3`, … suffixes;
    * - shaped `<namePrefix><source>__<tool name>`, e.g. `self__search` or `f1__search`.
    *
    * The source tag identifies the document the tool comes from: one window or frame **at one
@@ -51,11 +55,11 @@ export type ToolCallError =
   | { readonly kind: "unknown_tool"; readonly message: string }
   /** Issued by this catalog, but not available now (removed, frame gone, catalog disposed). Nothing was executed, and the call is never rerouted. */
   | { readonly kind: "unavailable"; readonly message: string }
-  /** `input` is not a JSON object. Nothing was executed. */
+  /** `input` is not a plain object (arrays, Date and class instances are rejected). Nothing was executed. */
   | { readonly kind: "invalid_arguments"; readonly message: string }
   /** The tool returned a failure envelope (e.g. its own `input_invalid`). `message` is `failure.message`. */
   | { readonly kind: "tool_failed"; readonly message: string; readonly failure: ToolFailure }
-  /** The browser rejected the call: `AbortError` (your signal, or the owner unloaded), `OperationError` (the tool threw; reason not forwarded), `SecurityError`… */
+  /** The result was unparsable JSON, or the browser rejected the call: `AbortError` (your signal, or the owner unloaded), `OperationError` (the tool threw; reason not forwarded), `SecurityError`… */
   | { readonly kind: "rejected"; readonly message: string; readonly domException: string };
 
 /**
@@ -130,30 +134,31 @@ export interface ToolCatalog {
   isCatalogTool(name: string): boolean;
   /**
    * Calls the tool currently registered under `name`. `input` is whatever the model sent:
-   * `undefined` becomes `{}`, and a non-object gives `invalid_arguments`. The tool's own
+   * `undefined` becomes `{}`, and anything other than a plain object gives `invalid_arguments`. The tool's own
    * page validates the arguments. A replaced tool is called in its current version. Never throws.
    */
   callTool(name: string, input?: unknown, options?: { readonly signal?: AbortSignal }): Promise<ToolCallResult>;
-  /** Changes the origins (compared by value); re-queries if they changed. */
+  /** Stores origins by value; an active catalog re-queries on change or while its context is missing. */
   update(options: Pick<ToolCatalogOptions, "fromOrigins">): void;
   /** Ends the catalog: stops discovery, releases every subscriber. Later calls answer `unavailable`. */
   dispose(): void;
 }
 
-/** Creates a catalog you own. Throws `TypeError` / `RangeError` for an invalid `namePrefix`. */
+/** Creates a catalog you own. Throws `TypeError` / `RangeError` for an invalid `namePrefix`, or `RangeError` unless `maxNameLength` is a finite positive integer. */
 export function createToolCatalog(options?: ToolCatalogOptions): ToolCatalog {
   const prefix = options?.namePrefix ?? "";
   const max = options?.maxNameLength ?? 64;
+  if (!Number.isFinite(max) || !Number.isInteger(max) || max <= 0) throw new RangeError("maxNameLength must be a finite positive integer.");
   if (!/^[A-Za-z0-9_-]*$/.test(prefix)) throw new TypeError("Invalid namePrefix charset.");
   if (prefix.length > max / 2) throw new RangeError("namePrefix exceeds half of maxNameLength.");
-  let origins = [...new Set(options?.fromOrigins ?? [])].sort();
+  let origins = normalizeOrigins(options?.fromOrigins);
   let context = options?.modelContext;
   let listening: ModelContextConsumerLike | undefined;
   let disposed = false, queried = false, sequence = 0, frameCounter = 0;
   let active = 0, pendingEvent = false;
   let snapshot: ToolCatalogSnapshot = { status: "idle", tools: [], version: 0 };
   const subscribers = new Set<(snapshot: ToolCatalogSnapshot) => void>();
-  const issued = new Set<string>();
+  const issuer = createNameIssuer({ prefix, maxNameLength: max });
   const sources = new WeakMap<Window, Map<string, { tag: string; names: Map<string, string> }>>();
   let current = new Map<string, RegisteredTool>();
   let ownWindow: Window | null | undefined;
@@ -184,15 +189,8 @@ export function createToolCatalog(options?: ToolCatalogOptions): ToolCatalog {
     }
     const old = source.names.get(tool.name);
     if (old) return old;
-    const head = `${prefix}${source.tag}__`;
-    const normalized = tool.name.replace(/[^A-Za-z0-9_-]/g, "_");
-    let suffix = "", n = 1, name: string;
-    do {
-      if (head.length + suffix.length >= max) throw new RangeError("maxNameLength cannot fit a source and tool name.");
-      name = head + normalized.slice(0, max - head.length - suffix.length) + suffix;
-      suffix = `_${++n}`;
-    } while (issued.has(name));
-    source.names.set(tool.name, name); issued.add(name);
+    const name = issuer.issue(source.tag, tool.name);
+    source.names.set(tool.name, name);
     return name;
   };
   async function query(): Promise<readonly CatalogTool[]> {
@@ -205,7 +203,7 @@ export function createToolCatalog(options?: ToolCatalogOptions): ToolCatalog {
     await Promise.resolve();
     if (seq === sequence && !disposed && snapshot.status === "idle") publish({ status: "loading", tools: snapshot.tools });
     try {
-      context ??= defaultContext();
+      context ??= defaultConsumer();
       listen();
       if (!context) {
         if (seq === sequence && !disposed) { current = new Map(); publish({ status: "unsupported", tools: snapshot.tools.length ? [] : snapshot.tools }); }
@@ -223,6 +221,7 @@ export function createToolCatalog(options?: ToolCatalogOptions): ToolCatalog {
           origin: tool.origin, isSameDocument: tool.window === ownWindow, webmcpName: tool.name };
       });
       current = registry;
+      // Preserve array identity when metadata is unchanged; refresh native descriptors above.
       const stable = JSON.stringify(mapped) === JSON.stringify(snapshot.tools) ? snapshot.tools : Object.freeze(mapped);
       publish({ status: "ready", tools: stable });
       return stable;
@@ -246,28 +245,32 @@ export function createToolCatalog(options?: ToolCatalogOptions): ToolCatalog {
       if (first) { listen(); void query(); }
       return () => { subscribers.delete(listener); if (!subscribers.size) stop(); };
     },
-    isCatalogTool: name => issued.has(name),
+    isCatalogTool: name => issuer.has(name),
     async callTool(name, input, callOptions) {
       try {
         if (disposed) return failure({ kind: "unavailable", message: "The tool is no longer available." });
-        if (!issued.has(name)) return failure({ kind: "unknown_tool", message: "Unknown tool name." });
-        if (!queried) await query();
+        if (!issuer.has(name)) return failure({ kind: "unknown_tool", message: "Unknown tool name." });
         const tool = current.get(name);
         if (!tool || !context) return failure({ kind: "unavailable", message: "The tool is no longer available." });
         if (input === undefined) input = {};
         if (!input || typeof input !== "object" || (Object.getPrototypeOf(input) !== Object.prototype && Object.getPrototypeOf(input) !== null))
           return failure({ kind: "invalid_arguments", message: "Tool arguments must be a plain object." });
-        const value: unknown = JSON.parse(await context.executeTool(tool, input, callOptions));
+        const json = await context.executeTool(tool, input, callOptions);
+        let value: unknown;
+        try { value = JSON.parse(json); }
+        catch { return failure({ kind: "rejected", domException: "SyntaxError", message: "The tool returned a result that is not valid JSON." }); }
         return isToolFailureEnvelope(value) ? failure({ kind: "tool_failed", message: value.error.message, failure: value.error }) : { ok: true, value };
       } catch (error) {
-        const name = error && typeof error === "object" && "name" in error ? String(error.name) : "Error";
+        const name = errorName(error);
         return name === "NotFoundError" ? failure({ kind: "unavailable", message: "The tool is no longer available." })
           : failure({ kind: "rejected", message: "The browser rejected the tool call.", domException: name });
       }
     },
     update(next) {
-      const value = [...new Set(next.fromOrigins ?? [])].sort();
-      if (JSON.stringify(value) !== JSON.stringify(origins)) { origins = value; if (!disposed) void query(); }
+      const value = normalizeOrigins(next.fromOrigins);
+      const changed = JSON.stringify(value) !== JSON.stringify(origins);
+      origins = value;
+      if (!disposed && (queried || subscribers.size) && (changed || !context)) void query();
     },
     dispose() { disposed = true; sequence++; stop(); subscribers.clear(); current.clear(); },
   };

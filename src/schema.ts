@@ -1,3 +1,4 @@
+// Module-level WeakMaps: resolutions (conversion successes and failures per definition).
 import type { StandardJSONSchemaV1, StandardSchemaV1 } from "@standard-schema/spec";
 import type { AnyToolDefinition } from "./define.js";
 
@@ -101,6 +102,7 @@ export type JSONSchemaResolution =
 
 // Conversion belongs to a definition, not to a validator or a global schema library.
 const resolutions = new WeakMap<AnyToolDefinition, { input: JSONSchemaResolution; output: JSONSchemaResolution | undefined }>();
+/** @internal */
 export function resolveSchemas(definition: AnyToolDefinition) {
   const cached = resolutions.get(definition);
   if (cached) return cached;

@@ -47,13 +47,15 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } fr
 import { createToolCatalog } from "../catalog.js";
 import { registerTool, registrationConflictEnded } from "../register.js";
 import { forwardingImplementation, implementationHandler } from "../implement.js";
-import { defaultContext } from "../runtime.js";
+import { defaultPublisher } from "../context.js";
+import { normalizeOrigins } from "../internal.js";
+import { WebMCPError } from "../errors.js";
 import type { AnyToolDefinition } from "../define.js";
 
 // React effects run only on clients. Choosing this once also avoids SSR layout warnings.
 const useCommit = typeof window === "undefined" ? useEffect : useLayoutEffect;
 declare const process: { env: { NODE_ENV?: string } };
-const originsKey = (value?: readonly string[]) => JSON.stringify([...new Set(value ?? [])].sort());
+const originsKey = (value?: readonly string[]) => JSON.stringify(normalizeOrigins(value));
 type Entry = {
   controller: AbortController;
   implementation: AnyToolImplementation;
@@ -100,12 +102,15 @@ export function useRegisterTools<const T extends readonly AnyToolImplementation[
   const [state, setState] = useState<RegisteredToolsState>({ supported: undefined,
     tools: tools.map(tool => ({ name: tool.name, state: "pending" })) });
   const alive = useRef(false);
+  const ordered = useRef(tools);
+  const blocked = useRef(new Map<string, RegisteredToolState>());
+  const duplicates = useRef(new Map<number, RegisteredToolState>());
   const publish = () => {
     if (!alive.current) return;
     const next: RegisteredToolsState = { supported: !!configuration.current?.context,
-      tools: [...entries.current.values()].map(entry => entry.state) };
+      tools: committed.current?.enabled === false ? [] : ordered.current.map((tool, i) => duplicates.current.get(i) ?? blocked.current.get(tool.name) ?? entries.current.get(tool.definition)?.state ?? { name: tool.name, state: "pending" }) };
     setState(old => old.supported === next.supported && old.tools.length === next.tools.length &&
-      old.tools.every((tool, i) => tool === next.tools[i]) ? old : next);
+      old.tools.every((tool, i) => sameToolState(tool, next.tools[i]!)) ? old : next);
   };
   useCommit(() => {
     alive.current = true;
@@ -118,65 +123,84 @@ export function useRegisterTools<const T extends readonly AnyToolImplementation[
   }, []);
   useCommit(() => {
     committed.current = options;
-    const context = options?.modelContext ?? defaultContext();
+    ordered.current = tools;
+    duplicates.current.clear();
+    const seen = new Set<string>();
+    const unique = tools.filter((tool, i) => {
+      if (seen.has(tool.name)) {
+        duplicates.current.set(i, { name: tool.name, state: "error", error: new WebMCPError("duplicate_name", "Duplicate tool name in list.", { toolName: tool.name }) as RegistrationError });
+        return false;
+      }
+      seen.add(tool.name); return true;
+    });
+    const nextChurn = new Map<string, { definition: AnyToolDefinition; count: number }>();
+    for (const tool of unique) {
+      const previous = churn.current.get(tool.name);
+      const count = previous && previous.definition !== tool.definition ? previous.count + 1 : 0;
+      warnOnDefinitionChurn(tool.name, count);
+      if (count > 3 && !blocked.current.has(tool.name)) blocked.current.set(tool.name, {
+        name: tool.name, state: "error", error: new WebMCPError("registration_failed", `Define tool "${tool.name}" at module scope.`, { toolName: tool.name }) as RegistrationError,
+      });
+      nextChurn.set(tool.name, { definition: tool.definition, count });
+    }
+    churn.current = nextChurn;
+
+    const context = options?.modelContext ?? defaultPublisher();
     const exposure = originsKey(options?.exposedTo);
     const reset = configuration.current?.context !== context || configuration.current?.exposure !== exposure;
     configuration.current = { context, exposure };
-    const wanted = new Set(options?.enabled === false ? [] : tools.map(tool => tool.definition));
+    const wanted = new Set(options?.enabled === false ? [] : unique.filter(tool => !blocked.current.has(tool.name)).map(tool => tool.definition));
     for (const [definition, entry] of entries.current) {
       if (reset || !wanted.has(definition)) { entry.controller.abort(); entries.current.delete(definition); }
     }
-    for (const tool of tools) {
+    for (const tool of unique) {
       if (!wanted.has(tool.definition)) continue;
       const old = entries.current.get(tool.definition);
       if (old) { old.implementation = tool; continue; }
       const entry: Entry = { controller: new AbortController(), implementation: tool,
         state: { name: tool.name, state: "pending" } };
       entries.current.set(tool.definition, entry);
-      const wrapper = forwardingImplementation(tool, () => implementationHandler(entry.implementation));
-      const attempt = () => {
-        if (entry.controller.signal.aborted) return;
-        void registerTool(wrapper, { signal: entry.controller.signal,
-          ...(context ? { modelContext: context } : {}),
-          ...(options?.exposedTo ? { exposedTo: [...options.exposedTo] } : {}),
-          onUnexpectedError: (error, info) => committed.current?.onUnexpectedError?.(error, info),
-        }).then(status => {
-          if (entry.controller.signal.aborted) return;
-          entry.state = { name: tool.name, state: status }; publish();
-        }, (error: RegistrationError) => {
-          if (entry.controller.signal.aborted) return;
-          entry.state = { name: tool.name, state: "error", error }; publish();
-          const ended = registrationConflictEnded(error);
-          if (ended) void ended.then(() => {
-            if (entry.controller.signal.aborted) return;
-            entry.state = { name: tool.name, state: "pending" }; publish(); attempt();
-          });
-        });
-      };
-      attempt();
-    }
-    // Preserve the caller's list order without changing retained registrations.
-    entries.current = new Map(tools.flatMap(tool => {
-      const entry = entries.current.get(tool.definition);
-      return entry ? [[tool.definition, entry] as const] : [];
-    }));
-    // This runs after commits only, so abandoned renders neither refresh handlers nor warn.
-    let env: string | undefined;
-    try { env = process.env.NODE_ENV; } catch { /* unbundled browser development */ }
-    if (env !== "production") {
-      const next = new Map<string, { definition: AnyToolDefinition; count: number }>();
-      for (const tool of tools) {
-        const previous = churn.current.get(tool.name);
-        const changed = previous && previous.definition !== tool.definition;
-        const count = previous ? previous.count + (changed ? 1 : 0) : 0;
-        if (changed && count === 3) console.warn(`webmcp-sdk: definition "${tool.name}" changes identity on consecutive commits; keep definitions at module scope.`);
-        next.set(tool.name, { definition: tool.definition, count });
-      }
-      churn.current = next;
+      startRegistration(entry, tool, { ...options, ...(context ? { modelContext: context } : {}) }, () => committed.current, publish);
     }
     publish();
   });
   return state;
+}
+
+function sameToolState(a: RegisteredToolState, b: RegisteredToolState): boolean {
+  return a.name === b.name && a.state === b.state && a.error?.code === b.error?.code && a.error?.message === b.error?.message;
+}
+
+function startRegistration(entry: Entry, tool: AnyToolImplementation, options: UseRegisterToolsOptions,
+  committed: () => UseRegisterToolsOptions | undefined, publish: () => void) {
+  const context = options.modelContext;
+  const wrapper = forwardingImplementation(tool, () => implementationHandler(entry.implementation));
+  const attempt = () => {
+    if (entry.controller.signal.aborted) return;
+    void registerTool(wrapper, { signal: entry.controller.signal,
+      ...(context ? { modelContext: context } : {}),
+      ...(options.exposedTo ? { exposedTo: [...options.exposedTo] } : {}),
+      onUnexpectedError: (error, info) => committed()?.onUnexpectedError?.(error, info),
+    }).then(status => {
+      if (entry.controller.signal.aborted) return;
+      entry.state = { name: tool.name, state: status }; publish();
+    }, (error: RegistrationError) => {
+      if (entry.controller.signal.aborted) return;
+      entry.state = { name: tool.name, state: "error", error }; publish();
+      const ended = registrationConflictEnded(error);
+      if (ended) ended.subscribe(() => {
+        if (entry.controller.signal.aborted) return;
+        entry.state = { name: tool.name, state: "pending" }; publish(); attempt();
+      }, entry.controller.signal);
+    });
+  };
+  attempt();
+}
+
+function warnOnDefinitionChurn(name: string, count: number) {
+  let env: string | undefined;
+  try { env = process.env.NODE_ENV; } catch { /* unbundled browser */ }
+  if (env !== "production" && count === 3) console.warn(`webmcp-sdk: definition "${name}" changes identity on consecutive commits; keep definitions at module scope.`);
 }
 
 export type RegisterToolsProps<T extends readonly AnyToolImplementation[]> = UseRegisterToolsOptions & {

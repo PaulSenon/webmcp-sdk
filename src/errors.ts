@@ -1,5 +1,6 @@
 
 import type { JsonValue } from "./schema.js";
+const TOOL_ERROR_BRAND = Symbol.for("webmcp-sdk.tool-error");
 
 /*
  * Two audiences, kept apart:
@@ -48,7 +49,9 @@ export type ToolFailure =
   | { readonly kind: "output_invalid"; readonly handlerCalled: true; readonly message: string };
 
 /** The kinds above, as a type. */
-export type ToolFailureKind = ToolFailure["kind"];
+export type ToolFailureKind = (typeof FAILURE_KINDS)[number];
+/** @internal */
+export const FAILURE_KINDS = ["input_invalid", "tool_error", "internal", "output_invalid"] as const;
 
 /**
  * The JSON value a failed call returns to the browser (in-band).
@@ -64,6 +67,18 @@ export interface ToolFailureEnvelope {
   readonly error: ToolFailure;
 }
 
+/** @internal */
+export const envelopeSchema = { type: "object", required: ["isError", "error"], properties: {
+  isError: { const: true }, error: { type: "object", required: ["kind", "message", "handlerCalled"], properties: {
+    kind: { enum: FAILURE_KINDS },
+    message: { type: "string" }, handlerCalled: { type: "boolean" },
+    issues: { type: "array", items: { type: "object", required: ["path", "message"], properties: {
+      path: { type: "string" }, message: { type: "string" } } } }, omittedIssues: { type: "integer" },
+    code: { type: "string" }, data: {},
+  } },
+} };
+
+
 /**
  * `true` if `value` is a failure envelope: `isError === true`, and `error` carries a known
  * `kind` and a string `message`. A successful result that happens to have exactly this
@@ -73,7 +88,7 @@ export function isToolFailureEnvelope(value: unknown): value is ToolFailureEnvel
   if (!value || typeof value !== "object") return false;
   const v = value as ToolFailureEnvelope;
   return v.isError === true && !!v.error && typeof v.error.message === "string" &&
-    ["input_invalid", "tool_error", "internal", "output_invalid"].includes(v.error.kind);
+    (FAILURE_KINDS as readonly string[]).includes(v.error.kind);
 }
 
 export interface ToolErrorOptions {
@@ -100,6 +115,7 @@ export interface ToolErrorOptions {
  */
 export class ToolError extends Error {
   override name = "ToolError";
+  readonly [TOOL_ERROR_BRAND] = true;
   readonly code: string | undefined;
   readonly data: JsonValue | undefined;
 
@@ -151,5 +167,3 @@ export class WebMCPError extends Error {
     this.toolName = options?.toolName;
   }
 }
-
-Object.defineProperty(ToolError.prototype, Symbol.for("webmcp-sdk.tool-error"), { value: true });

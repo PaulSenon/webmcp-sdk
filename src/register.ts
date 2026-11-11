@@ -5,30 +5,13 @@ import { WebMCPError } from "./errors.js";
 import { toJSONSchema } from "./define.js";
 import { executePipeline } from "./implement.js";
 import type { ModelContextTool } from "./model-context.js";
-import { defaultContext, withAbort } from "./runtime.js";
+import { defaultPublisher } from "./context.js";
+import { withAbort } from "./abort.js";
+import { errorName } from "./internal.js";
 
-// Internal coordination only: pending settlement and active ownership, per context/name.
-interface RegistryEntry {
-  promise: Promise<unknown>;
-  signal: AbortSignal | undefined;
-  ended: Promise<void>;
-  end(): void;
-}
-const pending = new WeakMap<ModelContextLike, Map<string, RegistryEntry>>();
-const conflicts = new WeakMap<object, Promise<void>>();
-/** Internal: only SDK-owned conflicts have a lifetime to wait for. */
-export function registrationConflictEnded(error: object): Promise<void> | undefined {
-  return conflicts.get(error);
-}
-const envelopeSchema = { type: "object", required: ["isError", "error"], properties: {
-  isError: { const: true }, error: { type: "object", required: ["kind", "message", "handlerCalled"], properties: {
-    kind: { enum: ["input_invalid", "tool_error", "internal", "output_invalid"] },
-    message: { type: "string" }, handlerCalled: { type: "boolean" },
-    issues: { type: "array", items: { type: "object", required: ["path", "message"], properties: {
-      path: { type: "string" }, message: { type: "string" } } } }, omittedIssues: { type: "integer" },
-    code: { type: "string" }, data: {},
-  } },
-} };
+import { coordinateRegistration } from "./registration-coordination.js";
+export { registrationConflictEnded } from "./registration-coordination.js";
+import { envelopeSchema } from "./errors.js";
 
 // ---------------------------------------------------------------------------
 // Compile-time duplicate-name check for `registerTools` (best-effort)
@@ -132,10 +115,10 @@ export function registerTool(tool: AnyToolImplementation, options?: RegisterTool
   return registerOne(tool, options ?? {});
 }
 
-/** The outcome for one tool of a {@link registerTools} call. */
 /** A `WebMCPError` as produced by registration (never `invalid_definition`, which `defineTool` throws). */
 export type RegistrationError = WebMCPError & { readonly code: Exclude<WebMCPErrorCode, "invalid_definition"> };
 
+/** The outcome for one tool of a {@link registerTools} call. */
 export type RegisterToolsResult =
   | { readonly name: string; readonly status: RegisterToolStatus; readonly error?: undefined }
   | { readonly name: string; readonly status: "error"; readonly error: RegistrationError };
@@ -176,61 +159,50 @@ export function registerTools<const T extends readonly AnyToolImplementation[]>(
 
 async function registerOne(tool: AnyToolImplementation, options: RegisterToolOptions): Promise<RegisterToolStatus> {
   options.signal?.throwIfAborted();
-  const context = options.modelContext ?? defaultContext();
+  const context = options.modelContext ?? defaultPublisher();
   if (!context) return "unsupported";
-  let names = pending.get(context);
-  if (!names) { names = new Map(); pending.set(context, names); }
-  const previous = names.get(tool.name);
-  const work = (async () => {
-    if (previous?.signal?.aborted) await previous.promise.catch(() => {});
+  return coordinateRegistration(context, tool.name, options.signal, async () => {
     options.signal?.throwIfAborted();
-    const schemas = toJSONSchema(tool.definition);
-    for (const resolution of [schemas.input, schemas.output]) {
-      if (resolution && !resolution.ok) throw new WebMCPError("json_schema_unavailable", resolution.message,
-        { toolName: tool.name, cause: resolution.cause });
-    }
-    if (!schemas.input.ok) throw new Error("Unreachable");
-    const definition = tool.definition;
-    const native: ModelContextTool = {
-      name: tool.name, description: definition.description, inputSchema: schemas.input.schema,
-      ...(definition.title !== undefined ? { title: definition.title } : {}),
-      ...(definition.annotations ? { annotations: definition.annotations } : {}),
-      ...(schemas.output?.ok ? { outputSchema: { anyOf: [schemas.output.schema, envelopeSchema] } } : {}),
-      execute: async (input, { signal }) => {
-        const result = await executePipeline(tool, input, { signal,
-          ...(options.onUnexpectedError ? { onUnexpectedError: options.onUnexpectedError } : {}) });
-        return result.ok ? result.value : { isError: true, error: result.failure };
-      },
-    };
+    const native = buildNativeTool(tool, options);
     try {
       await context.registerTool(native, {
         ...(options.signal ? { signal: options.signal } : {}),
         ...(options.exposedTo ? { exposedTo: options.exposedTo } : {}),
       });
-      options.signal?.throwIfAborted();
       return "registered" as const;
     } catch (cause) {
       if (options.signal?.aborted) throw options.signal.reason;
-      const error = new WebMCPError(cause && typeof cause === "object" && "name" in cause && cause.name === "InvalidStateError"
-        ? "duplicate_name" : "registration_failed", "Native tool registration failed.", { toolName: tool.name, cause });
-      if (error.code === "duplicate_name" && previous && !previous.signal?.aborted)
-        conflicts.set(error, previous.ended);
-      throw error;
+      throw mapNativeError(cause, tool.name);
     }
-  })();
-  let end!: () => void;
-  const ended = new Promise<void>(resolve => { end = resolve; });
-  const entry: RegistryEntry = { promise: work, signal: options.signal, ended, end };
-  // A concurrent duplicate attempt must not hide the registration it conflicts with.
-  if (!previous || previous.signal?.aborted) names.set(tool.name, entry);
-  const release = () => {
-    if (names.get(tool.name) === entry) names.delete(tool.name);
-    options.signal?.removeEventListener("abort", onAbort);
-    entry.end();
+  });
+}
+
+function requireSchema(resolution: ReturnType<typeof toJSONSchema>["input"], toolName: string) {
+  if (!resolution.ok) throw new WebMCPError("json_schema_unavailable", resolution.message, { toolName, cause: resolution.cause });
+  return resolution.schema;
+}
+function buildNativeTool(tool: AnyToolImplementation, options: RegisterToolOptions): ModelContextTool {
+  const schemas = toJSONSchema(tool.definition);
+  for (const resolution of [schemas.input, schemas.output]) {
+    if (resolution && !resolution.ok) throw new WebMCPError("json_schema_unavailable", resolution.message,
+      { toolName: tool.name, cause: resolution.cause });
+  }
+  const input = requireSchema(schemas.input, tool.name);
+  const definition = tool.definition;
+  const native: ModelContextTool = {
+    name: tool.name, description: definition.description, inputSchema: input,
+    ...(definition.title !== undefined ? { title: definition.title } : {}),
+    ...(definition.annotations ? { annotations: definition.annotations } : {}),
+    ...(schemas.output?.ok ? { outputSchema: { anyOf: [schemas.output.schema, envelopeSchema] } } : {}),
+    execute: async (input, { signal }) => {
+      const result = await executePipeline(tool, input, { signal,
+        ...(options.onUnexpectedError ? { onUnexpectedError: options.onUnexpectedError } : {}) });
+      return result.ok ? result.value : { isError: true, error: result.failure };
+    },
   };
-  // Keep the entry until native settlement even when abort wins the SDK promise.
-  const onAbort = () => { void work.then(release, release); };
-  options.signal?.addEventListener("abort", onAbort, { once: true });
-  void work.then(() => { if (options.signal?.aborted) release(); }, release);
-  return withAbort(work, options.signal);
+  return native;
+}
+function mapNativeError(cause: unknown, toolName: string): RegistrationError {
+  return new WebMCPError(errorName(cause) === "InvalidStateError" ? "duplicate_name" : "registration_failed",
+    "Native tool registration failed.", { toolName, cause }) as RegistrationError;
 }

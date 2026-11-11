@@ -8,8 +8,3 @@ export class NotImplementedError extends Error {
     super(`webmcp-sdk: \`${api}\` is not implemented (design prototype, types only).`);
   }
 }
-
-/** @internal */
-export function notImplemented(api: string): never {
-  throw new NotImplementedError(api);
-}

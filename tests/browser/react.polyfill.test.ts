@@ -7,7 +7,7 @@ import { defineTool, implementTool } from '../../src/index.js';
 import { useRegisterTools, useToolCatalog } from '../../src/react/index.js';
 import type { UseToolCatalogResult } from '../../src/react/index.js';
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-it('POLYFILL React StrictMode: register in publisher, discover/call in consumer, remove publisher', async () => {
+it('React StrictMode: register in publisher, discover/call in consumer, remove publisher', async () => {
   expect('modelContext' in Document.prototype).toBe(false); installWebMCP();
   const definition = defineTool({ name: 'react_roundtrip', description: 'React round trip' });
   let result!: UseToolCatalogResult;

@@ -1,3 +1,4 @@
+import { deferred } from './helpers.js';
 // @vitest-environment happy-dom
 /** React lifecycle tests against a FAKE, not native WebMCP. */
 import { afterEach, expect, it, vi } from 'vitest';
@@ -7,7 +8,7 @@ import { defineTool, implementTool, registerTool } from '../src/index.js';
 import { RegisterTools, useRegisterTools, useToolCatalog } from '../src/react/index.js';
 import type { RegisteredToolsState, UseRegisterToolsOptions, UseToolCatalogResult } from '../src/react/index.js';
 import type { AnyToolImplementation } from '../src/index.js';
-import { FakeModelContext, deferred } from './FAKE-model-context.js';
+import { FakeModelContext } from './FAKE-model-context.js';
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 const roots: ReturnType<typeof createRoot>[] = [];
 const containers: HTMLElement[] = [];
@@ -56,7 +57,9 @@ it('enabled removes tools; exposure compares origin sets by value; context chang
 });
 it('StrictMode replays registration without duplicate errors', async () => {
   const c = new FakeModelContext(), r = root(), spy = vi.spyOn(c, 'registerTool');
-  await act(async () => { r.render(h(StrictMode, null, h(Publisher, { tools: [impl()], options: { modelContext: c } }))); });
+  const states: RegisteredToolsState[] = [];
+  await act(async () => { r.render(h(StrictMode, null, h(Publisher, { tools: [impl()], options: { modelContext: c }, probe: () => states.push(state) }))); });
+  expect(states.flatMap(s => s.tools).some(t => t.error?.code === 'duplicate_name')).toBe(false);
   expect(spy).toHaveBeenCalledTimes(2); expect(state.tools[0]?.state).toBe('registered');
 });
 it('SDK duplicate retries after the other component unmounts', async () => {
@@ -110,20 +113,61 @@ it('catalog reacts to toolchange, compares origins by value, survives StrictMode
   const owner = new AbortController(); await act(async () => { await registerTool(impl(), { modelContext: c, signal: owner.signal }); }); expect(result.tools).toHaveLength(1);
   await act(async () => owner.abort()); expect(result.tools).toHaveLength(0);
   await act(async () => r.unmount()); roots.splice(roots.indexOf(r), 1); expect(dispose).not.toHaveBeenCalled(); expect(result.catalog).toBe(catalog);
-  const calls = query.mock.calls.length; c.dispatchEvent(new Event('toolchange')); await Promise.resolve(); expect(query).toHaveBeenCalledTimes(calls);
+  const calls = query.mock.calls.length; c.dispatchEvent(new Event('toolchange')); expect(query).toHaveBeenCalledTimes(calls);
 });
 
-it('warns for repeated definition identity churn only in development', async () => {
+it('stops inline definition churn with a stable module-scope error', async () => {
   const c = new FakeModelContext(), r = root(), warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-  const next = () => implementTool(defineTool({ name: 'inline', description: 'Inline' }), () => 1);
-  for (let i = 0; i < 4; i++) await render(r, [next()], { modelContext: c });
-  expect(warn).toHaveBeenCalledOnce(); expect(warn.mock.calls[0]?.[0]).toContain('module scope');
-  vi.stubEnv('NODE_ENV', 'production');
-  try {
-    const second = root();
-    for (let i = 0; i < 4; i++) await render(second, [next()], { modelContext: new FakeModelContext() });
-    expect(warn).toHaveBeenCalledOnce();
-  } finally { vi.unstubAllEnvs(); }
+  const register = vi.spyOn(c, 'registerTool'); let renders = 0;
+  function Inline() {
+    renders++;
+    state = useRegisterTools([implementTool(defineTool({ name: 'inline', description: 'Inline' }), () => 1)], { modelContext: c });
+    return null;
+  }
+  await act(async () => r.render(h(Inline)));
+  expect(renders).toBeLessThan(20);
+  expect(state.tools[0]).toMatchObject({ state: 'error', error: { code: 'registration_failed', message: expect.stringContaining('module scope') } });
+  const error = state.tools[0], calls = register.mock.calls.length;
+  await act(async () => r.render(h(Inline)));
+  expect(state.tools[0]).toBe(error); expect(register).toHaveBeenCalledTimes(calls);
+  expect(warn).toHaveBeenCalledOnce();
+});
+it('resets definition churn on an unchanged commit', async () => {
+  const c = new FakeModelContext(), r = root(), warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  for (let i = 0; i < 7; i++) {
+    const t = implementTool(defineTool({ name: 'swap', description: 'Swap' }), () => 1);
+    await render(r, [t], { modelContext: c });
+    await render(r, [t], { modelContext: c });
+  }
+  expect(warn).not.toHaveBeenCalled(); expect(state.tools[0]?.state).toBe('registered');
+});
+it('keeps the first handler when a definition is repeated in one list', async () => {
+  const c = new FakeModelContext(), r = root();
+  await render(r, [impl(1), impl(2)], { modelContext: c });
+  expect(state.tools).toMatchObject([{ state: 'registered' }, { state: 'error', error: { code: 'duplicate_name' } }]);
+  expect(await call(c)).toBe('1');
+});
+it('removes the conflict continuation when its component unmounts', async () => {
+  const c = new FakeModelContext(), owner = new AbortController(), r = root();
+  await registerTool(impl(), { modelContext: c, signal: owner.signal });
+  const subscribe = vi.spyOn(AbortSignal.prototype, 'removeEventListener');
+  await render(r, [impl(2)], { modelContext: c });
+  const register = vi.spyOn(c, 'registerTool');
+  await act(async () => r.unmount()); roots.splice(roots.indexOf(r), 1);
+  await act(async () => owner.abort());
+  expect(register).not.toHaveBeenCalled();
+  expect(subscribe).toHaveBeenCalledWith('abort', expect.any(Function));
+});
+it('retries against the successful owner after a failed schema attempt', async () => {
+  const c = new FakeModelContext(), owner = new AbortController(), r = root();
+  const { z } = await import('zod');
+  const { withJsonSchema } = await import('../src/index.js');
+  const schema = withJsonSchema(z.object({}), { input: () => { throw Error('conversion'); } } as any);
+  const failed = registerTool(implementTool(defineTool({ name: 'a', description: 'Bad', input: schema }), () => 0), { modelContext: c });
+  const success = registerTool(impl(), { modelContext: c, signal: owner.signal });
+  await expect(failed).rejects.toMatchObject({ code: 'json_schema_unavailable' }); await success;
+  await render(r, [impl(2)], { modelContext: c });
+  await act(async () => owner.abort()); expect(state.tools[0]?.state).toBe('registered'); expect(await call(c)).toBe('2');
 });
 it('reports pending registration and ignores its settlement after unmount', async () => {
   const c = new FakeModelContext(), r = root(), gate = deferred<void>();
@@ -150,4 +194,13 @@ it('list reordering preserves registrations and reports tools in the current ord
   await render(r, [impl(), second], { modelContext: c });
   await render(r, [second, impl()], { modelContext: c });
   expect(state.tools.map(t => t.name)).toEqual(['b', 'a']); expect(spy).toHaveBeenCalledTimes(2);
+});
+it('guards inline churn without warning in production', async () => {
+  const c = new FakeModelContext(), r = root(), warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.stubEnv('NODE_ENV', 'production');
+  function Inline() { state = useRegisterTools([implementTool(defineTool({ name: 'production_inline', description: 'Inline' }), () => 1)], { modelContext: c }); return null; }
+  try {
+    await act(async () => r.render(h(Inline)));
+    expect(state.tools[0]).toMatchObject({ state: 'error', error: { code: 'registration_failed' } }); expect(warn).not.toHaveBeenCalled();
+  } finally { vi.unstubAllEnvs(); }
 });

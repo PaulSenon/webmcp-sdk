@@ -583,7 +583,7 @@ if (catalog.isCatalogTool(toolCall.toolName)) {
 
 **Names.** Each tool gets **one** name, issued by the catalog, which you give to the model and get back unchanged:
 
-- **Unique within the catalog.** Provider-safe: `[A-Za-z0-9_-]`, at most 64 characters (`maxNameLength`).
+- **Unique within the catalog.** Provider-safe: `[A-Za-z0-9_-]`, at most 64 characters (`maxNameLength`). Invalid characters become `_`; the tool-name part is truncated to fit.
 - **Shaped `<source>__<tool name>`**, e.g. `self__search`, `f1__search`. The **source** is the document the tool comes from: one window or frame, at one origin. `self` is your page, and `f1`, `f2`… are frames in the order they were first seen. A frame that navigates to another origin becomes a new source. Do not parse names: use `webmcpName`, `origin` and `isSameDocument`. The source tag is on every name, so two frames exposing `search` never collide, whatever order they register in. If two names of one source become identical once shortened or normalized, the catalog adds `_2`, `_3`… internally.
 - **Stable for the catalog's lifetime,** including when a tool is unregistered and registered again. Not across page reloads, and never persisted.
 - **`webmcpName`** keeps the page's original name for display.
@@ -594,9 +594,9 @@ if (catalog.isCatalogTool(toolCall.toolName)) {
 - **It never throws,** and every failure has a `message` you can hand to the model:
   - `unknown_tool`: not a name of this catalog;
   - `unavailable`: the tool is gone. Nothing runs, and the call is never rerouted to another tool;
-  - `invalid_arguments`: the input is not an object;
+  - `invalid_arguments`: the input is not a plain object (arrays, Date and class instances are rejected);
   - `tool_failed`: the tool returned a failure envelope;
-  - `rejected`: the browser refused the call.
+  - `rejected`: the browser refused the call, or the result is not valid JSON.
 - **A replaced tool** (same name, new version) is called in its current version.
 - **`isCatalogTool(name)`** tells you the name belongs to this catalog, so you can route among other tools. It stays `true` for tools that later disappeared, which get an explicit `unavailable`. It says nothing about the arguments: discovered tools have no static types.
 
@@ -818,3 +818,5 @@ pnpm test:browser # official polyfill in real Chromium (not native WebMCP)
 ## License
 
 [MIT](LICENSE) © 2026 PaulSenon.
+
+Registration ordering is coordinated per package copy.
