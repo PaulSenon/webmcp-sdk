@@ -1,4 +1,4 @@
-# Proposal: consumer v2 + cleanup presentation (for review, 2026-11-11)
+# Proposal: consumer v2, publisher v2, cleanup (for review, 2026-11-11)
 
 Status: **proposal, not applied.** Types and README still show the current API. Nothing here needs runtime work. Spec, polyfill and license conclusions (D16, D19, MIT) are unchanged.
 
@@ -167,6 +167,7 @@ It also mentions the `signal` option on the same line. Three things are mixed:
 
 **Proposal:**
 
+- **Superseded for the publisher if 5b is accepted:** publishing then has a single cleanup, `abort()`, and no observation at all. The rule below remains for the catalog.
 - **`unregister()` and `dispose()` release all listeners** (no notification afterwards). So the nominal path has **one** cleanup:
 
   ```ts nocheck
@@ -189,8 +190,69 @@ It also mentions the `signal` option on the same line. Three things are mixed:
 - **React:** hooks own both lifetimes. Users never call `unregister`, `dispose` or `unsubscribe`.
 - **Publishing and discovery examples stay in separate sections.** No example mixes them.
 
+## 5b. Publisher v2: map WebMCP 1:1, keep reconciliation inside React (exploratory)
+
+**Guiding principle (user):** add quality of life, type-safety and DX where the native API is painful, map almost 1:1 where it is already trivial, and do not rebuild an abstraction without an obvious gain.
+
+**Where native is painful, so the SDK adds value:** hand-written JSON Schema, no validation, opaque errors (`OperationError`), no types, `document.modelContext` missing (a crash unless you check), the `execute` result format. **Where native is already trivial:** lifetime. `registerTool(tool, { signal })` plus `abort()` is idiomatic, and the pass-2 handle (`update` / `unregister` / `subscribe` / `settled`) rebuilds a lifecycle the platform already has.
+
+**Side by side:**
+
+```ts nocheck
+// Native WebMCP
+const ac = new AbortController();
+await document.modelContext?.registerTool(
+  { name: "add_to_cart", description: "…", inputSchema: { type: "object", properties: { sku: { type: "string" } }, required: ["sku"] },
+    execute: async (input) => { /* validate by hand, return JSON, errors are opaque */ } },
+  { signal: ac.signal },
+);
+ac.abort();
+
+// SDK, plain TypeScript (proposed): same shape and lifetime, plus definitions, validation, types and the envelope
+const ac = new AbortController();
+const status = await registerTool(addToCartTool({ cart }), { signal: ac.signal }); // "registered" | "unsupported"
+ac.abort();
+
+// SDK, React (unchanged for users)
+useRegisterTools([applyFilterTool({ dashboard }), pingTool]);
+```
+
+**Proposed core surface:**
+
+- **`registerTool(implementation, options?) → Promise<"registered" | "unsupported">`**, with options `signal`, `exposedTo`, `modelContext`, `onUnexpectedError`. Like the native call:
+  - **Rejects** on real failures (`WebMCPError`: `duplicate_name`, `json_schema_unavailable`, `registration_failed`).
+  - **An already-aborted signal, or an abort while pending,** rejects with `signal.reason`.
+  - **The one deliberate difference (D1):** no WebMCP resolves `"unsupported"` instead of crashing.
+- **Lifetime = the `signal`, and nothing else.** No handle, no `update`, no publisher `subscribe` / `getSnapshot` / `settled`. The result of the promise *is* the status. This also removes the double-cleanup confusion on the publisher side: there is no observation to clean up.
+- **Changing a handler or a definition in plain TS** works as it does natively: abort, then register the new implementation (or close over mutable state). The per-name ordering stays inside `registerTool`: a registration of a name waits for an SDK registration of the same name, whose signal was aborted, to finish settling (StrictMode, hot reload). It is invisible to users.
+- **Grouping is not part of the core.** Several tools sharing one lifetime share one signal: `await Promise.all([a, b].map((t) => registerTool(t, { signal })))`. A `registerTools` helper would only add the compile-time duplicate check, so it is not worth a second name.
+
+**React keeps reconciliation, internally.** React re-renders, recreates implementations through factories, and mounts and unmounts. `useRegisterTools(tools)` / `<RegisterTools>` therefore still need what D11 described:
+
+- per-definition registrations, each with its own `AbortController`;
+- handler refresh after commit, with no re-registration;
+- abort-then-register for a changed definition;
+- per-tool state for the UI.
+
+That logic lives in the binding, built on `registerTool`. TypeScript users never see a reactive model.
+
+**What changes in the decisions:**
+
+- **D12 (core handle with `update`)** would be **withdrawn**.
+- **D11's semantics** move into the React binding, as an implementation detail plus documented behaviour.
+- **D16 and D19 are unchanged:** a running call is not cancelled by `abort`, and `modelContext` is the default context or one injected explicitly.
+- **Collisions:** in plain TS, `duplicate_name` is the native rejection. In React it is per-tool state, retried when the conflicting **SDK** registration ends. A conflict with code outside the SDK stays an error until a later render or a remount, because the SDK cannot observe foreign removals reliably.
+
+**How the two sides fit (consistent with the consumer feedback):**
+
+- **Consumer:** the platform hands out raw refs, has no identity, and needs naming and routing, so the catalog absorbs real complexity.
+- **Publisher:** the platform is already simple, so the SDK stays close to it.
+
+**Open point for the user:** withdraw `registerTools(...).update(...)` in favour of `registerTool(impl, { signal })` (native-like) plus the React hooks?
+
 ## 6. Open points for the user (one at a time)
 
+0. Publisher 5b: native-like `registerTool(impl, { signal })`, with reconciliation kept inside React?
 1. Is the **single sticky exposed name** acceptable, given that the first-seen tool gets the plain name, so names depend on discovery order and are not stable across reloads?
 2. **Predicate names:** `isCatalogTool(name)` (membership) and `isAvailable(name)` (availability)?
 
