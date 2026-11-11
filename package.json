@@ -3,7 +3,7 @@
   "version": "0.0.0-design",
   "private": true,
   "description": "Design prototype: contract-first, Standard Schema-based TypeScript SDK for WebMCP tools. Not functional, not published.",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "type": "module",
   "sideEffects": false,
   "exports": {

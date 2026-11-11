@@ -658,7 +658,7 @@ As of 2026-11-10 (details and sources in [`docs/research.md`](docs/research.md))
 | API surface (core + React) | typed, documented, type-tested |
 | runtime | not implemented (`NotImplementedError`) |
 | npm | not published |
-| license | not chosen yet |
+| license | [MIT](LICENSE) |
 
 Design rationale and decisions: [`docs/design.md`](docs/design.md).
 
@@ -668,3 +668,7 @@ Design rationale and decisions: [`docs/design.md`](docs/design.md).
 pnpm install
 pnpm check   # typecheck sources, type tests, and every TypeScript block in this README
 ```
+
+## License
+
+[MIT](LICENSE) © 2026 PaulSenon.

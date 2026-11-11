@@ -44,7 +44,7 @@ So it would be pure ceremony today. Reversal criterion: a group-level option tha
 
 ### Remaining arbitrations
 
-All review points are closed (2026-11-10). Names validated: `defineTool`, `implementTool`, `registerTools`, `createToolCatalog`, `useRegisterTools`, `useToolCatalog`, plus `<RegisterTools>` (the component form required by the original brief). Only the **license** remains, and it must be chosen before any publication.
+All review points are closed (2026-11-10). Names validated: `defineTool`, `implementTool`, `registerTools`, `createToolCatalog`, `useRegisterTools`, `useToolCatalog`, plus `<RegisterTools>` (the component form required by the original brief). License: **MIT**, chosen by Opus on the user's delegation (2026-11-11). All dependency licenses are compatible: the runtime dependency `@standard-schema/spec` is MIT, the dev dependencies are MIT or Apache-2.0, and no third-party code is copied.
 
 ## Pass 2 surface
 

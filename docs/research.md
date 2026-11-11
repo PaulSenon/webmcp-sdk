@@ -1,3 +1,5 @@
+> Quoted excerpts (WebMCP IDL and spec text, library documentation) remain the work of their respective authors under their own licenses. They are reproduced briefly, with links, for reference. They are not covered by this repository's MIT license.
+
 # TL;DR for API designer
 
 - **EXPERIMENTAL:** Target `document.modelContext`, not `navigator.modelContext` or `window.agent`; WebMCP remains a CG draft, not a W3C Standard. [Draft, 2026-11-02](https://webmachinelearning.github.io/webmcp/).
