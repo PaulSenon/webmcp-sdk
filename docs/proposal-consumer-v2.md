@@ -279,6 +279,36 @@ shop.abort();
 - **Composable:** it plugs into existing lifetimes (a route's or component's `AbortController`, `AbortSignal.any([...])`, `AbortSignal.timeout`).
 - **The alternative,** a returned `unregister()` handle, would mean two ways to do the same thing, or giving up `signal`, which every native caller already knows. Rejected.
 
+**Compared with the user's alternative, a returned `unregister()` (2026-11-11):**
+
+```ts nocheck
+// A. Shared signal (native idiom)
+const ac = new AbortController();
+await registerTool(searchTool, { signal: ac.signal });
+await registerTools([searchTool, checkoutTool], { signal: ac.signal });
+ac.abort();                                              // one cleanup for everything registered with it
+
+// B. Returned unregister
+const { unregister } = await registerTools([searchTool, checkoutTool]);
+unregister();
+```
+
+| criterion | A. `signal` | B. returned `unregister` |
+| --------- | ----------- | ------------------------ |
+| nominal code | one extra line (`new AbortController()`) | the shortest |
+| cancelling while registration is still pending (unmount, navigation before the promise settles) | natural: `abort()` at any time, as in native | the function exists only after `await`, so the caller must wait and then undo, or the SDK needs a sync handle plus a promise (more concepts) |
+| composing with an existing lifetime (route, component, `AbortSignal.any`, `timeout`) | direct: pass the existing signal | manual wiring (`signal.addEventListener("abort", unregister)`), or also accept `signal`, which means two ways to do one thing |
+| several calls, one lifetime | same signal passed to each | one function per call to keep and call |
+| consistency with native WebMCP | identical | a different model |
+| failed `registerTool` (rejected) | nothing to clean up | nothing returned, so nothing to clean up |
+
+**Arbitration: A, `signal` only.**
+
+- **The decisive points are technical:** cancelling a pending registration, and plugging into lifetimes users already have. B's gain is one line.
+- **Offering both** recreates the double-cleanup confusion.
+- **A script that wants a function** writes `const unregister = () => ac.abort()`.
+- **React users never see either,** because the hooks own the lifetime.
+
 **Responsibilities:**
 
 - **Whoever owns the `AbortController` owns the group.** Aborting removes every tool of the call that got registered. There is nothing to keep apart from the controller.
