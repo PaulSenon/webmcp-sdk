@@ -14,7 +14,7 @@ WebMCP lets a web page expose functions ("tools") to AI agents through `document
 The core is framework-agnostic. React bindings are included.
 
 > [!WARNING]
-> **Unpublished prototype.** The framework-independent core and React bindings are implemented and tested. Nothing is published to npm. WebMCP itself is an experimental W3C Community Group draft (see [Platform status](#platform-status)).
+> **Unpublished prototype.** The framework-independent core and React bindings are implemented and tested. Nothing is published to npm yet; the package name will be `@senon/webmcp-sdk`. WebMCP itself is an experimental W3C Community Group draft (see [Platform status](#platform-status)).
 
 ```ts nocheck
 defineTool({...})   →   implementTool(definition, handler)   →   registerTool(tool, { signal })
@@ -41,7 +41,7 @@ defineTool({...})   →   implementTool(definition, handler)   →   registerToo
 
 ```ts
 import { z } from "zod";
-import { defineTool, implementTool, registerTool } from "webmcp-sdk";
+import { defineTool, implementTool, registerTool } from "@senon/webmcp-sdk";
 
 const todos: string[] = [];
 
@@ -86,7 +86,7 @@ A definition is a plain object: name, metadata and schemas. It has no code and n
 ```ts file=definitions.ts
 // definitions.ts
 import { z } from "zod";
-import { defineTool } from "webmcp-sdk";
+import { defineTool } from "@senon/webmcp-sdk";
 
 export const searchProducts = defineTool({
   name: "search_products",
@@ -136,7 +136,7 @@ A tool schema needs two capabilities. **Validation** checks values at runtime. *
 import * as v from "valibot";
 import { toStandardJsonSchema } from "@valibot/to-json-schema";
 import { type } from "arktype";
-import { defineTool, withJsonSchema, type StandardSchemaV1 } from "webmcp-sdk";
+import { defineTool, withJsonSchema, type StandardSchemaV1 } from "@senon/webmcp-sdk";
 
 defineTool({ name: "lookup", description: "Find an order by id.", input: type({ id: "string" }) });
 
@@ -175,7 +175,7 @@ Transforms and defaults give a schema two types. The SDK uses the right one on e
 
 ```ts
 import { z } from "zod";
-import { defineTool, implementTool, type InferToolInput, type InferToolOutput } from "webmcp-sdk";
+import { defineTool, implementTool, type InferToolInput, type InferToolOutput } from "@senon/webmcp-sdk";
 
 const scheduleMeeting = defineTool({
   name: "schedule_meeting",
@@ -199,7 +199,7 @@ Validators may be async, and the SDK always awaits them. Refinements are **not**
 
 ```ts
 import { z } from "zod";
-import { defineTool } from "webmcp-sdk";
+import { defineTool } from "@senon/webmcp-sdk";
 declare function skuExists(sku: string): Promise<boolean>;
 
 defineTool({
@@ -223,7 +223,7 @@ The types only check that a library *can* convert. A particular schema can still
 `implementTool(definition, handler)` attaches your code to a definition. The handler receives the validated input and `{ signal }`, and returns the output (sync or async):
 
 ```ts
-import { implementTool } from "webmcp-sdk";
+import { implementTool } from "@senon/webmcp-sdk";
 import { searchProducts } from "./definitions.js";
 declare const api: { search(q: string, limit: number, signal: AbortSignal): Promise<{ sku: string; title: string }[]> };
 
@@ -237,7 +237,7 @@ export const searchProductsTool = implementTool(searchProducts, async ({ q, limi
 When a tool needs data from your app (a store, the current user, a component's state), make the implementation a function of exactly that data:
 
 ```ts
-import { implementTool } from "webmcp-sdk";
+import { implementTool } from "@senon/webmcp-sdk";
 import { addToCart } from "./definitions.js";
 
 interface Cart { add(sku: string, quantity: number): Promise<number> }
@@ -265,7 +265,7 @@ A user declining a confirmation is a normal result, not an error. Declare it in 
 
 ```ts
 import { z } from "zod";
-import { defineTool, implementTool } from "webmcp-sdk";
+import { defineTool, implementTool } from "@senon/webmcp-sdk";
 declare function confirmDialog(text: string): Promise<boolean>;
 declare function placeOrder(): Promise<string>;
 
@@ -296,7 +296,7 @@ The confirmation UI is your page's own code: WebMCP's current draft has no API f
 Throw `ToolError` for failures the agent should understand. Anything else stays private.
 
 ```ts
-import { implementTool, ToolError } from "webmcp-sdk";
+import { implementTool, ToolError } from "@senon/webmcp-sdk";
 import { addToCart } from "./definitions.js";
 
 interface Stock { available(sku: string): Promise<number>; reserve(sku: string, n: number): Promise<number> }
@@ -321,7 +321,7 @@ Only these three fields are sent: never `stack`, `cause`, or other properties.
 Subclasses work the same way. Put whatever should reach the agent in `data`:
 
 ```ts
-import { ToolError } from "webmcp-sdk";
+import { ToolError } from "@senon/webmcp-sdk";
 
 export class OutOfStockError extends ToolError {
   constructor(readonly sku: string, left: number) {
@@ -333,7 +333,7 @@ export class OutOfStockError extends ToolError {
 **Anything else thrown is a defect.** The agent gets a generic message (`"internal"`), and you get the original via `onUnexpectedError`. It is also called for `output_invalid` and for `ToolError` data that could not be serialized, and never for `input_invalid` or a valid `ToolError`:
 
 ```ts
-import { registerTool } from "webmcp-sdk";
+import { registerTool } from "@senon/webmcp-sdk";
 import { addToCartTool, type Cart } from "./tools.js";
 declare const cart: Cart;
 
@@ -379,7 +379,7 @@ Registration mirrors WebMCP's `registerTool(tool, { signal })`: **the `signal` i
 
 ```ts file=tools.ts
 // tools.ts (used in the examples below)
-import { defineTool, implementTool } from "webmcp-sdk";
+import { defineTool, implementTool } from "@senon/webmcp-sdk";
 import { addToCart, searchProducts } from "./definitions.js";
 export interface Cart { add(sku: string, quantity: number): Promise<number> }
 export const searchProductsTool = implementTool(searchProducts, () => ({ hits: [] }));
@@ -391,7 +391,7 @@ export const checkoutTool = implementTool(defineTool({ name: "checkout", descrip
 **One tool:**
 
 ```ts
-import { registerTool } from "webmcp-sdk";
+import { registerTool } from "@senon/webmcp-sdk";
 import { searchProductsTool } from "./tools.js";
 
 const controller = new AbortController();
@@ -403,7 +403,7 @@ controller.abort(); // removes it
 **A group: one call, one lifetime, one cleanup:**
 
 ```ts
-import { registerTools } from "webmcp-sdk";
+import { registerTools } from "@senon/webmcp-sdk";
 import { addToCartTool, checkoutTool, searchProductsTool, type Cart } from "./tools.js";
 declare const cart: Cart;
 
@@ -431,7 +431,7 @@ shop.abort(); // removes every tool registered by this call
 **In your own effects** (Vue, Svelte, Solid, a hand-written React effect), cleanup may run before registration has settled, and the promise then rejects with the abort reason. Ignore that one:
 
 ```ts
-import { registerTool } from "webmcp-sdk";
+import { registerTool } from "@senon/webmcp-sdk";
 import { searchProductsTool } from "./tools.js";
 
 function effect() {
@@ -481,13 +481,13 @@ import "@w3c/webmcp-polyfill/auto"; // or: import { installWebMCP } from "@w3c/w
 
 ## React
 
-`webmcp-sdk/react` owns the lifetimes for you: there is no `register`, `abort` or cleanup to write.
+`@senon/webmcp-sdk/react` owns the lifetimes for you: there is no `register`, `abort` or cleanup to write.
 
 ```tsx
 import { useState } from "react";
 import { z } from "zod";
-import { defineTool, implementTool } from "webmcp-sdk";
-import { RegisterTools, useRegisterTools } from "webmcp-sdk/react";
+import { defineTool, implementTool } from "@senon/webmcp-sdk";
+import { RegisterTools, useRegisterTools } from "@senon/webmcp-sdk/react";
 
 // Module scope: stable definitions
 const applyFilter = defineTool({
@@ -549,7 +549,7 @@ export function Dashboard({ rows }: { rows: { status: string }[] }) {
 For **in-page agents**, such as a chat widget or a copilot running in the page, that need the tools exposed by the page and its frames. A **catalog** handles discovery, change tracking, naming and routing. You only adapt its list to your model's format.
 
 ```ts
-import { createToolCatalog } from "webmcp-sdk";
+import { createToolCatalog } from "@senon/webmcp-sdk";
 
 const catalog = createToolCatalog({ fromOrigins: ["https://widgets.example"] }); // you own it; no global state
 
@@ -615,7 +615,7 @@ This is the AI SDK's client-side tool pattern.
 // chat.tsx (browser)
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, lastAssistantMessageIsCompleteWithToolCalls } from "ai";
-import { createToolCatalog, type ToolCallError } from "webmcp-sdk";
+import { createToolCatalog, type ToolCallError } from "@senon/webmcp-sdk";
 
 const catalog = createToolCatalog(); // one per page/model; lives as long as the page: nothing to clean up
 
@@ -679,7 +679,7 @@ If your messages are typed, keep the tool map open for runtime-discovered tools:
 ```tsx
 import { useChat } from "@ai-sdk/react";
 import type { UIDataTypes, UIMessage, UITools } from "ai";
-import { createToolCatalog, type ToolCallError } from "webmcp-sdk";
+import { createToolCatalog, type ToolCallError } from "@senon/webmcp-sdk";
 
 type MyTools = { getWeather: { input: { city: string }; output: { tempC: number } } };
 type Message = UIMessage<unknown, UIDataTypes, MyTools & UITools>; // `& UITools` admits catalog names
@@ -709,7 +709,7 @@ export function TypedChat() {
 Names are unique **within one catalog**. If one model also receives tools from another catalog, or your own non-WebMCP tools, give each catalog a `namePrefix`. The catalog then issues **and** recognizes the prefixed names, so routing stays one `isCatalogTool` check per catalog:
 
 ```ts
-import { createToolCatalog } from "webmcp-sdk";
+import { createToolCatalog } from "@senon/webmcp-sdk";
 declare const toolCall: { toolName: string; input: unknown };
 
 const page = createToolCatalog({ namePrefix: "page_" });
@@ -731,7 +731,7 @@ const result = await owner?.callTool(toolCall.toolName, toolCall.input);
 - **`dispose()`** ends the whole catalog, every listener included. A module-scope catalog that lives as long as the page needs neither.
 
 ```tsx
-import { useToolCatalog } from "webmcp-sdk/react";
+import { useToolCatalog } from "@senon/webmcp-sdk/react";
 
 export function ToolList() {
   const { status, tools } = useToolCatalog({ fromOrigins: ["https://widgets.example"] }); // created and kept in sync for you
@@ -751,7 +751,7 @@ export function ToolList() {
 Definitions and implementations are plain values, so tests need no browser:
 
 ```ts
-import { runTool, toJSONSchema } from "webmcp-sdk";
+import { runTool, toJSONSchema } from "@senon/webmcp-sdk";
 import { addToCartTool, type Cart } from "./tools.js";
 import { addToCart } from "./definitions.js";
 
@@ -784,7 +784,7 @@ For registration tests, pass any object with a `registerTool` method as `modelCo
 
 ## Platform status
 
-As of 2026-11-11 (details and sources in [`docs/research.md`](docs/research.md)):
+As of 2026-11-11 (details and sources in [`docs/research.md`](https://github.com/PaulSenon/webmcp-sdk/blob/main/docs/research.md)):
 
 - **Spec:** [WebMCP Draft CG Report](https://webmachinelearning.github.io/webmcp/) (`main` at `aa1b51c`, 10 Nov 2026). **Experimental**, not on the W3C standards track.
   - Entry point `document.modelContext` (secure contexts).
@@ -799,12 +799,12 @@ As of 2026-11-11 (details and sources in [`docs/research.md`](docs/research.md))
 | - | - |
 | API surface (core + React) | typed, documented, type-tested |
 | runtime | core and React implemented; unit tests, and end-to-end tests on the official polyfill and on native WebMCP (Chrome 156, `--enable-features=WebMCP`) |
-| npm | not published |
+| npm | not published yet (`@senon/webmcp-sdk`) |
 | license | [MIT](LICENSE) |
 
-Test coverage, polyfill observations and unverified platform behavior: [`docs/implementation-log.md`](docs/implementation-log.md).
+Test coverage, polyfill observations and unverified platform behavior: [`docs/implementation-log.md`](https://github.com/PaulSenon/webmcp-sdk/blob/main/docs/implementation-log.md).
 
-Design rationale and decisions: [`docs/design.md`](docs/design.md).
+Design rationale and decisions: [`docs/design.md`](https://github.com/PaulSenon/webmcp-sdk/blob/main/docs/design.md).
 
 ## Development
 

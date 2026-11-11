@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { z } from "zod";
-import { defineTool, implementTool, type ToolCatalog } from "webmcp-sdk";
-import { RegisterTools, useRegisterTools, useToolCatalog, type RegisteredToolsState } from "webmcp-sdk/react";
+import { defineTool, implementTool, type ToolCatalog } from "@senon/webmcp-sdk";
+import { RegisterTools, useRegisterTools, useToolCatalog, type RegisteredToolsState } from "@senon/webmcp-sdk/react";
 import type { Equal, Expect } from "./_utils.js";
 
 interface Cart { items: string[] }

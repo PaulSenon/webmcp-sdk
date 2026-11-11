@@ -106,7 +106,7 @@ This is the AI SDK's documented client-side tool pattern (`onToolCall` + `addToo
 "use client";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, lastAssistantMessageIsCompleteWithToolCalls } from "ai";
-import { createToolCatalog } from "webmcp-sdk";
+import { createToolCatalog } from "@senon/webmcp-sdk";
 
 const catalog = createToolCatalog(); // page lifetime: nothing to clean up
 

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { defineTool, implementTool } from 'webmcp-sdk';
+import { defineTool, implementTool } from '@senon/webmcp-sdk';
 // Module-scope definitions are shared by plain TS and React publishers.
 export const increment = defineTool({
   name: 'increment', description: 'Add one to n.',

@@ -1,6 +1,6 @@
 import { platform } from './platform';
 import { z } from 'zod';
-import { createToolCatalog, defineTool, implementTool, registerTool, registerTools } from 'webmcp-sdk';
+import { createToolCatalog, defineTool, implementTool, registerTool, registerTools } from '@senon/webmcp-sdk';
 import { incrementTool } from './tools';
 if (platform.available) {
   const lifetime = new AbortController();

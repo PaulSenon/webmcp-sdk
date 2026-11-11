@@ -729,7 +729,7 @@ This is the most compact form. It does not separate contract from implementation
 
 ```ts nocheck
 import { z } from "zod";
-import { contract, implement, tool } from "webmcp-sdk";
+import { contract, implement, tool } from "@senon/webmcp-sdk";
 
 const addToCart = contract({
   name: "add_to_cart",

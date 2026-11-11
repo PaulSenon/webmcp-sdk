@@ -156,7 +156,7 @@ Cross-origin evidence is specifically official polyfill 0.1.0: frames need
 parent needs the frame origin in `fromOrigins`. Missing either exposure or request
 filter hides the tool. The SDK supplies no security. Output validation runs, but
 this polyfill still drops `outputSchema` from discovery. Native flag sources and
-all opt-in settings are linked in `e2e/README.md`.
+all opt-in settings are linked in `packages/webmcp-sdk/e2e/README.md`.
 
 Consolidation after reviewing all seven unit files and the Review fixes above:
 
