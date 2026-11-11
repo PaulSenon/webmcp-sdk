@@ -7,8 +7,19 @@ import { executePipeline } from "./implement.js";
 import type { ModelContextTool } from "./model-context.js";
 import { defaultContext, withAbort } from "./runtime.js";
 
-// Internal coordination only: pending native registration settlement, per context/name.
-const pending = new WeakMap<ModelContextLike, Map<string, { promise: Promise<unknown>; signal: AbortSignal | undefined }>>();
+// Internal coordination only: pending settlement and active ownership, per context/name.
+interface RegistryEntry {
+  promise: Promise<unknown>;
+  signal: AbortSignal | undefined;
+  ended: Promise<void>;
+  end(): void;
+}
+const pending = new WeakMap<ModelContextLike, Map<string, RegistryEntry>>();
+const conflicts = new WeakMap<object, Promise<void>>();
+/** Internal: only SDK-owned conflicts have a lifetime to wait for. */
+export function registrationConflictEnded(error: object): Promise<void> | undefined {
+  return conflicts.get(error);
+}
 const envelopeSchema = { type: "object", required: ["isError", "error"], properties: {
   isError: { const: true }, error: { type: "object", required: ["kind", "message", "handlerCalled"], properties: {
     kind: { enum: ["input_invalid", "tool_error", "internal", "output_invalid"] },
@@ -200,13 +211,26 @@ async function registerOne(tool: AnyToolImplementation, options: RegisterToolOpt
       return "registered" as const;
     } catch (cause) {
       if (options.signal?.aborted) throw options.signal.reason;
-      throw new WebMCPError(cause && typeof cause === "object" && "name" in cause && cause.name === "InvalidStateError"
+      const error = new WebMCPError(cause && typeof cause === "object" && "name" in cause && cause.name === "InvalidStateError"
         ? "duplicate_name" : "registration_failed", "Native tool registration failed.", { toolName: tool.name, cause });
+      if (error.code === "duplicate_name" && previous && !previous.signal?.aborted)
+        conflicts.set(error, previous.ended);
+      throw error;
     }
   })();
-  const entry = { promise: work, signal: options.signal };
+  let end!: () => void;
+  const ended = new Promise<void>(resolve => { end = resolve; });
+  const entry: RegistryEntry = { promise: work, signal: options.signal, ended, end };
   // A concurrent duplicate attempt must not hide the registration it conflicts with.
   if (!previous || previous.signal?.aborted) names.set(tool.name, entry);
-  void work.finally(() => { if (names.get(tool.name) === entry) names.delete(tool.name); }).catch(() => {});
+  const release = () => {
+    if (names.get(tool.name) === entry) names.delete(tool.name);
+    options.signal?.removeEventListener("abort", onAbort);
+    entry.end();
+  };
+  // Keep the entry until native settlement even when abort wins the SDK promise.
+  const onAbort = () => { void work.then(release, release); };
+  options.signal?.addEventListener("abort", onAbort, { once: true });
+  void work.then(() => { if (options.signal?.aborted) release(); }, release);
   return withAbort(work, options.signal);
 }

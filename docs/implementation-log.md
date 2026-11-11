@@ -16,7 +16,7 @@ No exported package signatures were changed. `src/runtime.ts` holds shared lazy 
 
 The README now accurately distinguishes the implemented core from deferred React, documents internal pending-registration coordination, lists the fixed generic failure messages explicitly, adds test commands, and links this log. The package description and NotImplementedError comment were corrected to the same status. Definitions and implementations are shallow-frozen: supplied schemas and metadata are not recursively frozen.
 
-No blocking API contract issue was encountered. The task references a D16 audit table in `docs/design.md`; the starting revision contains D16's decision row but no corresponding audit section/table. Its explicit decision and the 2026-11-11 research addendum supply the unregister behavior implemented and tested here. The missing table was not reconstructed or treated as evidence.
+No blocking API contract issue was encountered. D16 governs unregister behavior. The audit reference supplied for this work is `docs/design.md`, “Spec audit, 2026-11-11 (subagent, verified by Opus)”; the earlier log assertion that the audit table was absent is withdrawn. The decision itself and the 2026-11-11 research addendum also supply the unregister behavior implemented and tested here.
 
 For a maxNameLength too small to contain the prefix, source tag, collision suffix and at least one tool-name character, discovery records an error and resolves an empty list rather than issuing an overlong/colliding name. No new public option or naming format was introduced.
 
@@ -46,3 +46,26 @@ The caller-abort browser test verifies rejection and signal delivery; it does no
 **Native WebMCP not tested.** No Chrome flags or origin trials were enabled. The fake tests are algorithm models, not evidence of native platform conformance. Browser integration covers only the installed polyfill and cached Chromium version.
 
 Cross-origin frames, permissions-policy/exposedTo enforcement, actual frame navigation/WindowProxy retention, owner/caller unload behavior, toolcancel events, other browser engines, real agents and provider schema enforcement are not verified. Origin-change naming is simulated in the FAKE suite. React lifecycle/StrictMode behavior is intentionally deferred. Output schemas do not reach polyfill consumers, and in-band envelopes remain ambiguous with identically shaped successful values as documented in the README.
+
+
+## React bindings implementation (2026-11-11)
+
+Implemented on main from `8ebceae`, preserving every public signature and the approved React lifecycle contract. The core implementation sections above describe the earlier checkpoint; their React-deferred status is historical.
+
+1. `useRegisterTools` reconciles after every commit, keyed by definition identity. Removed registrations abort before additions start, with one controller per definition. Committed implementations and diagnostic callbacks refresh without re-registering. Origin exposure sets compare by value; context changes and disabling remove the previous lifetimes. Unmount aborts registrations only, never running execution signals. Errors and unsupported environments become hook state.
+2. Internal implementation accessors build forwarding wrappers without adding package exports. The shared executor captures the actual committed handler at call start, before asynchronous validation, preserving that handler through a later render or unmount.
+3. Internal core coordination now retains pending and active SDK ownership per context/name. Duplicate errors carry an internal reference to the conflicting owner's lifetime; the React binding retries after it ends. Native registration settlement still gates replacement ordering. Foreign conflicts are not retried. StrictMode cleanup/replay uses that same ordering.
+4. `RegisterTools` delegates to the hook and renders children as-is. Development commits detect repeated definition identity churn; production suppresses the warning.
+5. `useToolCatalog` lazily owns one catalog, reads it with `useSyncExternalStore`, and updates origin sets by value. It never disposes. First-subscribe discovery already existed and needed no new hook. Catalog construction did read `document.defaultView`; this lookup now happens at discovery, so lazy state creation and SSR do not touch document.
+
+### Validation and documentation
+
+Added only development dependencies: React DOM 19.3.1, its types 19.3.0, and happy-dom 21.0.4. Registry versions were checked before installation; pnpm 10.33.3 retained the configured `minimumReleaseAge` of 4320 minutes. No runtime dependencies, monorepo configuration, or CI changes were made.
+
+- `pnpm check`: source/examples/public type tests and all 23 README/docs code blocks pass.
+- `pnpm test`: 52 tests in four files: core FAKE 26, catalog FAKE 9, React FAKE 16, React SSR 1. React tests cover mount/unmount, factory refresh after commit, capture before async validation, list changes, ordered same-name replacement, disabling, context/exposure changes, pending settlement, StrictMode, component/core duplicate ownership and retry, foreign conflicts, unsupported/late installation, running calls, latest diagnostics, development/production warnings, children, catalog events/origin equality/idle cleanup/no disposal, and server rendering with a throwing document getter.
+- `pnpm test:browser`: 5 tests in two files. The new React app mounts publisher and consumer components in StrictMode, discovers, calls, removes the publisher, and checks disappearance and unavailability using the same catalog. This tests real Chromium with the official **POLYFILL**, not native WebMCP. Four existing core browser cases also pass.
+
+README changes are limited to two status statements: the prototype banner now says core and React are implemented/tested, and the runtime status row reports both implementations and their unit/polyfill coverage. The package description and retained NotImplementedError comment were updated to match. The prior D16 audit-absence claim was removed as requested.
+
+No blocking API contract issues. Not verified: native WebMCP, React 18 in a separately installed test matrix (tests run React 19.3.1), production bundler output, concurrent abandoned-render scheduling beyond direct render-before-commit checks, cross-origin enforcement or frame unload behavior. Existing core browser limitations above still apply. All runners exit; no manual server or background process is left running. No push or publish.

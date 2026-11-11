@@ -1,6 +1,6 @@
 /**
- * The deferred React runtime entry points throw this error.
- * The framework-independent core is implemented; React bindings remain typed stubs.
+ * Retained for compatibility with the design prototype.
+ * The implemented core and React entry points no longer throw this error.
  */
 export class NotImplementedError extends Error {
   override readonly name = "NotImplementedError";

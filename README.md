@@ -14,7 +14,7 @@ WebMCP lets a web page expose functions ("tools") to AI agents through `document
 The core is framework-agnostic. React bindings are included.
 
 > [!WARNING]
-> **Unpublished prototype.** The framework-independent core is implemented and tested. React bindings remain typed stubs that throw `NotImplementedError`. Nothing is published to npm. WebMCP itself is an experimental W3C Community Group draft (see [Platform status](#platform-status)).
+> **Unpublished prototype.** The framework-independent core and React bindings are implemented and tested. Nothing is published to npm. WebMCP itself is an experimental W3C Community Group draft (see [Platform status](#platform-status)).
 
 ```ts nocheck
 defineTool({...})   →   implementTool(definition, handler)   →   registerTool(tool, { signal })
@@ -798,7 +798,7 @@ As of 2026-11-11 (details and sources in [`docs/research.md`](docs/research.md))
 | | |
 | - | - |
 | API surface (core + React) | typed, documented, type-tested |
-| runtime | core implemented; React remains `NotImplementedError` stubs |
+| runtime | core and React implemented; unit and official-polyfill browser tests |
 | npm | not published |
 | license | [MIT](LICENSE) |
 

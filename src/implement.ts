@@ -10,6 +10,25 @@ import { isToolError } from "./errors.js";
 import type { RegisterToolOptions } from "./register.js";
 const handlers = new WeakMap<AnyToolImplementation, (input: any, call: ToolCallContext) => unknown>();
 
+const delegates = new WeakMap<AnyToolImplementation, () => ReturnType<typeof implementationHandler>>();
+
+/** Internal only: React wrappers delegate to the latest committed handler. */
+export function implementationHandler(tool: AnyToolImplementation): (input: any, call: ToolCallContext) => unknown {
+  const delegate = delegates.get(tool);
+  if (delegate) return delegate();
+  const handler = handlers.get(tool);
+  if (!handler) throw new Error("Unknown tool implementation.");
+  return handler;
+}
+
+/** Internal only: construct a wrapper for an already validated definition. */
+export function forwardingImplementation(tool: AnyToolImplementation,
+  handler: () => ReturnType<typeof implementationHandler>): AnyToolImplementation {
+  const wrapper = Object.freeze({ ...tool });
+  delegates.set(wrapper, handler);
+  return wrapper;
+}
+
 /** What a handler receives besides its input. */
 export interface ToolCallContext {
   /**
@@ -100,6 +119,7 @@ export function runTool<D extends AnyToolDefinition>(
 /** Internal shared executor; registration adds diagnostics, never changes agent output. */
 export async function executePipeline<D extends AnyToolDefinition>(tool: ToolImplementation<D>, rawInput: unknown,
   options?: Pick<RegisterToolOptions, "signal" | "onUnexpectedError">): Promise<ToolRunResult<D>> {
+  let handler: ReturnType<typeof implementationHandler>;
   let handlerCalled = false;
   const report = (error: unknown, kind: "internal" | "output_invalid" | "tool_error") => {
     try { options?.onUnexpectedError?.(error, { toolName: tool.name, kind, handlerCalled }); }
@@ -115,6 +135,7 @@ export async function executePipeline<D extends AnyToolDefinition>(tool: ToolImp
   };
   let input = rawInput === undefined ? {} : rawInput;
   try {
+    handler = implementationHandler(tool);
     if (tool.definition.input) {
       const result = await tool.definition.input["~standard"].validate(input);
       if (result.issues) {
@@ -132,8 +153,6 @@ export async function executePipeline<D extends AnyToolDefinition>(tool: ToolImp
   } catch (error) { return fail("internal", error); }
   let output: unknown;
   try {
-    const handler = handlers.get(tool);
-    if (!handler) throw new Error("Unknown tool implementation.");
     handlerCalled = true;
     output = await handler(input, { signal: options?.signal ?? new AbortController().signal });
   } catch (error) {

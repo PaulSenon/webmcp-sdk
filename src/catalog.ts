@@ -156,7 +156,7 @@ export function createToolCatalog(options?: ToolCatalogOptions): ToolCatalog {
   const issued = new Set<string>();
   const sources = new WeakMap<Window, Map<string, { tag: string; names: Map<string, string> }>>();
   let current = new Map<string, RegisteredTool>();
-  const ownWindow = typeof document === "undefined" ? undefined : document.defaultView;
+  let ownWindow: Window | null | undefined;
   const publish = (next: Omit<ToolCatalogSnapshot, "version">) => {
     snapshot = { ...next, version: snapshot.version + 1 };
     for (const listener of subscribers) {
@@ -197,6 +197,7 @@ export function createToolCatalog(options?: ToolCatalogOptions): ToolCatalog {
   };
   async function query(): Promise<readonly CatalogTool[]> {
     if (disposed) return [];
+    ownWindow ??= typeof document === "undefined" ? undefined : document.defaultView;
     queried = true;
     const seq = ++sequence;
     active++;
