@@ -1,0 +1,24 @@
+{
+  "name": "webmcp-sdk-monorepo",
+  "private": true,
+  "description": "Workspace root for @senon/webmcp-sdk. Not published.",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "pnpm@10.33.3+sha512.a19744364a7e248b92657a4ca5973f9354d21caf982579674b1c539f32c7420c47138ad8b1254df07aba9bc782d9b3029e3db34d5dbff974326eb74dac8ff489",
+  "scripts": {
+    "check": "pnpm --filter @senon/webmcp-sdk run check",
+    "test": "pnpm --filter @senon/webmcp-sdk run test",
+    "test:react18": "pnpm --filter @senon/webmcp-sdk run test:react18",
+    "test:browser": "pnpm --filter @senon/webmcp-sdk run test:browser",
+    "test:e2e": "pnpm --filter @senon/webmcp-sdk run test:e2e",
+    "test:e2e:native": "pnpm --filter @senon/webmcp-sdk run test:e2e:native",
+    "test:package": "pnpm --filter @senon/webmcp-sdk run test:package",
+    "test:tooling": "node --test tooling/release/",
+    "test:all": "pnpm --filter @senon/webmcp-sdk run test:all && pnpm test:package && pnpm test:tooling",
+    "build": "pnpm --filter @senon/webmcp-sdk run build",
+    "changeset": "changeset"
+  },
+  "devDependencies": {
+    "@changesets/cli": "3.0.3"
+  }
+}

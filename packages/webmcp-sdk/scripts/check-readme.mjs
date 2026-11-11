@@ -1,20 +1,24 @@
-// Extracts every ```ts / ```tsx block from README.md (and docs/*.md except research.md) into .readme-check/
+// Extracts every ```ts / ```tsx block from the package README.md (and the repository docs/*.md except research.md) into .readme-check/
 // and typechecks them as independent modules against the local sources.
 // Blocks fenced as ```ts nocheck are skipped; ```ts file=name.ts gives a block a fixed module name.
 import { readFileSync, writeFileSync, mkdirSync, rmSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
-const root = new URL("..", import.meta.url).pathname;
+const root = new URL("..", import.meta.url).pathname; // package root
+const repoRoot = join(root, "../..");
 const out = join(root, ".readme-check");
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
 
 // docs/research.md quotes third-party snippets verbatim, so it is not checked.
-const files = ["README.md", ...readdirSync(join(root, "docs")).filter((f) => f.endsWith(".md") && f !== "research.md").map((f) => `docs/${f}`)];
+const files = [
+  join(root, "README.md"),
+  ...readdirSync(join(repoRoot, "docs")).filter((f) => f.endsWith(".md") && f !== "research.md").map((f) => join(repoRoot, "docs", f)),
+];
 let count = 0;
 for (const file of files) {
-  const text = readFileSync(join(root, file), "utf8");
+  const text = readFileSync(file, "utf8");
   const re = /```(tsx?)([^\n]*)\n([\s\S]*?)```/g;
   let m;
   while ((m = re.exec(text))) {
@@ -23,7 +27,7 @@ for (const file of files) {
     const line = text.slice(0, m.index).split("\n").length;
     // ```ts file=contracts.ts  → written under that name so other blocks can import it.
     const named = /file=([\w.-]+)/.exec(info)?.[1];
-    const name = named ?? `${file.replace(/[^\w]/g, "_")}_L${line}.${lang}`;
+    const name = named ?? `${relative(repoRoot, file).replace(/[^\w]/g, "_")}_L${line}.${lang}`;
     // `export {}` forces module scope so blocks don't leak declarations into each other.
     writeFileSync(join(out, name), `${body}\nexport {};\n`);
     count++;

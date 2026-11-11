@@ -11,7 +11,7 @@ import {
   type RegisterToolStatus,
   type ToolFailure,
   type ToolRunResult,
-} from "webmcp-sdk";
+} from "@senon/webmcp-sdk";
 import type { Equal, Expect } from "./_utils.js";
 
 const search = defineTool({ name: "search", description: "x", input: z.object({ q: z.string() }), output: z.object({ hits: z.array(z.string()) }) });

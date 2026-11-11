@@ -14,7 +14,7 @@ import {
   type InferToolOutput,
   type NoArguments,
   type StandardSchemaV1,
-} from "webmcp-sdk";
+} from "@senon/webmcp-sdk";
 import type { Equal, Expect } from "./_utils.js";
 
 // --- Input/output sides with transforms and defaults ------------------------------

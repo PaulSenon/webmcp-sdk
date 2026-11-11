@@ -1,4 +1,4 @@
-import { createToolCatalog, defineTool, type CatalogTool, type ToolCallResult } from "webmcp-sdk";
+import { createToolCatalog, defineTool, type CatalogTool, type ToolCallResult } from "@senon/webmcp-sdk";
 import type { Equal, Expect } from "./_utils.js";
 
 const catalog = createToolCatalog({ fromOrigins: ["https://widgets.example"], namePrefix: "page_", maxNameLength: 64 });

@@ -1,8 +1,8 @@
 import { platform } from './platform';
 import { StrictMode, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { implementTool } from 'webmcp-sdk';
-import { useRegisterTools, useToolCatalog } from 'webmcp-sdk/react';
+import { implementTool } from '@senon/webmcp-sdk';
+import { useRegisterTools, useToolCatalog } from '@senon/webmcp-sdk/react';
 import { increment } from './tools';
 if (platform.available) {
   const probe = { registrations: 0, errors: [] as string[] };

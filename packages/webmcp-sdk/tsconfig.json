@@ -14,8 +14,8 @@
     "skipLibCheck": true,
     "noEmit": true,
     "paths": {
-      "webmcp-sdk": ["./src/index.ts"],
-      "webmcp-sdk/react": ["./src/react/index.ts"]
+      "@senon/webmcp-sdk": ["./src/index.ts"],
+      "@senon/webmcp-sdk/react": ["./src/react/index.ts"]
     }
   },
   "include": ["src", "type-tests", "examples"]

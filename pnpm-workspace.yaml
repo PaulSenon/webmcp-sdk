@@ -1,0 +1,14 @@
+packages:
+  - packages/*
+
+# Supply-chain policy. Committed so CI and every contributor get the same rules
+# (these were previously only in the maintainer's global pnpm config).
+minimumReleaseAge: 4320 # minutes (3 days): new versions are not resolvable until they are this old
+trustPolicy: no-downgrade # refuse a version published with weaker evidence (no provenance) than earlier ones
+blockExoticSubdeps: true # transitive dependencies may not come from git/tarball URLs
+strictDepBuilds: true # fail install when a dependency has an unreviewed install script
+
+# Install scripts reviewed one by one. esbuild's postinstall only verifies its platform binary
+# (installed as an optional dependency anyway), so it is not needed.
+allowBuilds:
+  esbuild: false

@@ -1,5 +1,5 @@
 import { platform } from './platform';
-import { defineTool, implementTool, registerTool } from 'webmcp-sdk';
+import { defineTool, implementTool, registerTool } from '@senon/webmcp-sdk';
 if (platform.available) {
   const params = new URLSearchParams(location.search);
   const tool = implementTool(defineTool({ name: 'frame_tool', description: 'Identify this frame.' }), () => 'hello from frame');

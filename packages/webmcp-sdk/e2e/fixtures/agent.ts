@@ -2,7 +2,7 @@ import { platform } from './platform';
 import { generateText, jsonSchema, tool } from 'ai';
 import type { LanguageModel, ModelMessage } from 'ai';
 import { MockLanguageModelV4 } from 'ai/test';
-import { createToolCatalog, registerTool } from 'webmcp-sdk';
+import { createToolCatalog, registerTool } from '@senon/webmcp-sdk';
 import { incrementTool } from './tools';
 
 if (platform.available) {

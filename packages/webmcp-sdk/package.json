@@ -1,16 +1,48 @@
 {
-  "name": "webmcp-sdk",
-  "version": "0.0.0-design",
-  "private": true,
-  "description": "Prototype: contract-first, Standard Schema-based TypeScript SDK for WebMCP tools. Core and React implemented; not published.",
+  "name": "@senon/webmcp-sdk",
+  "version": "0.0.0",
+  "description": "Contract-first, Standard Schema-based TypeScript SDK for WebMCP tools: define, implement, register and discover tools, with React bindings.",
+  "keywords": [
+    "webmcp",
+    "mcp",
+    "model-context",
+    "ai-agents",
+    "standard-schema",
+    "react"
+  ],
   "license": "MIT",
+  "author": "Paul Senon",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PaulSenon/webmcp-sdk.git",
+    "directory": "packages/webmcp-sdk"
+  },
+  "homepage": "https://github.com/PaulSenon/webmcp-sdk/tree/main/packages/webmcp-sdk#readme",
+  "bugs": {
+    "url": "https://github.com/PaulSenon/webmcp-sdk/issues"
+  },
   "type": "module",
   "sideEffects": false,
   "exports": {
-    ".": "./src/index.ts",
-    "./react": "./src/react/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "default": "./dist/react/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
+    "build": "node scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.json",
     "check:docs": "node scripts/check-readme.mjs",
     "check": "pnpm typecheck && pnpm check:docs && pnpm typecheck:e2e",
@@ -20,7 +52,8 @@
     "test:e2e": "playwright test --project=polyfill",
     "test:e2e:native": "WEBMCP_NATIVE=1 playwright test --project=native",
     "test:all": "pnpm check && pnpm test && pnpm test:react18 && pnpm test:e2e",
-    "typecheck:e2e": "tsc -p tsconfig.e2e.json"
+    "typecheck:e2e": "tsc -p tsconfig.e2e.json",
+    "test:package": "node scripts/test-package.mjs"
   },
   "peerDependencies": {
     "react": ">=18"
@@ -54,6 +87,8 @@
     "valibot": "^1.5.0",
     "vite": "7.3.5",
     "vitest": "5.1.0",
-    "zod": "^4.6.7"
+    "zod": "^4.6.7",
+    "@arethetypeswrong/cli": "0.18.5",
+    "publint": "0.3.25"
   }
 }
