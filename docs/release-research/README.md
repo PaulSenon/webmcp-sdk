@@ -1,6 +1,8 @@
 # Release & delivery study — webmcp-sdk
 
-Status: **study / proposal, nothing applied**. Observed 2026-11-11. No code, manifest, lockfile, workflow, repository setting or registry state was changed. All YAML/JSON below and in sibling files is *specification*, not an active file.
+Status: **implemented** (2026-11-11) in `.github/workflows/{ci,release}.yml`, `tooling/release/`, `packages/webmcp-sdk` and the repository settings; the maintainer runbook is [`docs/releasing.md`](../releasing.md). Deviations from this study, all deliberate: package `@senon/webmcp-sdk` in `packages/webmcp-sdk` (the owner's existing `@senon` scope); pnpm stays on 10.33 (settings `allowBuilds`, `strictDepBuilds`, `minimumReleaseAge`, `trustPolicy`, `blockExoticSubdeps` in `pnpm-workspace.yaml`); the release jobs use Node 24.22.2 (bundled npm 11.19.1 ≥ 11.15 for `npm stage`); dev typechecks keep `paths` to the sources, and the published shape is checked by `test:package` against the packed tarball; docs site and `docs.yml` deferred until there is a site.
+
+The study text below is unchanged. Observed 2026-11-11. No code, manifest, lockfile, workflow, repository setting or registry state was changed. All YAML/JSON below and in sibling files is *specification*, not an active file.
 
 | File | Content |
 |---|---|

@@ -1,0 +1,7 @@
+# actionlint 1.7.12 predates the documented `cache-mode` job key
+# (https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching).
+# Ignore only that message; remove this once actionlint knows the key.
+paths:
+  .github/workflows/**/*.yml:
+    ignore:
+      - 'unexpected key "cache-mode" for "job" section'
