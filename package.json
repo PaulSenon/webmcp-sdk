@@ -27,9 +27,11 @@
     "@standard-schema/spec": "^1.1.0"
   },
   "devDependencies": {
+    "@ai-sdk/react": "^4.0.169",
     "@types/react": "^19.3.0",
     "@valibot/to-json-schema": "^1.8.0",
     "@w3c/webmcp-polyfill": "0.1.0",
+    "ai": "^7.0.165",
     "arktype": "^2.2.9",
     "react": "^19.3.1",
     "typescript": "^7.0.2",

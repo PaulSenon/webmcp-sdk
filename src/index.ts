@@ -36,28 +36,24 @@ export { isToolError, isToolFailureEnvelope, ToolError, WebMCPError } from "./er
 export type { ToolErrorOptions, ToolFailure, ToolFailureEnvelope, ToolFailureKind, ToolIssue, WebMCPErrorCode } from "./errors.js";
 
 // Publishing
-export { registerTools } from "./register.js";
+export { registerTool, registerTools } from "./register.js";
 export type {
-  RegisterToolsOptions,
+  RegisterToolOptions,
+  RegisterToolsResult,
+  RegisterToolStatus,
   UnexpectedErrorInfo,
-  ToolRegistration,
-  ToolRegistrationEntry,
-  ToolRegistrationSnapshot,
-  ToolRegistrationState,
   UniqueToolNames,
 } from "./register.js";
 
 // Discovering (experimental)
-export { createToolCatalog, toProviderName } from "./catalog.js";
+export { createToolCatalog } from "./catalog.js";
 export type {
-  DiscoveredTool,
-  KnownTool,
+  CatalogTool,
   ToolCallError,
   ToolCallResult,
   ToolCatalog,
   ToolCatalogOptions,
   ToolCatalogSnapshot,
-  ToolSource,
 } from "./catalog.js";
 
 // Platform shapes

@@ -1,6 +1,6 @@
 # Proposal: consumer v2, publisher v2, cleanup (for review, 2026-11-11)
 
-Status: **proposal, not applied.** Types and README still show the current API. Nothing here needs runtime work. Spec, polyfill and license conclusions (D16, D19, MIT) are unchanged.
+Status: **applied in pass 3 (2026-11-11, D20).** `isAvailable` was dropped (Opus arbitration). Kept as the rationale record. Nothing here needs runtime work. Spec, polyfill and license conclusions (D16, D19, MIT) are unchanged.
 
 ## 1. Why the README forced a `Map` on the user
 

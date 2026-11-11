@@ -17,8 +17,8 @@ The core is framework-agnostic. React bindings are included.
 > **Design prototype, not usable yet.** This repository contains the complete typed API and its documentation. Every runtime function throws `NotImplementedError`, and nothing is published to npm. WebMCP itself is an experimental W3C Community Group draft (see [Platform status](#platform-status)).
 
 ```ts nocheck
-defineTool({...})   →   implementTool(definition, handler)   →   registerTools([...])
-   what (contract)          how (your code)                       where & when
+defineTool({...})   →   implementTool(definition, handler)   →   registerTool(tool, { signal })
+   what (contract)          how (your code)                       where & when (WebMCP's own lifetime model)
 ```
 
 **Contents:**
@@ -26,11 +26,12 @@ defineTool({...})   →   implementTool(definition, handler)   →   registerToo
 [Defining tools](#defining-tools) ·
 [Implementing tools](#implementing-tools) ·
 [Errors](#errors) ·
+[What agents receive](#what-agents-receive) ·
 [Registering tools](#registering-tools) ·
+[Polyfills](#polyfills-and-custom-model-contexts) ·
 [React](#react) ·
 [Discovering and calling tools](#discovering-and-calling-tools-experimental) ·
 [Testing](#testing) ·
-[What agents receive](#what-agents-receive) ·
 [Limitations](#limitations) ·
 [Platform status](#platform-status)
 
@@ -40,7 +41,7 @@ defineTool({...})   →   implementTool(definition, handler)   →   registerToo
 
 ```ts
 import { z } from "zod";
-import { defineTool, implementTool, registerTools } from "webmcp-sdk";
+import { defineTool, implementTool, registerTool } from "webmcp-sdk";
 
 const todos: string[] = [];
 
@@ -59,10 +60,11 @@ const addTodoTool = implementTool(addTodo, ({ text }) => {
   return { count: todos.length };
 });
 
-// 3. Register: safe everywhere, a no-op where WebMCP is unavailable
-const registration = registerTools([addTodoTool]);
-// later
-registration.unregister();
+// 3. Register, with WebMCP's own lifetime model: an AbortSignal
+const controller = new AbortController();
+await registerTool(addTodoTool, { signal: controller.signal }); // "registered", or "unsupported" without WebMCP
+// later: remove the tool
+controller.abort();
 ```
 
 Here is what the SDK does for you:
@@ -71,7 +73,7 @@ Here is what the SDK does for you:
 - **Validates your result** against `output` when you declare one.
 - **Publishes a JSON Schema** of the input (and output) generated from the same schemas.
 - **Turns failures into short, actionable messages** for the agent, without leaking internals.
-- **Never breaks your app.** Without WebMCP (most browsers today, SSR), registration does nothing and never throws.
+- **Never breaks your app.** Without WebMCP (most browsers today, SSR), registration resolves `"unsupported"` and does nothing.
 
 **Requirements:** TypeScript ≥ 5.4, a Standard Schema library with JSON Schema support (e.g. Zod ≥ 4.2), and React ≥ 18 for the bindings. **To try it** (once implemented), you need a browser with WebMCP enabled, or the official polyfill: see [Platform status](#platform-status).
 
@@ -331,11 +333,11 @@ export class OutOfStockError extends ToolError {
 **Anything else thrown is a defect.** The agent gets a generic message (`"internal"`), and you get the original via `onUnexpectedError`. It is also called for `output_invalid` and for `ToolError` data that could not be serialized, and never for `input_invalid` or a valid `ToolError`:
 
 ```ts
-import { registerTools } from "webmcp-sdk";
+import { registerTool } from "webmcp-sdk";
 import { addToCartTool, type Cart } from "./tools.js";
 declare const cart: Cart;
 
-registerTools([addToCartTool({ cart })], {
+await registerTool(addToCartTool({ cart }), {
   onUnexpectedError: (error, { toolName, kind, handlerCalled }) => console.error(toolName, kind, handlerCalled, error),
 });
 ```
@@ -371,36 +373,10 @@ registerTools([addToCartTool({ cart })], {
 
 ## Registering tools
 
-`registerTools(tools, options?)` registers tools in the current document and returns a **handle**:
-
-```ts
-import { registerTools } from "webmcp-sdk";
-import { addToCartTool, checkoutTool, searchProductsTool, type Cart } from "./tools.js";
-declare const cart: Cart;
-declare const nextCart: Cart;
-
-const reg = registerTools([searchProductsTool, addToCartTool({ cart })]);
-
-// The desired list changed: declare it again, and the SDK reconciles
-reg.update([searchProductsTool, addToCartTool({ cart }), checkoutTool]);
-
-// Fresh dependencies for the same definitions: handlers refreshed, nothing re-registered
-reg.update([searchProductsTool, addToCartTool({ cart: nextCart }), checkoutTool]);
-
-// Per-tool state, once the current list is reconciled
-const snapshot = await reg.settled();
-for (const t of snapshot.tools) {
-  if (t.state === "error") console.warn(t.name, t.error.code); // duplicate_name, json_schema_unavailable, registration_failed
-}
-const unsubscribe = reg.subscribe((snapshot) => console.log(snapshot.supported, snapshot.tools));
-
-// Remove everything (or abort the `signal` option). The handle is then finished: `update` is ignored.
-reg.unregister();
-unsubscribe();
-```
+Registration mirrors WebMCP's `registerTool(tool, { signal })`: **the `signal` is the tool's lifetime**, and aborting it removes the tool. On top, the SDK adds definitions, validation, types and agent-readable failures.
 
 ```ts file=tools.ts
-// tools.ts (used above)
+// tools.ts (used in the examples below)
 import { defineTool, implementTool } from "webmcp-sdk";
 import { addToCart, searchProducts } from "./definitions.js";
 export interface Cart { add(sku: string, quantity: number): Promise<number> }
@@ -410,37 +386,53 @@ export const addToCartTool = ({ cart }: { cart: Cart }) =>
 export const checkoutTool = implementTool(defineTool({ name: "checkout", description: "Go to checkout." }), () => null);
 ```
 
+**One tool:**
 
-How `update` reconciles:
+```ts
+import { registerTool } from "webmcp-sdk";
+import { searchProductsTool } from "./tools.js";
 
-- **Tools are matched by definition identity, not by array.** Recreating implementations (factories) only refreshes their handlers.
-- **Removed definitions are unregistered first,** then added ones are registered. A replacement with the same name waits for the old one to be gone.
-- **Each tool succeeds or fails on its own.** One failure does not roll back the others.
-- **`update` copies the list.** Mutating the array afterwards has no effect until the next `update`.
-- **Calls already running are never cancelled** by `update` or `unregister`, exactly as in WebMCP. They finish with the definition and handler they started with, and their result is still delivered.
-- **The handler's `signal` is WebMCP's execution signal.** It aborts when the *caller* cancels or its page unloads, and the browser then discards any late result. It does not abort when this page unloads: the caller gets an `AbortError`, and WebMCP does not specify more.
-- **Duplicate names** are a compile error for literal names in array literals (also after a conditional spread), and a per-tool `duplicate_name` state otherwise (`.map()`, dynamic arrays). The SDK never takes over a name registered by other code.
+const controller = new AbortController();
+const status = await registerTool(searchProductsTool, { signal: controller.signal }); // "registered" | "unsupported"
 
-Each tool's `state` is one of:
+controller.abort(); // removes it
+```
 
-- `"pending"`: being registered, or queued behind a previous registration of the same name.
-- `"registered"`.
-- `"unsupported"`: no WebMCP here.
-- `"error"`, with `error.code` set to `duplicate_name`, `json_schema_unavailable` or `registration_failed`.
+**A group: one call, one lifetime, one cleanup:**
+
+```ts
+import { registerTools } from "webmcp-sdk";
+import { addToCartTool, checkoutTool, searchProductsTool, type Cart } from "./tools.js";
+declare const cart: Cart;
+
+const shop = new AbortController();
+const results = await registerTools([searchProductsTool, addToCartTool({ cart }), checkoutTool], { signal: shop.signal });
+
+for (const r of results) {
+  if (r.status === "error") console.warn(r.name, r.error.code); // duplicate_name, json_schema_unavailable, registration_failed
+}
+
+shop.abort(); // removes every tool registered by this call
+```
+
+- **Who cleans up:** whoever owns the `AbortController`. There is nothing else to keep. To tie tools to an existing lifetime, such as a route, a component or `AbortSignal.any([...])`, pass that signal.
+- **Several lifetimes** mean several calls with different signals.
+- **`registerTool` rejects** with a `WebMCPError` on real failures (`duplicate_name`, `json_schema_unavailable`, `registration_failed`), like the native call.
+- **`registerTools` never rejects for one tool.** It resolves with one result per tool. The tools that succeeded stay registered under the signal, and failed ones need no cleanup. There is no rollback: if you want "all or nothing", check the results and `abort()`.
+- **Abort timing:** both reject with `signal.reason` if the signal is already aborted or aborts while registering.
+- **Running calls are never cancelled by `abort()`,** exactly as in WebMCP. They finish with the handler they started with, and their result is still delivered.
+- **The handler's `signal`** aborts when the *caller* cancels or its page unloads, and the browser then discards any late result. It does not abort when this page unloads: the caller gets an `AbortError`, and WebMCP does not specify more.
+- **Changing a tool** (a new handler or a new definition) in plain TypeScript: abort it and register the new implementation. Calls for the same name are ordered internally.
+- **Duplicate names** are a compile error for literal arrays passed to `registerTools`, and a `duplicate_name` error at runtime otherwise. The SDK never takes over a name registered by other code.
 
 | option | |
 | ------ | - |
-| `signal` | aborting it is the same as `unregister()` |
-| `modelContext` | a polyfill or test double instead of `document.modelContext` |
-| `exposedTo` | origins allowed to see these tools from other frames (enforced by the browser), fixed for the registration |
+| `signal` | the lifetime; aborting it removes the tool(s) |
+| `exposedTo` | origins allowed to see these tools from other frames (enforced by the browser) |
+| `modelContext` | a context to use instead of `document.modelContext` (see [Polyfills](#polyfills-and-custom-model-contexts)) |
 | `onUnexpectedError` | logging hook, see [Errors](#errors) |
 
-**Progressive enhancement.** Without WebMCP, nothing throws and `update` stays cheap:
-
-- **Registration:** `snapshot.supported` is `false` and every tool is `"unsupported"`.
-- **Discovery:** the catalog's `status` is `"unsupported"`.
-
-To *require* WebMCP, check `supported` yourself. No polyfill is installed automatically. To use one, pass it as `modelContext` or install it before registering.
+**Progressive enhancement:** without WebMCP, registration resolves `"unsupported"` and nothing throws. To *require* WebMCP, check the status yourself.
 
 ---
 
@@ -448,30 +440,28 @@ To *require* WebMCP, check `supported` yourself. No polyfill is installed automa
 
 The SDK never installs or imports a polyfill, which keeps progressive enhancement intact. It uses `document.modelContext` when it exists, or the object you pass as `modelContext`.
 
-**With the official polyfill** ([`@w3c/webmcp-polyfill`](https://www.npmjs.com/package/@w3c/webmcp-polyfill), 0.1.0). It installs `document.modelContext` globally, and is a no-op where a native implementation already exists. Install it in your client entry, before registering:
+**With the official polyfill** ([`@w3c/webmcp-polyfill`](https://www.npmjs.com/package/@w3c/webmcp-polyfill), 0.1.0). It installs `document.modelContext` globally, and is a no-op where a native implementation exists. Install it in your browser entry, before registering:
 
 ```ts nocheck
 // main.ts (browser entry; not in server code)
 import "@w3c/webmcp-polyfill/auto"; // or: import { installWebMCP } from "@w3c/webmcp-polyfill"; installWebMCP();
-import { registerTools } from "webmcp-sdk";
-registerTools([/* … */]);           // uses document.modelContext
 ```
 
-React works the same way: install it in the client entry before `createRoot(...).render(...)`. Nothing else changes.
-
-**Explicit context.** `modelContext` (on `registerTools`, `createToolCatalog` and both hooks) takes any object with the WebMCP shape. It is used as-is and never falls back to `document`. It is mainly useful for test doubles. Polyfills known today (`@w3c/webmcp-polyfill`, `@mcp-b/webmcp-polyfill`, `@mcp-b/global`) install themselves globally rather than handing out standalone instances. The official polyfill's `ModelContext` type is checked against these options in the type tests.
-
-**Installing late** is supported without polling: registrations look again on their next `update()` (in React, the next render), and catalogs on their next `getTools()` / `update()`. Installing before your app starts is simpler.
+- **React** works the same way: install it before `createRoot(...).render(...)`.
+- **Explicit context:** `modelContext` (on `registerTool(s)`, `createToolCatalog` and the hooks) takes any object with the WebMCP shape. It is used as-is and never falls back to `document`. It is mainly useful for test doubles: the polyfills known today (`@w3c/webmcp-polyfill`, `@mcp-b/*`) install themselves globally rather than hand out instances. The official polyfill's types are checked against these options.
+- **Installing late:** `registerTool` looks for `document.modelContext` when called, the React hooks look again on a later render, and catalogs look again on `getTools()` / `update()`. Installing before your app starts is simpler.
 
 **Polyfill limits** (from its documentation, 0.1.0):
 
-- It must be installed in **each frame**. Polyfilled frames and native ones do not see each other's tools.
-- It exposes tools to **in-page** consumers (`getTools()` / `executeTool()`); it cannot connect them to a browser's built-in agent.
+- It must be installed in **each frame**. Polyfilled and native frames do not see each other's tools.
+- It exposes tools to **in-page** consumers only, not to a browser's built-in agent.
 - It currently ignores `outputSchema` and fires no `toolcancel`.
+
+---
 
 ## React
 
-`webmcp-sdk/react` contains thin bindings over the same core.
+`webmcp-sdk/react` owns the lifetimes for you: there is no `register`, `abort` or cleanup to write.
 
 ```tsx
 import { useState } from "react";
@@ -499,7 +489,7 @@ const exportCsvTool = ({ rows }: { rows: unknown[] }) => implementTool(exportCsv
 export function Dashboard({ rows }: { rows: { status: string }[] }) {
   const [status, setStatus] = useState("all");
 
-  // Registered on mount, unregistered on unmount. Re-renders refresh handlers without re-registering.
+  // Registered while mounted. Re-renders refresh handlers without re-registering.
   const { supported } = useRegisterTools([applyFilterTool({ setStatus, rows })]);
 
   return (
@@ -516,115 +506,167 @@ export function Dashboard({ rows }: { rows: { status: string }[] }) {
 | | behaviour |
 | - | --------- |
 | SSR / first render | nothing happens; `supported: undefined` |
-| mount / unmount | register / unregister |
-| re-render | `update(tools)` after commit: handlers refreshed, only added/removed definitions change |
+| mount / unmount | registers / removes the tools |
+| re-render | handlers refreshed; only added or removed definitions are registered or removed |
 | a call starting between a render and its commit | uses the previous handler |
-| StrictMode double mount | register → unregister → register; no spurious `duplicate_name` |
-| unmount while a call runs | the call finishes. A handler that must stop with its component needs its own `AbortController`, owned by your code |
+| StrictMode double mount | register → remove → register; no spurious `duplicate_name` |
+| unmount while a call runs | the call finishes; a handler that must stop with its component needs its own `AbortController` |
 | no WebMCP | `supported: false`, tools `"unsupported"`; nothing throws |
-| errors | never thrown during render; per tool in the returned snapshot |
+| errors | never thrown during render; per tool in `tools[i].error` |
 
-Keep **definitions** at module scope. Implementations can be recreated freely. A definition created during render is a new tool on every render, so it is re-registered every time (a dev warning is logged).
-
-Options:
-
-- `enabled` (`false` unregisters).
-- `modelContext` and `exposedTo` (compared by value): changing either re-creates the registration.
-- `onUnexpectedError`: the latest value is always used.
+- **Keep definitions at module scope.** Implementations can be recreated freely.
+- **A definition created during render** is a new tool on every render, so it is re-registered every time (a dev warning is logged).
+- **Options:**
+  - `enabled` (`false` removes the tools);
+  - `modelContext` and `exposedTo` (compared by value; changing either re-registers);
+  - `onUnexpectedError`.
 
 ---
 
 ## Discovering and calling tools (experimental)
 
-For **in-page agents**, such as a chat widget or a copilot running in the page, that need the tools exposed by the page and its frames. This wraps the draft's `getTools()`, `executeTool()` and `toolchange`.
-
-```ts
-import { createToolCatalog, toProviderName, type ToolCatalogSnapshot } from "webmcp-sdk";
-
-declare const agent: { setTools(tools: { name: string; description: string; parameters: object }[]): void };
-
-const catalog = createToolCatalog({ fromOrigins: ["https://widgets.example"] });
-const idByName = new Map<string, string>(); // provider name → id
-
-// Send the tool list to your LLM now, and again whenever it changes
-function sync({ tools }: ToolCatalogSnapshot) {
-  idByName.clear();
-  agent.setTools(
-    tools.map((t) => {
-      const name = toProviderName(t.id); // provider-safe (default: ≤ 64 chars, [a-zA-Z0-9_-])
-      idByName.set(name, t.id);
-      return { name, description: t.description, parameters: t.inputSchema };
-    }),
-  );
-}
-sync(catalog.getSnapshot());
-const stop = catalog.subscribe(sync); // the first subscriber starts discovery
-
-// When the LLM calls a tool
-async function onToolCall(name: string, args: unknown) {
-  const id = idByName.get(name);
-  if (!id) return { error: `Unknown tool "${name}".` };
-  const result = await catalog.call(id, args);
-  return result.ok ? result.value : { error: result.error.message };
-}
-
-// When the agent goes away
-function teardown() {
-  stop();
-  catalog.dispose();
-}
-```
-
-| `ToolCatalog` | |
-| ------------- | - |
-| `getSnapshot()` | `{ status, tools, error?, version }`. `status` is `"idle"`, `"loading"`, `"ready"`, `"unsupported"` or `"error"`. `version` counts snapshots; it is not a tool revision |
-| `subscribe(fn)` | called on each new snapshot, not on subscribe; the first subscriber starts discovery and the `toolchange` listener, the last one stops them |
-| `getTools()` | query now; returns the list (and updates the snapshot) |
-| `update({ fromOrigins })` | change the origins (compared by value) |
-| `call(id, input, { signal })` | call by id; runs a discovery first if none happened yet; never throws |
-| `find(definition)` | typed entries for a definition you know (below) |
-| `dispose()` | stop everything; later calls return `not_found` |
-
-**Ids.** Each tool gets a stable, **opaque** string id, such as `"self__search"` (do not parse it). The source is `self` for this page, or `f1`, `f2`… for other frames, assigned once per frame and origin and never reused.
-
-- **Same name in two frames:** `self__search` and `f1__search` stay distinct, whatever order they register in.
-- **Re-registration:** a tool re-registered under the same name keeps its id.
-- **Scope:** ids are stable for the page session. Never persist them.
-- **`title` and `name`** are display data and may repeat.
-
-**Calls go to the tool currently registered under that id.**
-
-- **Replaced tool:** if it was replaced, the new version is called, and it validates your arguments against its current schema.
-- **Gone tool:** if it no longer exists, you get `{ ok: false, error: { kind: "not_found" } }` and nothing runs.
-- **Never throws:** failures are values (`not_found`, `tool_failed`, `rejected`), each with a `message`.
-
-**Known tools are typed by their definition.** Discovery happens at runtime, so on its own it only knows `unknown`. If you share the definition with the page that implements it, `find` gives you typed calls. They are validated on your side too: your input before sending (the original value is sent, since the provider validates again), and the result on return.
+For **in-page agents**, such as a chat widget or a copilot running in the page, that need the tools exposed by the page and its frames. A **catalog** handles discovery, change tracking, naming and routing. You only adapt its list to your model's format.
 
 ```ts
 import { createToolCatalog } from "webmcp-sdk";
-import { searchProducts } from "./definitions.js";
 
-const catalog = createToolCatalog();
-const [search] = await catalog.find(searchProducts); // one entry per source exposing "search_products"
-if (search) {
-  const r = await search.call({ q: "red shoes" }); // typed; validated locally before sending
-  if (r.ok) console.log(r.value.hits.map((h) => h.title)); // validated against the definition's output
+const catalog = createToolCatalog({ fromOrigins: ["https://widgets.example"] }); // you own it; no global state
+
+// Before each model request: a fresh snapshot
+const tools = await catalog.getTools(); // [{ name, description, inputSchema, … }]
+
+// When the model calls a tool: pass its name and arguments straight back
+declare const toolCall: { toolName: string; input: unknown };
+if (catalog.isCatalogTool(toolCall.toolName)) {
+  const result = await catalog.callTool(toolCall.toolName, toolCall.input);
+  // result.ok ? result.value : result.error.message
 }
 ```
 
-**React:**
+**Names.** Each tool gets **one** name, issued by the catalog, which you give to the model and get back unchanged:
+
+- **Unique within the catalog.** Provider-safe: `[A-Za-z0-9_-]`, at most 64 characters (`maxNameLength`).
+- **Shaped `<source>__<tool name>`**, e.g. `self__search`, `f1__search`. The **source** is the document the tool comes from (a window or frame, at one origin): `self` is your page, and `f1`, `f2`… are frames in the order they were first seen. The source tag is on every name, so two frames exposing `search` never collide, whatever order they register in. If two names of one source become identical once shortened or normalized, the catalog adds `_2`, `_3`… internally.
+- **Stable for the catalog's lifetime,** including when a tool is unregistered and registered again. Not across page reloads, and never persisted.
+- **`webmcpName`** keeps the page's original name for display.
+
+**Calls.**
+
+- **`callTool(name, input)`** calls the tool currently registered under that name. `input` is whatever the model sent (`unknown`). The tool's own page validates it; a webmcp-sdk tool answers `tool_failed` with its `input_invalid` details.
+- **It never throws,** and every failure has a `message` you can hand to the model:
+  - `unknown_tool`: not a name of this catalog;
+  - `unavailable`: the tool is gone. Nothing runs, and the call is never rerouted to another tool;
+  - `invalid_arguments`: the input is not an object;
+  - `tool_failed`: the tool returned a failure envelope;
+  - `rejected`: the browser refused the call.
+- **A replaced tool** (same name, new version) is called in its current version.
+- **`isCatalogTool(name)`** tells you the name belongs to this catalog, so you can route among other tools. It stays `true` for tools that later disappeared, which get an explicit `unavailable`. It says nothing about the arguments: discovered tools have no static types.
+
+### With the AI SDK (checked against `ai@7.0.165`, `@ai-sdk/react@4.0.169`)
+
+WebMCP tools live in the browser, while the model call usually runs on your server (API keys), which cannot reach the page. So:
+
+1. the browser sends the tool list with each request;
+2. the server declares those tools without `execute`;
+3. the model's tool call streams back to the browser;
+4. the browser runs it through the catalog.
+
+This is the AI SDK's client-side tool pattern.
+
+```tsx
+// chat.tsx (browser)
+import { useChat } from "@ai-sdk/react";
+import { DefaultChatTransport, lastAssistantMessageIsCompleteWithToolCalls } from "ai";
+import { createToolCatalog } from "webmcp-sdk";
+
+const catalog = createToolCatalog(); // lives as long as the page: nothing to clean up
+
+export function Chat() {
+  const { messages, sendMessage, addToolOutput } = useChat({
+    transport: new DefaultChatTransport({
+      api: "/api/chat",
+      // A fresh snapshot with every request, including automatic resubmissions after tool results
+      body: async () => ({
+        webmcpTools: (await catalog.getTools()).map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
+      }),
+    }),
+    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
+    onToolCall({ toolCall }) {
+      if (!catalog.isCatalogTool(toolCall.toolName)) return; // another tool, not ours
+      void catalog.callTool(toolCall.toolName, toolCall.input).then((result) =>
+        result.ok
+          ? addToolOutput({ tool: toolCall.toolName, toolCallId: toolCall.toolCallId, output: result.value })
+          : addToolOutput({ tool: toolCall.toolName, toolCallId: toolCall.toolCallId, state: "output-error", errorText: result.error.message }),
+      );
+    },
+  });
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); void sendMessage({ text: "What can you do on this page?" }); }}>
+      {messages.length} messages <button>Ask</button>
+    </form>
+  );
+}
+```
+
+```ts
+// api/chat/route.ts (server): no webmcp-sdk import, no browser access
+import { convertToModelMessages, createUIMessageStreamResponse, jsonSchema, streamText, tool, toUIMessageStream, type JSONSchema7, type LanguageModel, type UIMessage } from "ai";
+declare const model: LanguageModel;
+
+export async function POST(req: Request) {
+  const { messages, webmcpTools }: { messages: UIMessage[]; webmcpTools: { name: string; description: string; inputSchema: JSONSchema7 }[] } =
+    await req.json();
+  const result = streamText({
+    model,
+    messages: await convertToModelMessages(messages),
+    // No `execute`: the browser runs these. Their descriptions come from web pages, so treat them as untrusted input.
+    tools: Object.fromEntries(webmcpTools.map((t) => [t.name, tool({ description: t.description, inputSchema: jsonSchema(t.inputSchema) })])),
+  });
+  return createUIMessageStreamResponse({ stream: toUIMessageStream({ stream: result.stream }) });
+}
+```
+
+- **Your code only adapts the shape** (`.map(...)`). Names come back as the catalog issued them.
+- **The core has no AI SDK dependency;** this is just an example.
+
+### Several catalogs, or your own tools, in one model
+
+Names are unique **within one catalog**. If one model also receives tools from another catalog, or your own non-WebMCP tools, give each catalog a `namePrefix`. The catalog then issues **and** recognizes the prefixed names, so routing stays one `isCatalogTool` check per catalog:
+
+```ts
+import { createToolCatalog } from "webmcp-sdk";
+declare const toolCall: { toolName: string; input: unknown };
+
+const page = createToolCatalog({ namePrefix: "page_" });
+const widgets = createToolCatalog({ fromOrigins: ["https://widgets.example"], namePrefix: "widget_" });
+
+const tools = [...(await page.getTools()), ...(await widgets.getTools())]; // page_self__search, widget_f1__search…
+const owner = [page, widgets].find((c) => c.isCatalogTool(toolCall.toolName));
+const result = await owner?.callTool(toolCall.toolName, toolCall.input);
+```
+
+- **The prefix** must match `[A-Za-z0-9_-]*` and be at most half of `maxNameLength`; otherwise `createToolCatalog` throws.
+- **Distinct prefixes are your choice.** The SDK keeps no registry across catalogs.
+- **Keep your own tools' names outside every prefix.**
+
+### Reacting to changes, cleanup, React
+
+- **`getTools()`** per request is enough for agents.
+- **`subscribe(listener)`** is for code that must react to changes, such as a live list. It returns a function that stops that listener only.
+- **`dispose()`** ends the whole catalog, every listener included. A module-scope catalog that lives as long as the page needs neither.
 
 ```tsx
 import { useToolCatalog } from "webmcp-sdk/react";
 
 export function ToolList() {
-  const { status, tools } = useToolCatalog({ fromOrigins: ["https://widgets.example"] });
+  const { status, tools } = useToolCatalog({ fromOrigins: ["https://widgets.example"] }); // created, updated and disposed for you
   if (status === "unsupported") return null;
-  return <ul>{tools.map((t) => <li key={t.id}>{t.title ?? t.name} <small>{t.source.origin}</small></li>)}</ul>;
+  return <ul>{tools.map((t) => <li key={t.name}>{t.title ?? t.webmcpName} <small>{t.origin}</small></li>)}</ul>;
 }
 ```
 
-`useToolCatalog` handles initial discovery, `toolchange` updates and cleanup. `fromOrigins` is compared by value, so inline arrays are fine. Ids are unaffected by remounts.
+`useToolCatalog` also returns `catalog`, the instance to call. `fromOrigins` is compared by value, so inline arrays are fine.
 
 **Security.** `fromOrigins` only filters what you ask for. A cross-origin tool appears only if its page registered it with `exposedTo` your origin. The browser and its permissions policy remain the only authority.
 
@@ -662,20 +704,20 @@ For registration tests, pass any object with a `registerTool` method as `modelCo
 - **JSON Schema is only as good as your library's converter.** Refinements and transforms are not expressible, so say them in `description`.
 - **Envelope ambiguity.** A *successful* result shaped exactly like `{ isError: true, error: { kind, message } }`, with a known `kind`, is indistinguishable from a failure on the wire. The SDK does not restrict your schemas; avoid that shape in outputs.
 - **Cancellation is cooperative.** No stop or rollback is ever guaranteed. Removing a tool does not stop calls already running.
-- **Discovery identity is best-effort.** The platform has no registration id. A tool replaced by an identical one, or a same-origin frame navigating to a page with the same tool, is indistinguishable.
+- **Discovery identity is best-effort.** The platform has no registration id. A tool replaced by an identical one, or a same-origin frame navigating to a page with the same tool, keeps its name. Names are unique within one catalog only.
 - **No security layer.** Cross-origin access is entirely the browser's `exposedTo` / `fromOrigins` / permissions-policy model.
 - **Out of scope for now:** declarative (HTML form) tools, workers, bindings other than React, MCP transports.
 
 ## Platform status
 
-As of 2026-11-10 (details and sources in [`docs/research.md`](docs/research.md)):
+As of 2026-11-11 (details and sources in [`docs/research.md`](docs/research.md)):
 
-- **Spec:** [WebMCP Draft CG Report, 9 Nov 2026](https://webmachinelearning.github.io/webmcp/). **Experimental**, not on the W3C standards track.
+- **Spec:** [WebMCP Draft CG Report](https://webmachinelearning.github.io/webmcp/) (`main` at `aa1b51c`, 10 Nov 2026). **Experimental**, not on the W3C standards track.
   - Entry point `document.modelContext` (secure contexts).
   - `registerTool(tool, { signal, exposedTo })`.
   - `getTools({ fromOrigins })` / `executeTool()` / `toolchange`.
 - **Chrome:** origin trial (from 149) and `chrome://flags/#enable-webmcp-testing`. No confirmed shipping in other engines.
-- **Polyfill:** [`@w3c/webmcp-polyfill`](https://github.com/webmachinelearning/webmcp-polyfill) 0.1.0. It currently ignores `outputSchema`.
+- **Polyfill:** [`@w3c/webmcp-polyfill`](https://www.npmjs.com/package/@w3c/webmcp-polyfill) 0.1.0 (published, Apache-2.0). It currently ignores `outputSchema`.
 
 ## Project status
 

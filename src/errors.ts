@@ -127,8 +127,12 @@ export type WebMCPErrorCode =
   | "registration_failed";
 
 /**
- * Developer-facing error. Thrown only by `defineTool`. Registration problems are
- * **reported** per tool in the registration snapshot, never thrown.
+ * Developer-facing error.
+ * - **Thrown** by `defineTool` (`invalid_definition`).
+ * - **Rejects** `registerTool` (`duplicate_name`, `json_schema_unavailable`, `registration_failed`).
+ * - **Reported** per tool by `registerTools` and the React hooks.
+ *
+ * It never reaches an agent. A missing WebMCP is not an error: it is reported as `"unsupported"`.
  */
 export class WebMCPError extends Error {
   override name = "WebMCPError";

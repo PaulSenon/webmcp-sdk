@@ -1,11 +1,10 @@
 import type { ToolFailureKind, WebMCPError } from "./errors.js";
-import type { AnyToolDefinition } from "./define.js";
 import type { AnyToolImplementation } from "./implement.js";
 import type { ModelContextLike } from "./model-context.js";
 import { notImplemented } from "./not-implemented.js";
 
 // ---------------------------------------------------------------------------
-// Compile-time duplicate-name check (literal names; wide `string` names are checked at runtime)
+// Compile-time duplicate-name check for `registerTools` (best-effort)
 // ---------------------------------------------------------------------------
 
 type Overlap<A extends string, B extends string> = Extract<A, B> | Extract<B, A>;
@@ -15,8 +14,7 @@ type Check<H extends AnyToolImplementation, Seen extends string> = string extend
 type NameOf<H extends AnyToolImplementation> = string extends H["name"] ? never : H["name"];
 /**
  * Scans known tuple elements from the front, then from the back (so `[...dynamic, a, a]` is
- * still checked). The scan is bounded: very long tuples (more than 200 elements) and
- * non-tuple arrays are checked at runtime only.
+ * still checked). Bounded: very long tuples (> 200) and dynamic arrays are only checked at runtime.
  */
 type FindDuplicate<
   T extends readonly AnyToolImplementation[],
@@ -35,49 +33,17 @@ type FindDuplicate<
       : never;
 
 /**
- * `unknown` when names cannot collide; otherwise a readable compile error. This is
- * best-effort: names hidden in dynamic arrays (`.map()`, erased element types) are only
- * checked at runtime, where a duplicate becomes a per-tool `duplicate_name` state.
+ * `unknown` when names cannot collide; otherwise a readable compile error. Best-effort: names
+ * in dynamic arrays (`.map()`, erased element types) are checked at runtime, where a
+ * duplicate is reported as that tool's `duplicate_name` error.
  */
 export type UniqueToolNames<T extends readonly AnyToolImplementation[]> = [FindDuplicate<T>] extends [never]
   ? unknown
   : { readonly "~error": `Duplicate tool name "${FindDuplicate<T>}"` };
 
 // ---------------------------------------------------------------------------
-// Registration
+// Registration (mirrors WebMCP's `registerTool(tool, { signal })`)
 // ---------------------------------------------------------------------------
-
-/** Where one tool stands in a registration. */
-export type ToolRegistrationState =
-  /** Being registered (or queued behind a previous registration of the same name). */
-  | "pending"
-  | "registered"
-  /** No WebMCP in this environment: nothing registered, nothing thrown. */
-  | "unsupported"
-  /** The browser rejected it, or its schemas could not be converted; see `error`. */
-  | "error";
-
-export type ToolRegistrationEntry =
-  | {
-      readonly name: string;
-      readonly definition: AnyToolDefinition;
-      readonly state: Exclude<ToolRegistrationState, "error">;
-      readonly error?: undefined;
-    }
-  | {
-      readonly name: string;
-      readonly definition: AnyToolDefinition;
-      readonly state: "error";
-      /** `duplicate_name`, `json_schema_unavailable` (including a non-object input root) or `registration_failed`. */
-      readonly error: WebMCPError;
-    };
-
-/** Immutable view of a registration. A new object on every change, the same object otherwise. */
-export interface ToolRegistrationSnapshot {
-  /** `false` without WebMCP (every tool is then `"unsupported"`). `undefined` before anything was attempted (React SSR / first render). */
-  readonly supported: boolean | undefined;
-  readonly tools: readonly ToolRegistrationEntry[];
-}
 
 /** Details passed to `onUnexpectedError`. */
 export interface UnexpectedErrorInfo {
@@ -90,23 +56,19 @@ export interface UnexpectedErrorInfo {
   readonly handlerCalled: boolean;
 }
 
-export interface RegisterToolsOptions {
-  /** Aborting it is the same as `unregister()`. */
+export interface RegisterToolOptions {
+  /**
+   * The tool's lifetime, as in WebMCP. Aborting it unregisters the tool, or every tool of a
+   * `registerTools` call. Calls already running are not cancelled (WebMCP semantics).
+   */
   readonly signal?: AbortSignal;
   /**
-   * The model context to register into. Used as-is and exclusively when given (never falls
-   * back to `document`). Any object matching the structure works: a test double, or another
-   * implementation.
-   *
-   * Default: `document.modelContext`, looked up when the registration is created and again
-   * on each `update()` while it is still missing. That way a polyfill installed later is
-   * picked up at the next update, with no polling. During SSR it is `"unsupported"`.
+   * The model context to register into, used as-is when given. Default:
+   * `document.modelContext`, looked up at call time. During SSR, or without WebMCP, the
+   * result is `"unsupported"`.
    */
   readonly modelContext?: ModelContextLike;
-  /**
-   * Origins allowed to discover and call these tools from other frames (native `exposedTo`,
-   * enforced by the browser). Fixed for the registration's lifetime.
-   */
+  /** Origins allowed to discover and call these tools from other frames (native `exposedTo`, enforced by the browser). */
   readonly exposedTo?: readonly string[];
   /**
    * Receives the original error behind failures you did **not** throw on purpose: defects
@@ -118,47 +80,55 @@ export interface RegisterToolsOptions {
   readonly onUnexpectedError?: (error: unknown, info: UnexpectedErrorInfo) => void;
 }
 
-/**
- * A live registration in one document. The handle is synchronous; registration work is async.
- */
-export interface ToolRegistration {
-  /**
-   * Declares the new desired list. Tools are matched **by definition identity** (not by
-   * array identity):
-   * - **kept** definitions get the new handler (no re-registration);
-   * - **removed** ones are unregistered first, then **added** ones are registered;
-   * - a same-name replacement waits for the old registration to be gone.
-   *
-   * Calls already running are not affected. The list is copied, so later mutations of the
-   * array are ignored until the next `update`.
-   */
-  update<const T extends readonly AnyToolImplementation[]>(tools: T & UniqueToolNames<T>): void;
-  /**
-   * Unregisters every tool. Idempotent. Running calls finish normally. Afterwards the
-   * handle is finished: `update` is ignored and `settled()` resolves immediately.
-   */
-  unregister(): void;
-  getSnapshot(): ToolRegistrationSnapshot;
-  /** Called after each snapshot change. Not called on subscribe. Returns an unsubscribe function. */
-  subscribe(listener: (snapshot: ToolRegistrationSnapshot) => void): () => void;
-  /** Resolves once the current desired list is reconciled. Never rejects: errors are in the snapshot. */
-  settled(): Promise<ToolRegistrationSnapshot>;
-}
+/** The outcome of registering one tool. */
+export type RegisterToolStatus =
+  | "registered"
+  /** No WebMCP in this environment: nothing registered, nothing thrown. */
+  | "unsupported";
 
 /**
- * Registers tools in the current document and returns a handle to update or remove them.
+ * Registers one tool, like WebMCP's `registerTool`, plus definitions, validation, types and
+ * agent-readable failures.
  *
- * Never throws for environment or browser problems. Without WebMCP, every tool is
- * `"unsupported"`, and the other failures are per-tool `"error"` states.
+ * - Resolves `"registered"`, or `"unsupported"` when WebMCP is not available.
+ * - Rejects with a `WebMCPError` on real failures (`duplicate_name`, `json_schema_unavailable`,
+ *   `registration_failed`), like the native call.
+ * - Rejects with `signal.reason` if the signal is already aborted or aborts while registering.
  *
  * @example
- * const reg = registerTools([searchTool, addToCartTool({ cart })]);
- * reg.update([searchTool, addToCartTool({ cart }), checkoutTool({ cart })]);
- * reg.unregister();
+ * const controller = new AbortController();
+ * await registerTool(searchTool, { signal: controller.signal });
+ * // later
+ * controller.abort();
+ */
+export function registerTool(tool: AnyToolImplementation, options?: RegisterToolOptions): Promise<RegisterToolStatus> {
+  return notImplemented("registerTool");
+}
+
+/** The outcome for one tool of a {@link registerTools} call. */
+export type RegisterToolsResult =
+  | { readonly name: string; readonly status: RegisterToolStatus; readonly error?: undefined }
+  | { readonly name: string; readonly status: "error"; readonly error: WebMCPError };
+
+/**
+ * Registers several tools in one call, sharing one lifetime (`signal`).
+ *
+ * Resolves once every tool has settled, with one result per tool, in order. It does not
+ * reject because one tool failed: the tools that succeeded stay registered under the
+ * signal, and failed ones need no cleanup. There is no rollback. If you want "all or
+ * nothing", check the results and abort the signal yourself.
+ *
+ * Rejects only with `signal.reason` if the signal is already aborted or aborts while
+ * registering.
+ *
+ * @example
+ * const shop = new AbortController();
+ * const results = await registerTools([searchTool, addToCartTool({ cart })], { signal: shop.signal });
+ * shop.abort(); // removes every tool registered by this call
  */
 export function registerTools<const T extends readonly AnyToolImplementation[]>(
   tools: T & UniqueToolNames<T>,
-  options?: RegisterToolsOptions,
-): ToolRegistration {
+  options?: RegisterToolOptions,
+): Promise<readonly RegisterToolsResult[]> {
   return notImplemented("registerTools");
 }

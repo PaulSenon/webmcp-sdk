@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { z } from "zod";
-import { defineTool, implementTool, type ToolRegistrationSnapshot } from "webmcp-sdk";
-import { RegisterTools, useRegisterTools, useToolCatalog } from "webmcp-sdk/react";
+import { defineTool, implementTool, type ToolCatalog } from "webmcp-sdk";
+import { RegisterTools, useRegisterTools, useToolCatalog, type RegisteredToolsState } from "webmcp-sdk/react";
 import type { Equal, Expect } from "./_utils.js";
 
 interface Cart { items: string[] }
@@ -12,13 +12,16 @@ const checkoutTool = ({ cart }: { cart: Cart }) => implementTool(checkout, () =>
 
 export function Shop({ cart }: { cart: Cart }) {
   const [n, setN] = useState(0);
-  const snap = useRegisterTools([viewCartTool({ cart })], { enabled: n >= 0, exposedTo: ["https://a.example"] });
-  type _s = Expect<Equal<typeof snap, ToolRegistrationSnapshot>>;
+  const state = useRegisterTools([viewCartTool({ cart })], { enabled: n >= 0, exposedTo: ["https://a.example"] });
+  type _s = Expect<Equal<typeof state, RegisteredToolsState>>;
+  for (const t of state.tools) if (t.state === "error") void t.error.code;
   // @ts-expect-error duplicate names
   useRegisterTools([viewCartTool({ cart }), viewCartTool({ cart })]);
+  // @ts-expect-error the hook owns the lifetime: no signal option
+  useRegisterTools([viewCartTool({ cart })], { signal: new AbortController().signal });
 
-  const { status, tools, find } = useToolCatalog({ fromOrigins: ["https://widgets.example"] });
-  void find(viewCart);
+  const { status, tools, catalog } = useToolCatalog({ fromOrigins: ["https://widgets.example"] });
+  type _c = Expect<Equal<typeof catalog, ToolCatalog>>;
   setN(tools.length);
 
   return (

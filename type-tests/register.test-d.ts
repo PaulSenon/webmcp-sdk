@@ -2,12 +2,14 @@ import { z } from "zod";
 import {
   defineTool,
   implementTool,
+  isToolFailureEnvelope,
+  registerTool,
   registerTools,
   runTool,
-  isToolFailureEnvelope,
   ToolError,
+  type RegisterToolsResult,
+  type RegisterToolStatus,
   type ToolFailure,
-  type ToolRegistrationSnapshot,
   type ToolRunResult,
 } from "webmcp-sdk";
 import type { Equal, Expect } from "./_utils.js";
@@ -17,35 +19,52 @@ const ping = defineTool({ name: "ping", description: "x" });
 interface Dashboard { apply(f: string): number }
 const applyFilter = defineTool({ name: "apply_filter", description: "x", input: z.object({ filter: z.string() }), output: z.object({ count: z.number() }) });
 
-// One factory per implementation
 const applyFilterTool = ({ dashboard }: { dashboard: Dashboard }) =>
   implementTool(applyFilter, ({ filter }) => ({ count: dashboard.apply(filter) }));
 const searchTool = implementTool(search, async ({ q }) => ({ hits: [q] }));
 const pingTool = implementTool(ping, () => "pong");
 declare const dashboard: Dashboard;
 
-const reg = registerTools([searchTool, pingTool, applyFilterTool({ dashboard })]);
-reg.update([searchTool, applyFilterTool({ dashboard })]);
+// --- One tool: native-like ---------------------------------------------------------------
+const controller = new AbortController();
+const status = await registerTool(searchTool, { signal: controller.signal, exposedTo: ["https://a.example"] });
+type _status = Expect<Equal<typeof status, RegisterToolStatus>>;
+type _statusValues = Expect<Equal<RegisterToolStatus, "registered" | "unsupported">>;
+controller.abort();
 // @ts-expect-error missing dependency is a compile error at the factory call
 applyFilterTool({});
 
-const snap: ToolRegistrationSnapshot = reg.getSnapshot();
-type _state = Expect<Equal<(typeof snap.tools)[number]["state"], "pending" | "registered" | "unsupported" | "error">>;
-const p: Promise<ToolRegistrationSnapshot> = reg.settled();
-reg.subscribe((s) => s.supported);
-registerTools([pingTool], { signal: new AbortController().signal, exposedTo: ["https://a.example"], onUnexpectedError: (e, info) => info.kind });
+// --- A group: one call, one signal, per-tool results --------------------------------------
+const shop = new AbortController();
+const results = await registerTools([searchTool, pingTool, applyFilterTool({ dashboard })], {
+  signal: shop.signal,
+  onUnexpectedError: (_e, info) => info.kind,
+});
+type _results = Expect<Equal<typeof results, readonly RegisterToolsResult[]>>;
+for (const r of results) {
+  if (r.status === "error") {
+    const code: "invalid_definition" | "duplicate_name" | "json_schema_unavailable" | "registration_failed" = r.error.code;
+  }
+}
+shop.abort();
 
-// --- Duplicate names --------------------------------------------------------------------
+// --- Duplicate names ---------------------------------------------------------------------
 const pingAgain = implementTool(defineTool({ name: "ping", description: "y" }), () => null);
 // @ts-expect-error duplicate tool name "ping"
 registerTools([pingTool, pingAgain]);
-// @ts-expect-error duplicate in update too
-reg.update([pingTool, pingAgain]);
+declare const cond: boolean;
+// @ts-expect-error duplicate after a conditional spread
+registerTools([...(cond ? [searchTool] : []), pingTool, pingTool]);
+registerTools([pingTool].map((t) => t)); // dynamic: checked at runtime only
 declare const aOrB: "a" | "b";
 const a = implementTool(defineTool({ name: "a", description: "x" }), () => null);
 const ab = implementTool(defineTool({ name: aOrB, description: "x" }), () => null);
 // @ts-expect-error potential duplicate, any order
 registerTools([ab, a]);
+
+// --- No public update/handle: the signal is the lifetime ----------------------------------
+// @ts-expect-error registerTool returns a status, not a handle
+(await registerTool(pingTool)).unregister();
 
 // --- runTool: typed result, unknown input -------------------------------------------------
 const r = await runTool(searchTool, { q: "shoes" });
@@ -72,10 +91,3 @@ declare const value: unknown;
 if (isToolFailureEnvelope(value)) {
   type _f = Expect<Equal<typeof value.error, ToolFailure>>;
 }
-
-// --- SOL pass-2 regressions: duplicates after a dynamic prefix are still caught ----------
-declare const cond: boolean;
-// @ts-expect-error duplicate after a conditional spread
-registerTools([...(cond ? [searchTool] : []), pingTool, pingTool]);
-registerTools([...(cond ? [searchTool] : []), pingTool]); // fine
-registerTools([pingTool].map((t) => t)); // dynamic: checked at runtime only

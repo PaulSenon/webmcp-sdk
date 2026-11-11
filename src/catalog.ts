@@ -1,48 +1,31 @@
 /**
- * Discovering and calling tools from an in-page agent. EXPERIMENTAL: built on the WebMCP
- * draft's `getTools()`, `executeTool()` and `toolchange`, which may still change.
+ * Discovering and calling the WebMCP tools available to this page, for in-page agents.
+ * EXPERIMENTAL: built on the WebMCP draft's `getTools()`, `executeTool()` and `toolchange`.
+ *
+ * A catalog is an object you create and own. It keeps no global or shared state: names are
+ * unique within one catalog instance, for its lifetime.
  */
-import type { AnyToolDefinition, InferToolInput, InferToolOutput, ToolAnnotations } from "./define.js";
-import type { ToolFailure, ToolIssue } from "./errors.js";
+import type { ToolAnnotations } from "./define.js";
+import type { ToolFailure } from "./errors.js";
 import type { ModelContextConsumerLike } from "./model-context.js";
 import { notImplemented } from "./not-implemented.js";
 import type { JSONSchema } from "./schema.js";
 
-/** The document a tool comes from. */
-export interface ToolSource {
-  /** `"self"` for this document, `"f1"`, `"f2"`… for others. Assigned once per (window, origin) for the page's lifetime, never reused. */
-  readonly key: string;
-  readonly isSelf: boolean;
-  readonly origin: string;
-}
-
 /**
- * Why a call produced no value. Failures are values: `call` never throws. Every variant
- * has a `message` you can hand to an LLM as-is.
+ * One discovered tool: a description you can hand to a model. It carries JSON Schema
+ * only: a remote page's validators do not cross the page boundary.
  */
-export type ToolCallError =
-  /** No tool with this id in the latest discovery result, or the browser reports it gone. Nothing was executed. */
-  | { readonly kind: "not_found"; readonly message: string }
-  /** The tool returned a failure envelope (webmcp-sdk tools, or any tool using the same shape). `message` is `failure.message`. */
-  | { readonly kind: "tool_failed"; readonly message: string; readonly failure: ToolFailure }
-  /** The browser rejected the call: `AbortError` (your signal, or the owner unloaded), `OperationError` (the tool threw; reason not forwarded), `SecurityError`… */
-  | { readonly kind: "rejected"; readonly message: string; readonly domException: string }
-  /** Known definitions only: your input failed the definition's input schema. Nothing was sent. */
-  | { readonly kind: "input_invalid"; readonly message: string; readonly issues: readonly ToolIssue[] }
-  /** Known definitions only: the result failed the definition's output schema. */
-  | { readonly kind: "output_invalid"; readonly message: string };
-
-export type ToolCallResult<T = unknown> =
-  | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly error: ToolCallError };
-
-/** One discovered tool. Its types are unknown: discovery happens at runtime. */
-export interface DiscoveredTool {
+export interface CatalogTool {
   /**
-   * Stable, opaque id for this page session, e.g. `"self__search"`, `"f1__search"`. Use it as
-   * an opaque string: do not parse it, because names may contain `_`. Never persist it.
+   * The name to give the model and to pass back to `callTool`. It is issued by this catalog:
+   * - unique within the catalog;
+   * - `[A-Za-z0-9_-]`, at most `maxNameLength`;
+   * - shaped `<namePrefix><source>__<tool name>`, e.g. `self__search` or `f1__search`.
+   *
+   * The source tag identifies the document the tool comes from (a window/frame at one
+   * origin) and is added to every name. The name is stable for the catalog's lifetime,
+   * including across unregister/re-register of the same tool.
    */
-  readonly id: string;
   readonly name: string;
   readonly title: string | undefined;
   readonly description: string;
@@ -50,37 +33,44 @@ export interface DiscoveredTool {
   readonly inputSchema: JSONSchema;
   readonly outputSchema: JSONSchema | undefined;
   readonly annotations: ToolAnnotations;
-  readonly source: ToolSource;
-  /** Same as `catalog.call(this.id, input, options)`. */
-  call(input?: unknown, options?: { readonly signal?: AbortSignal }): Promise<ToolCallResult>;
+  /** The origin of the document that registered the tool. */
+  readonly origin: string;
+  /** `true` when the tool comes from the catalog's own document. */
+  readonly isSameDocument: boolean;
+  /** The tool's original WebMCP name, for display or debugging. Not unique across frames. */
+  readonly webmcpName: string;
 }
 
-/** A discovered tool matched to a definition you know: typed, and checked at runtime. */
-export interface KnownTool<D extends AnyToolDefinition> extends Omit<DiscoveredTool, "call"> {
-  /**
-   * Validates `input` locally against the definition first (nothing is sent if it fails),
-   * then sends **your original value**, not the parsed one, because the provider validates
-   * again. Finally it validates the result with the definition's output schema.
-   */
-  call(
-    ...args: [D["input"]] extends [undefined]
-      ? [input?: InferToolInput<D>, options?: { readonly signal?: AbortSignal }]
-      : [input: InferToolInput<D>, options?: { readonly signal?: AbortSignal }]
-  ): Promise<ToolCallResult<InferToolOutput<D>>>;
-}
+/** Why a call produced no value. `callTool` never throws; every variant has a `message`. */
+export type ToolCallError =
+  /** Not a name this catalog issued. Nothing was executed. */
+  | { readonly kind: "unknown_tool"; readonly message: string }
+  /** Issued by this catalog, but not available now (removed, frame gone, catalog disposed). Nothing was executed, and the call is never rerouted. */
+  | { readonly kind: "unavailable"; readonly message: string }
+  /** `input` is not a JSON object. Nothing was executed. */
+  | { readonly kind: "invalid_arguments"; readonly message: string }
+  /** The tool returned a failure envelope (e.g. its own `input_invalid`). `message` is `failure.message`. */
+  | { readonly kind: "tool_failed"; readonly message: string; readonly failure: ToolFailure }
+  /** The browser rejected the call: `AbortError` (your signal, or the owner unloaded), `OperationError` (the tool threw; reason not forwarded), `SecurityError`… */
+  | { readonly kind: "rejected"; readonly message: string; readonly domException: string };
+
+/** Result of `callTool`. Discovered tools have no static types, so `value` is `unknown`. */
+export type ToolCallResult =
+  | { readonly ok: true; readonly value: unknown }
+  | { readonly ok: false; readonly error: ToolCallError };
 
 export interface ToolCatalogSnapshot {
   readonly status:
-    | "idle" // nobody subscribed yet and getTools() not called
+    | "idle" // nothing queried yet
     | "loading"
     | "ready"
-    | "unsupported" // no consumer API in this environment
-    | "error"; // the browser rejected discovery, e.g. SecurityError for an invalid origin
-  /** Sorted by id. Same array object until something changes. */
-  readonly tools: readonly DiscoveredTool[];
-  /** Set when `status` is `"error"`, usually a `DOMException` from the browser. */
+    | "unsupported" // no WebMCP consumer API in this environment
+    | "error"; // the browser rejected discovery (e.g. SecurityError for an invalid origin)
+  /** Same array object until something changes. */
+  readonly tools: readonly CatalogTool[];
+  /** Set when `status` is `"error"`. */
   readonly error?: Error;
-  /** Snapshot counter: increases with each applied discovery result. It is not a tool revision. */
+  /** Snapshot counter: increases with each applied discovery result. */
   readonly version: number;
 }
 
@@ -88,51 +78,58 @@ export interface ToolCatalogOptions {
   /** Other origins to include (native `fromOrigins`). A request filter: owners must still expose their tools to you. */
   readonly fromOrigins?: readonly string[];
   /**
-   * Used as-is and exclusively when given. Default: `document.modelContext`, looked up when
-   * discovery starts and again on each `getTools()` / `update()` while it is still missing.
+   * Used as-is when given. Default: `document.modelContext`, looked up when discovery starts
+   * and again on each `getTools()` / `update()` while it is still missing.
    */
   readonly modelContext?: ModelContextConsumerLike;
+  /** Maximum length of issued names. Default `64` (common provider limit). */
+  readonly maxNameLength?: number;
+  /**
+   * Optional prefix added to every issued name, for apps that feed several catalogs (or
+   * their own tools) to one model. The catalog recognizes the full prefixed names in
+   * `isCatalogTool` / `callTool`, so no reverse mapping is needed. Default `""`.
+   *
+   * It must match `[A-Za-z0-9_-]*` (otherwise `createToolCatalog` throws a `TypeError`) and
+   * be at most `maxNameLength / 2` long (otherwise a `RangeError`). Choosing prefixes that do
+   * not overlap is up to the app: the SDK keeps no registry across catalogs.
+   */
+  readonly namePrefix?: string;
 }
 
 /**
- * A live view of the tools available to this page. Lazy: nothing happens until someone
- * subscribes or calls `getTools()`, so it is safe to create anywhere.
+ * A live view of the tools available to this page. Lazy: nothing happens until
+ * `getTools()` is called or someone subscribes.
  */
 export interface ToolCatalog {
-  /** Queries now (native `getTools`) and returns the result. It also updates the snapshot, unless a newer query already did. */
-  getTools(): Promise<readonly DiscoveredTool[]>;
+  /** Queries now (native `getTools`), updates the snapshot, and returns the tools. */
+  getTools(): Promise<readonly CatalogTool[]>;
+  /** The latest result, synchronously. */
   getSnapshot(): ToolCatalogSnapshot;
   /**
-   * Calls `listener` with each new snapshot. The first subscriber starts discovery and listens
-   * to `toolchange`, and the last one leaving stops it. Not called on subscribe. Returns an
-   * unsubscribe function.
+   * For code that must react to changes (e.g. a UI list). The first subscriber starts
+   * listening to `toolchange`. The listener is called on each new snapshot, not on
+   * subscribe. Returns a function that stops **this** listener only; the catalog keeps running.
    */
   subscribe(listener: (snapshot: ToolCatalogSnapshot) => void): () => void;
-  /** Changes the origins. Compared by value; re-queries only if they changed. */
-  update(options: Pick<ToolCatalogOptions, "fromOrigins">): void;
   /**
-   * Calls the tool currently registered under `id` (a replaced tool is called in its
-   * current version, and the provider validates). If nothing has been discovered yet, it
-   * runs a discovery first. Never throws.
+   * `true` if this catalog issued `name`, now or in the past, including tools that have since
+   * disappeared and names issued before `dispose()`. Use it to route a model's tool call to
+   * this catalog. It says nothing about the arguments.
    */
-  call(id: string, input?: unknown, options?: { readonly signal?: AbortSignal }): Promise<ToolCallResult>;
-  /** Discovered tools whose name is `definition.name`, typed by it. Several sources may match; you choose. */
-  find<D extends AnyToolDefinition>(definition: D): Promise<readonly KnownTool<D>[]>;
-  /** Stops listening. Later calls return `not_found`. */
+  isCatalogTool(name: string): boolean;
+  /**
+   * Calls the tool currently registered under `name`. `input` is whatever the model sent:
+   * `undefined` becomes `{}`, and a non-object gives `invalid_arguments`. The tool's own
+   * page validates the arguments. A replaced tool is called in its current version. Never throws.
+   */
+  callTool(name: string, input?: unknown, options?: { readonly signal?: AbortSignal }): Promise<ToolCallResult>;
+  /** Changes the origins (compared by value); re-queries if they changed. */
+  update(options: Pick<ToolCatalogOptions, "fromOrigins">): void;
+  /** Ends the catalog: stops discovery, releases every subscriber. Later calls answer `unavailable`. */
   dispose(): void;
 }
 
-/** Creates a catalog. See {@link ToolCatalog}. */
+/** Creates a catalog you own. Throws `TypeError` / `RangeError` for an invalid `namePrefix`. */
 export function createToolCatalog(options?: ToolCatalogOptions): ToolCatalog {
   return notImplemented("createToolCatalog");
-}
-
-/**
- * Maps an id to a name an LLM provider accepts. Defaults: `maxLength: 64`,
- * `pattern: /^[a-zA-Z0-9_-]+$/` (common provider rules). Deterministic.
- * It sanitizes and truncates, and appends a short hash whenever it changed the id, so
- * distinct ids stay distinct. Keep your own `providerName → id` map to route calls back.
- */
-export function toProviderName(id: string, options?: { readonly maxLength?: number; readonly pattern?: RegExp }): string {
-  return notImplemented("toProviderName");
 }

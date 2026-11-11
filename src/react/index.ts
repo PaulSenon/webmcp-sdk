@@ -1,68 +1,79 @@
 /**
- * `webmcp-sdk/react`: React bindings. They only orchestrate lifecycle and reactivity on
- * top of the framework-agnostic core (`registerTools`, `createToolCatalog`). They never
- * re-implement core logic.
+ * `webmcp-sdk/react`: React bindings over the framework-agnostic core (`registerTool`,
+ * `createToolCatalog`). They own lifecycles, so you never register, unregister or dispose
+ * by hand.
  *
- * ## Publishing lifecycle (`useRegisterTools`, `<RegisterTools>`)
+ * ## Publishing (`useRegisterTools`, `<RegisterTools>`)
  *
- * - **SSR and first render:** nothing happens. The snapshot is `{ supported: undefined, tools: [] }`.
- * - **Mount:** a core registration is created in an effect. **Unmount:** `unregister()`.
- * - **After every commit:** `update(tools)`. The core matches tools by **definition
- *   identity**: implementations recreated on each render (factories) refresh handlers
- *   without re-registering. Only added or removed definitions are registered or unregistered.
- * - **Handlers** therefore always come from the latest commit. A call that starts between a
- *   render and its commit uses the previous handler.
- * - **StrictMode:** mount → unmount → mount means register, unregister, register. The core's
- *   per-name queue prevents a spurious `duplicate_name`.
- * - **Running calls** are never aborted by unmount or update. A handler that must stop when
- *   its component goes away needs its own `AbortController`, owned by your code.
- * - **Keep definitions stable** (module scope). A definition created during render is a new
- *   tool on every render, so it is re-registered every time (a dev warning is logged).
- * - **Errors** never throw during render. They appear per tool in the snapshot.
+ * - **SSR / first render:** nothing happens (`supported: undefined`).
+ * - **Mount:** each tool is registered with its own `AbortController`. **Unmount:** they
+ *   are all aborted.
+ * - **Re-render:** tools are matched by **definition identity**. Implementations recreated by
+ *   factories only refresh their handler (no re-registration). Added definitions are
+ *   registered, and removed ones aborted. A changed definition with the same name is
+ *   aborted, then registered again; the order is guaranteed.
+ * - **Handlers** come from the latest commit. A call that starts between a render and its
+ *   commit uses the previous handler.
+ * - **StrictMode** double mount: register → abort → register, with no spurious `duplicate_name`.
+ * - **Running calls** are never cancelled by unmount or re-render (WebMCP semantics).
+ * - **Keep definitions at module scope.** A definition created during render is a new tool on
+ *   every render (a dev warning is logged).
+ * - **Errors** never throw during render. They appear per tool in the returned state. A
+ *   `duplicate_name` conflict with another SDK registration is retried when that
+ *   registration ends.
+ * - **No WebMCP:** `supported: false`. A polyfill installed later is picked up on a later render.
  *
- * ## Discovery lifecycle (`useToolCatalog`)
+ * ## Discovering (`useToolCatalog`)
  *
- * The catalog is created once per component (lazy, so nothing happens during render) and
- * read through `useSyncExternalStore`. Subscribing starts discovery and the `toolchange`
- * listener, and unmounting stops them. `fromOrigins` is compared by value, so inline arrays
- * are fine. Ids come from a page-wide table, so remounts and StrictMode never change them.
+ * Creates one catalog for the component's lifetime (kept across re-renders and the StrictMode
+ * double effect), subscribes to it, and disposes it on unmount. `fromOrigins` is compared by
+ * value, so inline arrays are fine. The returned `catalog` is the instance to call.
  */
 import type { ReactNode } from "react";
 import type {
-  AnyToolDefinition,
   AnyToolImplementation,
-  KnownTool,
-  RegisterToolsOptions,
-  ToolCallResult,
+  RegisterToolOptions,
+  ToolCatalog,
   ToolCatalogOptions,
   ToolCatalogSnapshot,
-  ToolRegistrationSnapshot,
   UniqueToolNames,
+  WebMCPError,
 } from "../index.js";
 import { notImplemented } from "../not-implemented.js";
 
+/** Per-tool state reported by {@link useRegisterTools}. */
+export type RegisteredToolState =
+  | { readonly name: string; readonly state: "pending" | "registered" | "unsupported"; readonly error?: undefined }
+  | { readonly name: string; readonly state: "error"; readonly error: WebMCPError };
+
+export interface RegisteredToolsState {
+  /** `undefined` before the first effect (SSR, first render), then whether WebMCP is available. */
+  readonly supported: boolean | undefined;
+  readonly tools: readonly RegisteredToolState[];
+}
+
 /**
  * Options for {@link useRegisterTools}. Changing `modelContext` or `exposedTo` (compared by
- * value) re-creates the registration. `enabled` and `onUnexpectedError` apply on the next commit.
+ * value) re-registers. `enabled` and `onUnexpectedError` apply on the next commit.
  */
-export interface UseRegisterToolsOptions extends Omit<RegisterToolsOptions, "signal"> {
+export interface UseRegisterToolsOptions extends Omit<RegisterToolOptions, "signal"> {
   /** `false` unregisters every tool of this hook. Default `true`. */
   readonly enabled?: boolean;
 }
 
 /**
- * Registers tools while the component is mounted, and keeps them in sync with each render.
+ * Registers tools while the component is mounted and keeps them in sync with each render.
  *
  * @example
  * function Dashboard({ dashboard }: { dashboard: DashboardStore }) {
- *   const { tools } = useRegisterTools([applyFilterTool({ dashboard }), pingTool]);
+ *   const { supported } = useRegisterTools([applyFilterTool({ dashboard }), pingTool]);
  *   …
  * }
  */
 export function useRegisterTools<const T extends readonly AnyToolImplementation[]>(
   tools: T & UniqueToolNames<T>,
   options?: UseRegisterToolsOptions,
-): ToolRegistrationSnapshot {
+): RegisteredToolsState {
   return notImplemented("useRegisterTools");
 }
 
@@ -73,7 +84,7 @@ export type RegisterToolsProps<T extends readonly AnyToolImplementation[]> = Use
 };
 
 /**
- * Component form of {@link useRegisterTools}: tools are registered while it is mounted.
+ * Component form of {@link useRegisterTools}: the tools are registered while it is mounted.
  *
  * @example
  * {cart.items.length > 0 && <RegisterTools tools={[checkoutTool({ cart })]} />}
@@ -82,17 +93,18 @@ export function RegisterTools<const T extends readonly AnyToolImplementation[]>(
   return notImplemented("RegisterTools");
 }
 
-/** What {@link useToolCatalog} returns: the current snapshot plus the catalog's call helpers. */
+/** What {@link useToolCatalog} returns: the current snapshot, plus the catalog it owns. */
 export interface UseToolCatalogResult extends ToolCatalogSnapshot {
-  call(id: string, input?: unknown, options?: { readonly signal?: AbortSignal }): Promise<ToolCallResult>;
-  find<D extends AnyToolDefinition>(definition: D): Promise<readonly KnownTool<D>[]>;
+  /** Stable for the component's lifetime. Use it for `callTool`, `isCatalogTool`, `getTools`. */
+  readonly catalog: ToolCatalog;
 }
 
 /**
  * Discovers the tools available to this page and re-renders when they change. EXPERIMENTAL.
+ * `maxNameLength` and `namePrefix` are read once, at creation.
  *
  * @example
- * const { status, tools } = useToolCatalog({ fromOrigins: ["https://widgets.example"] });
+ * const { status, tools, catalog } = useToolCatalog({ fromOrigins: ["https://widgets.example"] });
  */
 export function useToolCatalog(options?: ToolCatalogOptions): UseToolCatalogResult {
   return notImplemented("useToolCatalog");
