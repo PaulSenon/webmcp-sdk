@@ -21,13 +21,13 @@ Each discovered tool gets exactly **one name**. It is what the model sees and wh
 
    **Name = `<tag>__<tool name>`,** e.g. `self__search`, `f1__search`. It is a prefix, chosen so that every tool of one source groups together. Because the tag never depends on what else is registered, registration order is irrelevant: A's `toto` is always `f1__toto`.
 2. **Same source + same WebMCP name gives the same name**, across unregister/re-register, for the catalog's lifetime.
-3. **Provider-safe:** `[A-Za-z0-9_-]`, at most `maxNameLength` (default 64), including the tag.
+3. **Provider-safe:** `[A-Za-z0-9_-]`, at most `maxNameLength` (default 64), including the optional `namePrefix` (§7) and the tag.
    - Invalid characters become `_`.
    - The tool-name part is truncated when needed; the tag and prefix are never truncated.
 4. **Collisions that the tag cannot prevent** happen inside **one** source, when two distinct WebMCP names normalize or truncate to the same string (`a.b` and `a_b`, or two long names sharing a prefix). The catalog's own registry resolves them: the first one seen keeps the plain normalized name, and the next gets `_2`, `_3`… (truncating further to fit). Assignments are sticky and never reused. There is no hash, so nothing assumes hashes never collide: uniqueness is checked against the registry.
 5. **A source that disappears or changes origin** retires its names. Calls to them answer `unavailable` and are never rerouted, and the new origin gets a new tag.
 
-**Scope: per catalog instance, no global state.** Tags, names and the registry live inside the instance you create. Two catalogs may assign different tags to the same frame. Combining them into one model is the app's choice and responsibility (§7).
+**Scope: per catalog instance, no global state.** Tags, names and the registry live inside the instance you create. Two catalogs may assign different tags to the same frame. When both feed one model, give each a distinct `namePrefix` (§7).
 
 This **revises D15**, which had a page-wide identity table so that ids matched across catalogs. That module-level table is dropped in favour of instance-owned state, per the "no hidden global state" preference.
 
@@ -38,7 +38,7 @@ This **revises D15**, which had a page-wide identity table so that ids matched a
 ## 3. Proposed API (consumer only)
 
 ```ts nocheck
-const catalog = createToolCatalog({ fromOrigins?, modelContext?, maxNameLength? });
+const catalog = createToolCatalog({ fromOrigins?, modelContext?, maxNameLength?, namePrefix? });
 
 await catalog.getTools();          // fresh query → readonly CatalogTool[]
 catalog.getSnapshot();             // last result, sync (status, tools)
@@ -330,14 +330,30 @@ unregister();
 
 **React is unchanged:** `useRegisterTools([...])` / `<RegisterTools>` own their controllers internally (5b).
 
-## 7. Several catalogs and other tools in the same model (decided, user 2026-11-11)
+## 7. Several catalogs and other tools in the same model (corrected, user 2026-11-11)
 
-**Uniqueness is internal to one catalog, and nothing more.** There is no `namePrefix` option and no multi-catalog composition in the SDK (the earlier proposal is withdrawn).
+**Correction:** the user reconsidered removing `namePrefix`, once it was clear that renaming outside the SDK forces a reverse map. This replaces the "no prefix" version.
 
-- **Nominal path (one catalog per model):** the names it issues go straight to the model and straight back to `callTool`. No mapping is needed.
-- **Deliberate composition** happens when an app feeds several catalogs, or a catalog plus non-WebMCP tools, to one model. The app renames in its own `getTools → provider` adapter, for example by adding its own prefix. Honest consequence: on the way back, **the app must strip its alias and pick the owning catalog itself, before** `isCatalogTool` / `callTool`, because the SDK only recognizes names it issued, never aliases added outside it. That bookkeeping exists only because the app chose to compose.
-- **Ownership and lifetime are unchanged:** the issuing catalog owns its names until `dispose()`. After that, `isCatalogTool` is still `true` and `callTool` answers `unavailable`.
-- **The systematic source tag (§2) is a different thing and stays:** it is how *one* catalog keeps the tools of different frames apart.
+**Proposal: an optional `namePrefix`, set when the catalog is created.**
+
+```ts nocheck
+const page = createToolCatalog({ namePrefix: "page_" });
+const widgets = createToolCatalog({ fromOrigins: ["https://widgets.example"], namePrefix: "widget_" });
+
+const tools = [...(await page.getTools()), ...(await widgets.getTools())]; // names: page_self__search, widget_f1__search…
+const owner = [page, widgets].find((c) => c.isCatalogTool(toolCall.toolName)); // full names, as issued
+await owner?.callTool(toolCall.toolName, toolCall.input);
+```
+
+- **The catalog issues *and* recognizes the full name** (`<namePrefix><source tag>__<tool name>`). `isCatalogTool` and `callTool` take exactly what was issued, so the app keeps no reverse map, even when it composes catalogs or adds its own tools.
+- **Composition with the source tag (§2):** the prefix is prepended verbatim; include your own separator if you want one (`"page_"`). The source tag stays systematic.
+- **Default `""`:** without a prefix, names are `<tag>__<tool name>`, which is the nominal single-catalog path.
+- **Limits (arbitration):**
+  - **Charset:** the prefix must match `[A-Za-z0-9_-]*`, the same provider-safe set as the names. Anything else makes `createToolCatalog` throw a `TypeError`: a programming error, reported immediately, never silently normalized.
+  - **Length:** the prefix may not exceed half of `maxNameLength` (default 64, so 32), which keeps room for the tag and a readable tool name. A longer prefix throws a `RangeError`. The prefix and the tag are never truncated; only the tool-name part is (§2).
+- **What it does not do:** keep a global registry or provide any automatic cross-catalog guarantee. Choosing distinct namespaces (prefixes that do not overlap) is the app's responsibility. Your own non-WebMCP tools stay collision-free if you keep them outside every prefix.
+- **Renaming outside the SDK remains possible but is not the recommended path.** An app that adds aliases outside the SDK must strip them and pick the owning catalog itself before `isCatalogTool` / `callTool`, because the SDK only knows the names it issued.
+- **Ownership and lifetime:** the issuing catalog owns its names until `dispose()`. After that, `isCatalogTool` stays `true` and `callTool` answers `unavailable`.
 
 ## 8. Narrowing tool calls, unknown vs known contracts (*level 2 withdrawn, see §10*)
 
@@ -460,7 +476,7 @@ type ToolCallError =               // every variant has `message`
 Settled:
 
 - **Publisher (5b, 5c):** `registerTool` / `registerTools`, with `{ signal }` as the only cleanup (arbitration delegated by the user), per-tool results for groups, and reconciliation internal to React.
-- **Consumer:** naming with a systematic source tag (§2), uniqueness internal to one catalog (§7), a single dynamic `callTool(name, input: unknown)` (§10), and cleanup through `dispose()` (§5).
+- **Consumer:** naming with a systematic source tag (§2), uniqueness internal to one catalog plus an optional `namePrefix` (§7, corrected), a single dynamic `callTool(name, input: unknown)` (§10), and cleanup through `dispose()` (§5).
 
 Still open, one question:
 
