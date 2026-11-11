@@ -80,7 +80,7 @@ jobs:
       - run: pnpm test
       - run: pnpm test:react18
       - run: pnpm test:tooling
-      - run: pnpm --filter @senon/webmcp-sdk exec playwright install --with-deps chromium
+      - run: pnpm --filter @senon/webmcp-sdk exec playwright install chromium # system libraries are on ubuntu-24.04; apt (--with-deps) proved flaky
       - run: pnpm test:browser
       - run: pnpm test:e2e
       - name: Pack once and test the tarball

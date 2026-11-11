@@ -63,7 +63,7 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @senon/webmcp-sdk exec playwright install --with-deps chromium
+      - run: pnpm --filter @senon/webmcp-sdk exec playwright install chromium # system libraries are on ubuntu-24.04; apt (--with-deps) proved flaky
       - run: pnpm test:browser
       # Deterministic: official polyfill on two local origins. The native-WebMCP and
       # real-model suites are opt-in (WEBMCP_NATIVE / OPENAI_API_KEY) and skip here.
