@@ -29,6 +29,7 @@
   "devDependencies": {
     "@types/react": "^19.3.0",
     "@valibot/to-json-schema": "^1.8.0",
+    "@w3c/webmcp-polyfill": "0.1.0",
     "arktype": "^2.2.9",
     "react": "^19.3.1",
     "typescript": "^7.0.2",

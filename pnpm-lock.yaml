@@ -18,6 +18,9 @@ importers:
       '@valibot/to-json-schema':
         specifier: ^1.8.0
         version: 1.8.0(valibot@1.5.0(typescript@7.0.2))
+      '@w3c/webmcp-polyfill':
+        specifier: 0.1.0
+        version: 0.1.0
       arktype:
         specifier: ^2.2.9
         version: 2.2.9
@@ -173,6 +176,9 @@ packages:
     peerDependencies:
       valibot: ^1.5.0
 
+  '@w3c/webmcp-polyfill@0.1.0':
+    resolution: {integrity: sha512-FNzmob4B72T9cHDVODskyFjNi0JaZgcD1U0eFmuc2J4o3Lr5k1xabZ5rjw1AuvzgvdxRfvNr9FHUP9yG1s/StA==}
+
   arkregex@0.0.14:
     resolution: {integrity: sha512-G3I/uCtWE0IKQiPh0qqmmAFDdtjZKZQ5mNPR6gJBeAMZ7VqYCpoaDeXnLju2Zo6ywExtmxZJELeVFb0MPDjPyA==}
 
@@ -198,6 +204,9 @@ packages:
     peerDependenciesMeta:
       typescript:
         optional: true
+
+  webmcp-types@0.1.10:
+    resolution: {integrity: sha512-U4GQ1RpJ0tqCUt2ALMV9Pnhi+hsy8L31f/Q1v4mLVhW64r5sYhh+2+SjP/Lq4/9jP33vZgNkuRZARJl65A/ZIg==}
 
   zod@4.6.7:
     resolution: {integrity: sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==}
@@ -280,6 +289,10 @@ snapshots:
     dependencies:
       valibot: 1.5.0(typescript@7.0.2)
 
+  '@w3c/webmcp-polyfill@0.1.0':
+    dependencies:
+      webmcp-types: 0.1.10
+
   arkregex@0.0.14:
     dependencies:
       '@ark/util': 0.56.8
@@ -320,5 +333,7 @@ snapshots:
   valibot@1.5.0(typescript@7.0.2):
     optionalDependencies:
       typescript: 7.0.2
+
+  webmcp-types@0.1.10: {}
 
   zod@4.6.7: {}

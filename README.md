@@ -444,6 +444,31 @@ To *require* WebMCP, check `supported` yourself. No polyfill is installed automa
 
 ---
 
+## Polyfills and custom model contexts
+
+The SDK never installs or imports a polyfill, which keeps progressive enhancement intact. It uses `document.modelContext` when it exists, or the object you pass as `modelContext`.
+
+**With the official polyfill** ([`@w3c/webmcp-polyfill`](https://www.npmjs.com/package/@w3c/webmcp-polyfill), 0.1.0). It installs `document.modelContext` globally, and is a no-op where a native implementation already exists. Install it in your client entry, before registering:
+
+```ts nocheck
+// main.ts (browser entry; not in server code)
+import "@w3c/webmcp-polyfill/auto"; // or: import { installWebMCP } from "@w3c/webmcp-polyfill"; installWebMCP();
+import { registerTools } from "webmcp-sdk";
+registerTools([/* … */]);           // uses document.modelContext
+```
+
+React works the same way: install it in the client entry before `createRoot(...).render(...)`. Nothing else changes.
+
+**Explicit context.** `modelContext` (on `registerTools`, `createToolCatalog` and both hooks) takes any object with the WebMCP shape. It is used as-is and never falls back to `document`. It is mainly useful for test doubles. Polyfills known today (`@w3c/webmcp-polyfill`, `@mcp-b/webmcp-polyfill`, `@mcp-b/global`) install themselves globally rather than handing out standalone instances. The official polyfill's `ModelContext` type is checked against these options in the type tests.
+
+**Installing late** is supported without polling: registrations look again on their next `update()` (in React, the next render), and catalogs on their next `getTools()` / `update()`. Installing before your app starts is simpler.
+
+**Polyfill limits** (from its documentation, 0.1.0):
+
+- It must be installed in **each frame**. Polyfilled frames and native ones do not see each other's tools.
+- It exposes tools to **in-page** consumers (`getTools()` / `executeTool()`); it cannot connect them to a browser's built-in agent.
+- It currently ignores `outputSchema` and fires no `toolcancel`.
+
 ## React
 
 `webmcp-sdk/react` contains thin bindings over the same core.

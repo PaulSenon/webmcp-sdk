@@ -87,7 +87,10 @@ export interface ToolCatalogSnapshot {
 export interface ToolCatalogOptions {
   /** Other origins to include (native `fromOrigins`). A request filter: owners must still expose their tools to you. */
   readonly fromOrigins?: readonly string[];
-  /** Defaults to `document.modelContext`. */
+  /**
+   * Used as-is and exclusively when given. Default: `document.modelContext`, looked up when
+   * discovery starts and again on each `getTools()` / `update()` while it is still missing.
+   */
   readonly modelContext?: ModelContextConsumerLike;
 }
 

@@ -93,7 +93,15 @@ export interface UnexpectedErrorInfo {
 export interface RegisterToolsOptions {
   /** Aborting it is the same as `unregister()`. */
   readonly signal?: AbortSignal;
-  /** Defaults to `document.modelContext`. Pass a polyfill or a test double here. */
+  /**
+   * The model context to register into. Used as-is and exclusively when given (never falls
+   * back to `document`). Any object matching the structure works: a test double, or another
+   * implementation.
+   *
+   * Default: `document.modelContext`, looked up when the registration is created and again
+   * on each `update()` while it is still missing. That way a polyfill installed later is
+   * picked up at the next update, with no polling. During SSR it is `"unsupported"`.
+   */
   readonly modelContext?: ModelContextLike;
   /**
    * Origins allowed to discover and call these tools from other frames (native `exposedTo`,
