@@ -17,7 +17,7 @@ if (!base || base.startsWith("-")) { console.error("usage: check-changeset.mjs <
 const packageDir = process.env.PACKAGE_DIR ?? "packages/webmcp-sdk";
 const repo = resolve(".");
 const changesetBin = join(repo, "node_modules/@changesets/cli/bin.js");
-const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim();
+const git = (...args) => execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 const lines = (text) => text.split("\n").filter(Boolean);
 
 const mergeBase = git("merge-base", base, "HEAD");
@@ -65,6 +65,7 @@ switch (verdict.kind) {
       console.log("No package files changed; no change note needed.");
       break;
     }
-    execFileSync("node", [changesetBin, "status", `--since=${base}`], { stdio: "inherit" });
+    try { execFileSync("node", [changesetBin, "status", `--since=${base}`], { stdio: "inherit" }); }
+    catch { console.error("::error::the package changed but this PR has no change note: run `pnpm changeset` (or `pnpm changeset --empty` if no release is needed)"); process.exit(1); }
     break;
 }
