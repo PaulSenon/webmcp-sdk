@@ -1,0 +1,26 @@
+# Version updates. Cooldown must stay >= pnpm minimumReleaseAge (3 days, pnpm-workspace.yaml),
+# otherwise update PRs fail the frozen install. Security updates are not delayed by cooldown.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    versioning-strategy: increase-if-necessary # do not narrow the library's public ranges
+    open-pull-requests-limit: 5
+    groups:
+      dev-minor-patch:
+        dependency-type: development
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]

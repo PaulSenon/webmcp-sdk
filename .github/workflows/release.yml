@@ -1,0 +1,184 @@
+# The ONLY workflow trusted by npm for @senon/webmcp-sdk (trusted publisher: this file +
+# environment "npm-release", stage-only). Renaming this file or that environment breaks publishing.
+#
+# Flow (docs/releasing.md):
+#   plan      -> preflight on the dispatched commit (no identity)
+#   build     -> install, test, pack ONE tarball (runs dependency code; no identity, no cache)
+#   stage     -> `npm stage publish` of that exact tarball via OIDC (no checkout, no deps, no scripts)
+#   (human)   -> review the staged version and approve it on npmjs.com with 2FA
+#   finalize  -> after approving environment "release-finalize": verify npm serves the same bytes,
+#                then tag and publish an immutable GitHub release
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_version:
+        description: "Exact version to release (must equal packages/webmcp-sdk/package.json)"
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false # never interrupt a release; GitHub keeps at most one pending run per group
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      name: ${{ steps.plan.outputs.name }}
+      version: ${{ steps.plan.outputs.version }}
+      dist_tag: ${{ steps.plan.outputs.dist_tag }}
+      sha: ${{ steps.plan.outputs.sha }}
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24.22.2"
+          package-manager-cache: false
+      - id: plan
+        env:
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+          EXPECTED: ${{ inputs.confirm_version }}
+        run: node tooling/release/plan.mjs
+
+  build:
+    name: build
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    cache-mode: none # nothing restored from (or saved to) the Actions cache in the release path
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      integrity: ${{ steps.manifest.outputs.integrity }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - run: test "$(pnpm --version)" = "10.33.3"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: pnpm test
+      - run: pnpm test:react18
+      - run: pnpm test:tooling
+      - run: pnpm --filter @senon/webmcp-sdk exec playwright install --with-deps chromium
+      - run: pnpm test:browser
+      - run: pnpm test:e2e
+      - name: Pack once and test the tarball
+        working-directory: packages/webmcp-sdk
+        run: node scripts/test-package.mjs --out "$RUNNER_TEMP/out"
+      - id: manifest
+        env:
+          NAME: ${{ needs.plan.outputs.name }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          SHA: ${{ needs.plan.outputs.sha }}
+        run: node tooling/release/manifest.mjs "$RUNNER_TEMP/out"
+      - id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ needs.plan.outputs.version }}
+          path: ${{ runner.temp }}/out
+          retention-days: 30
+          if-no-files-found: error
+
+  stage:
+    name: stage
+    needs: [plan, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: npm-release
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing (OIDC); this is the only job that can request it
+    cache-mode: none
+    steps:
+      # No checkout and no dependency install: nothing from the repository runs with the npm identity.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24.22.2" # bundled npm 11.19.1 (npm stage needs >= 11.15, OIDC >= 11.5.1)
+          package-manager-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2 (digest mismatch fails by default)
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: ${{ runner.temp }}/in
+      - name: Verify and stage
+        env:
+          NAME: ${{ needs.plan.outputs.name }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          DIST_TAG: ${{ needs.plan.outputs.dist_tag }}
+          SHA: ${{ needs.plan.outputs.sha }}
+          EXPECTED_INTEGRITY: ${{ needs.build.outputs.integrity }}
+        run: |
+          set -euo pipefail
+          echo "Actions cache mode: ${ACTIONS_CACHE_MODE:-unset}"
+          if [ -n "${ACTIONS_CACHE_MODE:-}" ] && [ "$ACTIONS_CACHE_MODE" != "none" ]; then echo "::error::cache must be disabled"; exit 1; fi
+          tgz="$RUNNER_TEMP/in/pkg.tgz"
+          test -f "$tgz"
+          actual="sha512-$(openssl dgst -sha512 -binary "$tgz" | base64 -w0)"
+          if [ "$actual" != "$EXPECTED_INTEGRITY" ]; then echo "::error::tarball integrity mismatch"; exit 1; fi
+          tar -xOzf "$tgz" package/package.json | node -e '
+            const m = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            const extra = Object.keys(m.publishConfig ?? {}).filter((k) => k !== "access");
+            if (m.name !== process.env.NAME || m.version !== process.env.VERSION || extra.length) process.exit(1);'
+          mkdir -p "$RUNNER_TEMP/clean" && cd "$RUNNER_TEMP/clean" # no project .npmrc in scope
+          npm --version
+          npm stage publish "$tgz" --tag "$DIST_TAG" --access public --ignore-scripts --json | tee stage.json
+          {
+            echo "### Staged \`$NAME@$VERSION\` (dist-tag \`$DIST_TAG\`)"
+            echo ""
+            echo "- source: \`$SHA\`"
+            echo "- integrity: \`$actual\`"
+            echo ""
+            echo "Next: follow the approval checklist in docs/releasing.md, approve on npmjs.com with 2FA,"
+            echo "then approve the \`release-finalize\` environment for this run."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  finalize:
+    name: finalize
+    needs: [plan, build, stage]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release-finalize # required reviewer: approve AFTER approving the staged version on npm
+    permissions:
+      contents: write # create the tag and the GitHub release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: ${{ runner.temp }}/in
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24.22.2"
+          package-manager-cache: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: ${{ needs.plan.outputs.name }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          SHA: ${{ needs.plan.outputs.sha }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          DIST_TAG: ${{ needs.plan.outputs.dist_tag }}
+          EXPECTED_INTEGRITY: ${{ needs.build.outputs.integrity }}
+        run: node tooling/release/finalize.mjs "$RUNNER_TEMP/in/pkg.tgz" "$RUNNER_TEMP/in/release-manifest.json"

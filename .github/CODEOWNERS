@@ -1,0 +1,6 @@
+# Review ownership for the release machinery. Enforced by the main ruleset only once a second
+# maintainer exists (require code owner review); until then it documents who must look.
+/.github/                         @PaulSenon
+/tooling/release/                 @PaulSenon
+/pnpm-workspace.yaml              @PaulSenon
+/packages/webmcp-sdk/package.json @PaulSenon
