@@ -45,7 +45,7 @@ The caller-abort browser test verifies rejection and signal delivery; it does no
 
 ## Known gaps
 
-**Native WebMCP not tested.** No Chrome flags or origin trials were enabled. The fake tests are algorithm models, not evidence of native platform conformance. Browser integration covers only the installed polyfill and cached Chromium version.
+**Native WebMCP not tested at this stage** *(later verified on Chrome 156; see the E2E section)*. No Chrome flags or origin trials were enabled. The fake tests are algorithm models, not evidence of native platform conformance. Browser integration covers only the installed polyfill and cached Chromium version.
 
 Cross-origin frames, permissions-policy/exposedTo enforcement, actual frame navigation/WindowProxy retention, owner/caller unload behavior, toolcancel events, other browser engines, real agents and provider schema enforcement are not verified. Origin-change naming is simulated in the FAKE suite. React lifecycle and StrictMode are covered by the unit and polyfill suites described below. Output schemas do not reach polyfill consumers, and in-band envelopes remain ambiguous with identically shaped successful values as documented in the README.
 
@@ -125,9 +125,9 @@ Current validation commands:
 - `pnpm test:e2e`: seven deterministic scenarios pass, one real-provider scenario
   skips because `OPENAI_API_KEY` is absent. No key was created or read from files.
 - `pnpm test:browser`: one distinct caller-abort polyfill integration passes.
-- `pnpm test:e2e:native`: all eight scenarios skip because native
-  `document.modelContext` is absent with `--enable-features=WebMCP` on Chrome
-  147.0.7727.15. **Native did not run**, and never falls back to the polyfill.
+- `pnpm test:e2e:native` with bundled Chrome for Testing 147.0.7727.15: all eight
+  scenarios skip (no native `document.modelContext`). The suite never falls back to the polyfill.
+- **Native run (coordinator, 2026-11-11):** `WEBMCP_NATIVE=1 WEBMCP_NATIVE_CHANNEL=chrome` with the installed **Google Chrome 156.0.8078.80** and `--enable-features=WebMCP`. 5 passed and 2 failed at first: both iframe scenarios, because Chrome returns string results unquoted, which `JSON.parse` rejected. Fix: `callTool` returns a non-JSON result as the raw string (FAKE test updated; README/JSDoc note the consequence that JSON-looking strings arrive parsed). After the fix: **7 passed natively**, 1 skipped (no provider key). This is the first native verification: same document, D16 unregister-during-execution, same-origin and cross-origin iframes (exposed vs not exposed), React StrictMode, and the AI SDK mock loop.
 - `pnpm test:all`: check + unit + React 18 + deterministic E2E pass as above.
 
 Playwright owns and stops two local servers, refuses existing servers, and supports

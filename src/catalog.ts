@@ -59,12 +59,13 @@ export type ToolCallError =
   | { readonly kind: "invalid_arguments"; readonly message: string }
   /** The tool returned a failure envelope (e.g. its own `input_invalid`). `message` is `failure.message`. */
   | { readonly kind: "tool_failed"; readonly message: string; readonly failure: ToolFailure }
-  /** The result was unparsable JSON, or the browser rejected the call: `AbortError` (your signal, or the owner unloaded), `OperationError` (the tool threw; reason not forwarded), `SecurityError`… */
+  /** The browser rejected the call: `AbortError` (your signal, or the owner unloaded), `OperationError` (the tool threw; reason not forwarded), `SecurityError`… */
   | { readonly kind: "rejected"; readonly message: string; readonly domException: string };
 
 /**
  * Result of `callTool`. `value` is the tool's result, parsed from the JSON string WebMCP
- * returns. Discovered tools have no static types, so it is `unknown`.
+ * returns. A result that is not valid JSON is returned as the raw string (native Chrome 156
+ * returns string results unquoted). Discovered tools have no static types, so it is `unknown`.
  */
 export type ToolCallResult =
   | { readonly ok: true; readonly value: unknown }
@@ -256,9 +257,12 @@ export function createToolCatalog(options?: ToolCatalogOptions): ToolCatalog {
         if (!input || typeof input !== "object" || (Object.getPrototypeOf(input) !== Object.prototype && Object.getPrototypeOf(input) !== null))
           return failure({ kind: "invalid_arguments", message: "Tool arguments must be a plain object." });
         const json = await context.executeTool(tool, input, callOptions);
+        // The draft serializes every result to JSON (strings arrive quoted). Native Chrome 156
+        // was observed to return string results unquoted instead, so a result that is not
+        // valid JSON is a raw string value. See docs/implementation-log.md.
         let value: unknown;
         try { value = JSON.parse(json); }
-        catch { return failure({ kind: "rejected", domException: "SyntaxError", message: "The tool returned a result that is not valid JSON." }); }
+        catch { value = json; }
         return isToolFailureEnvelope(value) ? failure({ kind: "tool_failed", message: value.error.message, failure: value.error }) : { ok: true, value };
       } catch (error) {
         const name = errorName(error);

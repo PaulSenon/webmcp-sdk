@@ -45,9 +45,8 @@ adds no security layer. These are SDK integration tests, not platform conformanc
 ```sh
 pnpm test:browser        # one additional polyfill caller-cancellation integration
 pnpm test:react18        # existing React unit/SSR suite using pnpm aliases
-pnpm test:e2e:native     # sets WEBMCP_NATIVE=1; same eight scenarios
-WEBMCP_NATIVE=1 pnpm exec playwright test --project=native
-WEBMCP_NATIVE_CHANNEL=chrome pnpm test:e2e:native
+WEBMCP_NATIVE_CHANNEL=chrome pnpm test:e2e:native   # native WebMCP in your installed Chrome (needs a recent Chrome)
+pnpm test:e2e:native     # same, with Playwright's bundled Chromium (may lack WebMCP and skip)
 ```
 
 Native uses `--enable-features=WebMCP`. Chrome's
@@ -57,8 +56,11 @@ Native uses `--enable-features=WebMCP`. Chrome's
 maps it to `blink::features::kWebMCP`. Every native scenario first checks
 `document.modelContext` without importing the polyfill. Absence skips the test
 with a reason, never falls back. An incompatible present API fails the scenario.
-On this machine Chrome for Testing **147.0.7727.15** lacked that entry point;
-all eight native tests skipped. No native behavior was verified.
+Results on this machine (2026-11-11):
+
+- **Google Chrome 156.0.8078.80** (`WEBMCP_NATIVE_CHANNEL=chrome`): **native WebMCP ran.** 7 scenarios pass natively, including same-origin and cross-origin iframes, unregister during execution, React StrictMode and the deterministic AI SDK loop. The real-provider scenario skipped (no key).
+- **Chrome for Testing 147.0.7727.15** (bundled): no native entry point, so all eight scenarios skipped.
+- **Observed native deviation:** Chrome 156 returns *string* results from `executeTool` unquoted (`hello from frame`), where the draft and the polyfill return JSON (`"hello from frame"`). Non-string results are JSON. The catalog therefore returns a non-JSON result as the raw string. Before that fix, the two iframe scenarios failed natively with `rejected`/`SyntaxError`.
 
 The real-provider scenario is **skipped**, not passed, unless `OPENAI_API_KEY`
 is in the runner environment. It then makes real network requests and may cost
@@ -66,5 +68,5 @@ money. The key stays in Node memory. `WEBMCP_MODEL` overrides the default
 `gpt-4.1-mini`. No `.env` is loaded or written. Without a key all deterministic
 browser traffic is local; the provider package is only a devDependency.
 
-Remaining gaps: native conformance, other browser engines, actual frame navigation
+Remaining gaps: native behaviour beyond these scenarios, other browser engines, actual frame navigation
 and unload/caller unload, and provider behavior without an opt-in real run.

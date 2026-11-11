@@ -160,10 +160,10 @@ it('contains subscriber exceptions while notifying other subscribers', async () 
     await notified.promise; expect(log).toHaveBeenCalled();
   } finally { log.mockRestore(); }
 });
-it('keeps malformed JSON separate from native rejection mapping', async () => {
-  const context = new FakeModelContext(); context.getTools = async () => [descriptor('bad')]; context.executeTool = async () => 'invalid';
+it('returns a non-JSON result as a raw string (native Chrome returns string results unquoted)', async () => {
+  const context = new FakeModelContext(); context.getTools = async () => [descriptor('raw')]; context.executeTool = async () => 'hello from frame';
   const c = catalog({ modelContext: context }), name = (await c.getTools())[0]!.name;
-  expect(await c.callTool(name)).toEqual({ ok: false, error: { kind: 'rejected', domException: 'SyntaxError', message: 'The tool returned a result that is not valid JSON.' } });
+  expect(await c.callTool(name)).toEqual({ ok: true, value: 'hello from frame' });
 });
 it.each([{ getTools() {} }, { registerTool() {} }, { getTools() {}, executeTool: 1 }])('detects incomplete default context halves', async modelContext => {
   vi.stubGlobal('document', { modelContext });

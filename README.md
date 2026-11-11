@@ -424,7 +424,7 @@ shop.abort(); // removes every tool registered by this call
 - **Abort timing:** both reject with `signal.reason` if the signal is already aborted or aborts while registering.
 - **Running calls are never cancelled by `abort()`,** exactly as in WebMCP. They finish with the handler they started with, and their result is still delivered.
 - **The handler's `signal`** aborts when the caller cancels, or when the caller's page unloads; the browser then discards any late result. It does not abort when the tool is removed, nor when the page hosting the tool unloads (the caller then gets an `AbortError`, and WebMCP specifies nothing more).
-- **Internal coordination:** pending SDK registrations are tracked per model context and name. A replacement waits for an aborted registration’s native promise to settle before registering. This does not take over names owned by other code.
+- **Internal coordination:** pending SDK registrations are tracked per model context and name. A replacement waits for an aborted registration’s native promise to settle before registering. This does not take over names owned by other code. Coordination is per package copy.
 - **Changing a tool** (a new handler or a new definition) in plain TypeScript: abort it and register the new implementation. Calls for the same name are ordered internally.
 - **Duplicate names** are a compile error for literal arrays passed to `registerTools`, and a `duplicate_name` error at runtime otherwise. The SDK never takes over a name registered by other code.
 
@@ -590,13 +590,13 @@ if (catalog.isCatalogTool(toolCall.toolName)) {
 
 **Calls.**
 
-- **`callTool(name, input)`** calls the tool currently registered under that name. `input` is whatever the model sent (`unknown`; `undefined` is sent as `{}`). `value` is the tool's JSON result, parsed. The tool's own page validates it; a webmcp-sdk tool answers `tool_failed` with its `input_invalid` details.
+- **`callTool(name, input)`** calls the tool currently registered under that name. `input` is whatever the model sent (`unknown`; `undefined` is sent as `{}`). `value` is the tool's JSON result, parsed. Native Chrome (156) returns *string* results unquoted, unlike the draft, so a result that is not valid JSON is returned as the raw string. As a consequence, a string result that looks like JSON (`"2"`, `"true"`) arrives parsed. The tool's own page validates it; a webmcp-sdk tool answers `tool_failed` with its `input_invalid` details.
 - **It never throws,** and every failure has a `message` you can hand to the model:
   - `unknown_tool`: not a name of this catalog;
   - `unavailable`: the tool is gone. Nothing runs, and the call is never rerouted to another tool;
   - `invalid_arguments`: the input is not a plain object (arrays, Date and class instances are rejected);
   - `tool_failed`: the tool returned a failure envelope;
-  - `rejected`: the browser refused the call, or the result is not valid JSON.
+  - `rejected`: the browser refused the call.
 - **A replaced tool** (same name, new version) is called in its current version.
 - **`isCatalogTool(name)`** tells you the name belongs to this catalog, so you can route among other tools. It stays `true` for tools that later disappeared, which get an explicit `unavailable`. It says nothing about the arguments: discovered tools have no static types.
 
@@ -798,7 +798,7 @@ As of 2026-11-11 (details and sources in [`docs/research.md`](docs/research.md))
 | | |
 | - | - |
 | API surface (core + React) | typed, documented, type-tested |
-| runtime | core and React implemented; unit and official-polyfill browser tests |
+| runtime | core and React implemented; unit tests, and end-to-end tests on the official polyfill and on native WebMCP (Chrome 156, `--enable-features=WebMCP`) |
 | npm | not published |
 | license | [MIT](LICENSE) |
 
@@ -815,13 +815,11 @@ pnpm check
 pnpm test
 pnpm test:react18
 pnpm test:browser
-pnpm test:e2e
-pnpm test:e2e:native
+pnpm test:e2e                                      # deterministic: polyfill, two local origins, no network
+WEBMCP_NATIVE_CHANNEL=chrome pnpm test:e2e:native  # opt-in: native WebMCP in your installed Chrome
 pnpm test:all
 ```
 
 ## License
 
 [MIT](LICENSE) © 2026 PaulSenon.
-
-Registration ordering is coordinated per package copy.
