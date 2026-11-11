@@ -810,9 +810,14 @@ Design rationale and decisions: [`docs/design.md`](docs/design.md).
 
 ```sh
 pnpm install
-pnpm check   # typecheck sources, type tests, and every TypeScript block in this README
-pnpm test    # unit tests against a clearly labeled in-memory FAKE
-pnpm test:browser # official polyfill in real Chromium (not native WebMCP)
+pnpm exec playwright install chromium
+pnpm check
+pnpm test
+pnpm test:react18
+pnpm test:browser
+pnpm test:e2e
+pnpm test:e2e:native
+pnpm test:all
 ```
 
 ## License

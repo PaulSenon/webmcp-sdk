@@ -142,13 +142,6 @@ describe('registration', () => {
     const p = registerTools([tool()], { modelContext: { registerTool: () => gate.promise }, signal: c.signal });
     c.abort('batch'); await expect(p).rejects.toBe('batch'); gate.resolve();
   });
-  it('unregister during execution preserves signal and delivers late result', async () => {
-    const context = new FakeModelContext(); const lifetime = new AbortController(); const started = deferred<void>(); const finish = deferred<number>(); let signal!: AbortSignal;
-    await registerTool(implementTool(definition(), async (_, call) => { signal = call.signal; started.resolve(); return finish.promise; }), { modelContext: context, signal: lifetime.signal });
-    const call = context.executeTool((await context.getTools())[0]!); await started.promise;
-    lifetime.abort(); expect(context.tools.size).toBe(0); expect(signal.aborted).toBe(false);
-    finish.resolve(7); expect(await call).toBe('7');
-  });
   it('caller cancellation rejects with reason and aborts execution signal', async () => {
     const context = new FakeModelContext(); let signal!: AbortSignal; const finish = deferred<number>();
     await registerTool(implementTool(definition(), (_, call) => { signal = call.signal; return finish.promise; }), { modelContext: context });

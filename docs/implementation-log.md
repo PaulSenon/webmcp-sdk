@@ -22,6 +22,8 @@ For a maxNameLength too small to contain the prefix, source tag, collision suffi
 
 ## Test environment and commands
 
+The current end-to-end layer and command results are recorded in **End-to-end test layer (2026-11-11)** below. Earlier counts and gaps in this log describe their historical checkpoints.
+
 Dependencies were installed using pnpm 10.33.3 without bypassing the configured `minimumReleaseAge` of 4320 minutes. Versions: Vitest and @vitest/browser-playwright 5.1.0; Playwright 1.59.1; official @w3c/webmcp-polyfill 0.1.0. Playwright 1.65.0 was initially examined but needs uncached revision 1254. Version 1.59.1 matches cached Chromium/headless-shell revision 1217 (Chrome for Testing 147.0.7727.15) and FFmpeg 1011 exactly, so no browser download was needed.
 
 - `pnpm test`: 35 unit tests, two files. `tests/FAKE-model-context.ts` is explicitly a FAKE of selected draft algorithms, not a browser implementation or conformance oracle. `tests/core.FAKE.test.ts` covers definitions, conversion failures (including Zod date input), caching, wrappers, async refinements, input/output transforms, issue paths/root/cap, field whitelisting, defects, throwing validators/hooks, unserializable output/data, envelope guards, anyOf advertisement, unsupported environments, native error mapping, partial failure, abort timing, pending-registration ordering, caller cancellation, and D16 late delivery. `tests/catalog.FAKE.test.ts` covers naming, source/origin changes, collisions, truncation, prefixes, instance independence, sticky names, snapshot array identity, stale query exclusion, event coalescing/unsubscribe, origin-set comparisons, late context installation, discovery errors, all call-result kinds, malformed JSON and disposal during discovery.
@@ -98,3 +100,79 @@ Applied against `9e4a65e` on main, preserving public function signatures and add
 Verification: `pnpm check` passes TypeScript and all 23 README/docs code blocks. `pnpm test` passes 128 tests in seven files; `pnpm test:browser` passes five tests in two files. Unit suites use a FAKE (including React in happy-dom); browser suites use Chromium and the official polyfill. Native WebMCP, other browser engines, cross-origin enforcement, frame unload and a separate React 18 matrix remain unverified.
 
 A temporary archive of the original HEAD with selected new regression tests produced 20 failures, including the original maximum-update-depth failure, serialization failures, missing-context update, feature detection, invalid budgets and all four FAKE transport regressions. The temporary archive was removed. Supporting tests that assert already-correct behavior can pass on the old runtime; no native-conformance claim follows from either run. All runners exit, with no manual background server. No push, publish, CI or monorepo changes.
+
+
+## End-to-end test layer (2026-11-11)
+
+Implemented from `bbf3184` with no source/runtime/public API changes. Fixtures in
+`e2e/fixtures/` are bundled by Vite 7.3.5, importing SDK sources through package
+aliases. Playwright 1.59.1 reuses cached Chromium revision 1217 (Chrome for Testing
+147.0.7727.15). pnpm 10.33.3 retains `minimumReleaseAge=4320`: newest OpenAI
+4.0.114 and Vite 7.3.8 were rejected; mature OpenAI 4.0.100 and Vite 7.3.5 installed.
+Only development dependencies changed. No CI workflows or publishing changes.
+
+Current validation commands:
+
+- `pnpm install` and `pnpm install --frozen-lockfile`: pass. pnpm reports the
+  aliased React DOM 18 peer against root React 19; the dedicated Vitest config
+  explicitly bundles it with aliased React 18 and checks both versions at startup.
+- `pnpm check`: source/type tests, all 23 README/docs blocks, plus
+  `pnpm typecheck:e2e` for fixtures and test configs.
+- `pnpm test`: 125 unit tests in seven files pass (128 before consolidation).
+- `pnpm test:react18`: the existing 22 React/SSR tests in two files pass with
+  React and React DOM 18.3.1. React 19.3.1 remains the default. The optimizer
+  resolver handles CJS peer imports; aliasing only the test imports was insufficient.
+- `pnpm test:e2e`: seven deterministic scenarios pass, one real-provider scenario
+  skips because `OPENAI_API_KEY` is absent. No key was created or read from files.
+- `pnpm test:browser`: one distinct caller-abort polyfill integration passes.
+- `pnpm test:e2e:native`: all eight scenarios skip because native
+  `document.modelContext` is absent with `--enable-features=WebMCP` on Chrome
+  147.0.7727.15. **Native did not run**, and never falls back to the polyfill.
+- `pnpm test:all`: check + unit + React 18 + deterministic E2E pass as above.
+
+Playwright owns and stops two local servers, refuses existing servers, and supports
+`WEBMCP_PORT` / `WEBMCP_FRAME_PORT`. Default browser traffic is limited to those
+origins. Fresh browser contexts isolate scenarios. Explicit gates exercise D16
+without timing sleeps. Traces/reports are gitignored. Setup from a clean clone:
+
+```sh
+pnpm install
+pnpm exec playwright install chromium
+pnpm test:all
+```
+
+The eight examples cover same-document input/output validation and failure
+mapping; unregister with late delivery; same-origin frame discovery/call/sticky
+names; cross-origin positive and negative exposure; React StrictMode handler
+refresh and cleanup; deterministic AI SDK routing/feedback; and an optional real
+provider using the same loop. `MockLanguageModelV4` was checked against installed
+AI SDK 7.0.165. Both turns use actual `generateText`; the tool call carries a
+catalog-issued name, is checked by `isCatalogTool`, invokes `callTool`, and its
+result is included in the next model prompt. No `useChat` route is required.
+The optional provider stays in Node; no API key is sent to the fixture.
+
+Cross-origin evidence is specifically official polyfill 0.1.0: frames need
+`allow="tools"`, exposed tools need the parent's origin in `exposedTo`, and the
+parent needs the frame origin in `fromOrigins`. Missing either exposure or request
+filter hides the tool. The SDK supplies no security. Output validation runs, but
+this polyfill still drops `outputSchema` from discovery. Native flag sources and
+all opt-in settings are linked in `e2e/README.md`.
+
+Consolidation after reviewing all seven unit files and the Review fixes above:
+
+- Removed `returns a parsed successful value` and `reports unavailable when the
+  native registration disappeared` from catalog FAKE tests: E2E now checks these
+  exact outcomes against the actual browser transport.
+- Removed core FAKE `unregister during execution preserves signal and delivers
+  late result`: the gated E2E D16 example proves availability, live execution
+  signal, and late delivery together.
+- Folded four redundant browser tests (round trip, unregister, same-origin frame,
+  React StrictMode) into the richer E2E examples. Retained caller abort as the
+  focused `test:browser` case. All Review fixes regressions remain, including
+  intermediate StrictMode state, async handler capture, and transport regressions.
+
+Remaining gaps: native behavior (including native cross-origin enforcement), other
+engines, real frame navigation/origin changes and caller/owner unload, and a live
+provider run. No real model ran on this machine. Fake tests remain algorithm and
+regression evidence only. No server is left running; release-research files remain
+untracked and outside this change.

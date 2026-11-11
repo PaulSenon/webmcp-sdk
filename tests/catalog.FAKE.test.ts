@@ -96,7 +96,6 @@ async function callable() {
   const c = catalog({ modelContext: context }), name = (await c.getTools())[0]!.name;
   return { context, lifetime, c, name };
 }
-it('returns a parsed successful value', async () => { const { c, name } = await callable(); expect(await c.callTool(name)).toEqual({ ok: true, value: 7 }); });
 it('rejects a name the catalog never issued', async () => { expect(await catalog().callTool('never')).toMatchObject({ error: { kind: 'unknown_tool' } }); });
 it.each([null, [], new Date(), 1, 'text', new (class Arguments {})()])('rejects non-plain arguments %s', async input => {
   const { c, name } = await callable(); expect(await c.callTool(name, input)).toMatchObject({ error: { kind: 'invalid_arguments' } });
@@ -104,10 +103,6 @@ it.each([null, [], new Date(), 1, 'text', new (class Arguments {})()])('rejects 
 it('maps a browser rejection to its DOMException name', async () => {
   const { c, name, context } = await callable(); context.executeTool = async () => { throw new DOMException('private', 'SecurityError'); };
   expect(await c.callTool(name)).toMatchObject({ error: { kind: 'rejected', domException: 'SecurityError' } });
-});
-it('reports unavailable when the native registration disappeared', async () => {
-  const { c, name, lifetime } = await callable(); lifetime.abort();
-  expect(await c.callTool(name)).toMatchObject({ error: { kind: 'unavailable' } });
 });
 it('retains ownership of issued names after disposal', async () => {
   const { c, name } = await callable(); c.dispose(); expect(c.isCatalogTool(name)).toBe(true); expect(await c.callTool(name)).toMatchObject({ error: { kind: 'unavailable' } });
