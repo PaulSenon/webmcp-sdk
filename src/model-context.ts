@@ -1,6 +1,6 @@
 /**
  * Minimal structural types for WebMCP's `ModelContext` (`document.modelContext`), after the
- * WebMCP Draft Community Group Report of 9 November 2026. EXPERIMENTAL: a CG draft, not a W3C
+ * WebMCP Draft Community Group Report (`main` at `aa1b51c`, 10 November 2026). EXPERIMENTAL: a CG draft, not a W3C
  * standard; browser support is partial (see docs/research.md).
  *
  * The SDK depends on these shapes structurally, so the native object, a polyfill such as

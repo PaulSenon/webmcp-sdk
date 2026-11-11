@@ -19,15 +19,19 @@
  * - **Keep definitions at module scope.** A definition created during render is a new tool on
  *   every render (a dev warning is logged).
  * - **Errors** never throw during render. They appear per tool in the returned state. A
- *   `duplicate_name` conflict with another SDK registration is retried when that
- *   registration ends.
+ *   `duplicate_name` conflict with another registration made through this SDK (in the same
+ *   model context) is retried when that registration ends. Conflicts with other code stay
+ *   errors.
  * - **No WebMCP:** `supported: false`. A polyfill installed later is picked up on a later render.
  *
  * ## Discovering (`useToolCatalog`)
  *
- * Creates one catalog for the component's lifetime (kept across re-renders and the StrictMode
- * double effect), subscribes to it, and disposes it on unmount. `fromOrigins` is compared by
- * value, so inline arrays are fine. The returned `catalog` is the instance to call.
+ * Creates one catalog for the component's lifetime (lazily, in state) and subscribes to it.
+ * It never calls `dispose()`: a catalog without subscribers is idle (no listener, no work), so
+ * unmounting releases everything, and the StrictMode double effect (unsubscribe → subscribe)
+ * keeps the same working instance. `fromOrigins` is compared by value, so inline arrays are
+ * fine. The returned `catalog` is the instance to call. Use one catalog per page or model:
+ * create it once and pass `catalog` down instead of creating several.
  */
 import type { ReactNode } from "react";
 import type {
@@ -36,15 +40,15 @@ import type {
   ToolCatalog,
   ToolCatalogOptions,
   ToolCatalogSnapshot,
+  RegistrationError,
   UniqueToolNames,
-  WebMCPError,
 } from "../index.js";
 import { notImplemented } from "../not-implemented.js";
 
 /** Per-tool state reported by {@link useRegisterTools}. */
 export type RegisteredToolState =
   | { readonly name: string; readonly state: "pending" | "registered" | "unsupported"; readonly error?: undefined }
-  | { readonly name: string; readonly state: "error"; readonly error: WebMCPError };
+  | { readonly name: string; readonly state: "error"; readonly error: RegistrationError };
 
 export interface RegisteredToolsState {
   /** `undefined` before the first effect (SSR, first render), then whether WebMCP is available. */

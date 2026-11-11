@@ -39,6 +39,7 @@ export type { ToolErrorOptions, ToolFailure, ToolFailureEnvelope, ToolFailureKin
 export { registerTool, registerTools } from "./register.js";
 export type {
   RegisterToolOptions,
+  RegistrationError,
   RegisterToolsResult,
   RegisterToolStatus,
   UnexpectedErrorInfo,

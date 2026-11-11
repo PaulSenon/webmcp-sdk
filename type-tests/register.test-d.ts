@@ -53,8 +53,9 @@ const pingAgain = implementTool(defineTool({ name: "ping", description: "y" }), 
 // @ts-expect-error duplicate tool name "ping"
 registerTools([pingTool, pingAgain]);
 declare const cond: boolean;
-// @ts-expect-error duplicate after a conditional spread
-registerTools([...(cond ? [searchTool] : []), pingTool, pingTool]);
+// @ts-expect-error duplicate after a conditional spread (as const keeps the tuple)
+registerTools([...(cond ? [searchTool] : []), pingTool, pingTool] as const);
+registerTools([...(cond ? [searchTool] : []), pingTool] as const); // distinct names: fine
 registerTools([pingTool].map((t) => t)); // dynamic: checked at runtime only
 declare const aOrB: "a" | "b";
 const a = implementTool(defineTool({ name: "a", description: "x" }), () => null);

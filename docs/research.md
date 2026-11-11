@@ -29,7 +29,7 @@ Research/access date for **every source and observation below: 2026-11-06**. Pac
 
 ### 1.1 Authority and exact IDL
 
-**EXPERIMENTAL — primary baseline:** [WebMCP draft](https://webmachinelearning.github.io/webmcp/) says Draft Community Group Report, **2 November 2026**, and explicitly disclaims W3C Standard/Standards Track status. Its [source at commit `6cd745ac8a186122bd3f4aeaeb1d6cfa820251d2`](https://github.com/webmachinelearning/webmcp/blob/6cd745ac8a186122bd3f4aeaeb1d6cfa820251d2/index.bs), committed **2026-11-02T13:10:19Z**, is the exact baseline for the excerpts below. Search-index excerpts initially omitted `outputSchema` and used `any` for the execution input; directly fetched source has `outputSchema` and `object`. Prefer the pinned source over snippets or stale caches.
+**EXPERIMENTAL — primary baseline (as of 2026-11-06; later addenda below supersede the spec date and commit):** [WebMCP draft](https://webmachinelearning.github.io/webmcp/) says Draft Community Group Report, **2 November 2026**, and explicitly disclaims W3C Standard/Standards Track status. Its [source at commit `6cd745ac8a186122bd3f4aeaeb1d6cfa820251d2`](https://github.com/webmachinelearning/webmcp/blob/6cd745ac8a186122bd3f4aeaeb1d6cfa820251d2/index.bs), committed **2026-11-02T13:10:19Z**, is the exact baseline for the excerpts below. Search-index excerpts initially omitted `outputSchema` and used `any` for the execution input; directly fetched source has `outputSchema` and `object`. Prefer the pinned source over snippets or stale caches.
 
 **EXPERIMENTAL — verbatim IDL excerpts from that source** (comments omitted, declarations unchanged):
 

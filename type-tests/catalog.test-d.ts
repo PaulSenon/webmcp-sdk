@@ -1,4 +1,4 @@
-import { createToolCatalog, type CatalogTool, type ToolCallResult } from "webmcp-sdk";
+import { createToolCatalog, defineTool, type CatalogTool, type ToolCallResult } from "webmcp-sdk";
 import type { Equal, Expect } from "./_utils.js";
 
 const catalog = createToolCatalog({ fromOrigins: ["https://widgets.example"], namePrefix: "page_", maxNameLength: 64 });
@@ -31,8 +31,9 @@ await catalog.callTool("anything"); // input optional; unknown name → unknown_
 // --- Withdrawn APIs stay withdrawn --------------------------------------------------------
 // @ts-expect-error no isAvailable: callTool answers `unavailable`
 catalog.isAvailable("x");
-// @ts-expect-error no typed definition overload
-catalog.callTool({ name: "x" }, {});
+const someDefinition = defineTool({ name: "x", description: "x" });
+// @ts-expect-error no typed definition overload: callTool takes a string name
+catalog.callTool(someDefinition, {});
 
 // --- Lifecycle ------------------------------------------------------------------------------
 catalog.update({ fromOrigins: [] });

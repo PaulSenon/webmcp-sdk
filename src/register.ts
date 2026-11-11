@@ -1,4 +1,4 @@
-import type { ToolFailureKind, WebMCPError } from "./errors.js";
+import type { ToolFailureKind, WebMCPError, WebMCPErrorCode } from "./errors.js";
 import type { AnyToolImplementation } from "./implement.js";
 import type { ModelContextLike } from "./model-context.js";
 import { notImplemented } from "./not-implemented.js";
@@ -106,9 +106,12 @@ export function registerTool(tool: AnyToolImplementation, options?: RegisterTool
 }
 
 /** The outcome for one tool of a {@link registerTools} call. */
+/** A `WebMCPError` as produced by registration (never `invalid_definition`, which `defineTool` throws). */
+export type RegistrationError = WebMCPError & { readonly code: Exclude<WebMCPErrorCode, "invalid_definition"> };
+
 export type RegisterToolsResult =
   | { readonly name: string; readonly status: RegisterToolStatus; readonly error?: undefined }
-  | { readonly name: string; readonly status: "error"; readonly error: WebMCPError };
+  | { readonly name: string; readonly status: "error"; readonly error: RegistrationError };
 
 /**
  * Registers several tools in one call, sharing one lifetime (`signal`).

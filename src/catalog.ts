@@ -22,8 +22,10 @@ export interface CatalogTool {
    * - `[A-Za-z0-9_-]`, at most `maxNameLength`;
    * - shaped `<namePrefix><source>__<tool name>`, e.g. `self__search` or `f1__search`.
    *
-   * The source tag identifies the document the tool comes from (a window/frame at one
-   * origin) and is added to every name. The name is stable for the catalog's lifetime,
+   * The source tag identifies the document the tool comes from: one window or frame **at one
+   * origin**. A frame that navigates to another origin becomes a new source. The tag is added
+   * to every name. Do not parse names (tool names and prefixes may contain `_`): use
+   * `webmcpName`, `origin` and `isSameDocument` instead. The name is stable for the catalog's lifetime,
    * including across unregister/re-register of the same tool.
    */
   readonly name: string;
@@ -54,7 +56,10 @@ export type ToolCallError =
   /** The browser rejected the call: `AbortError` (your signal, or the owner unloaded), `OperationError` (the tool threw; reason not forwarded), `SecurityError`… */
   | { readonly kind: "rejected"; readonly message: string; readonly domException: string };
 
-/** Result of `callTool`. Discovered tools have no static types, so `value` is `unknown`. */
+/**
+ * Result of `callTool`. `value` is the tool's result, parsed from the JSON string WebMCP
+ * returns. Discovered tools have no static types, so it is `unknown`.
+ */
 export type ToolCallResult =
   | { readonly ok: true; readonly value: unknown }
   | { readonly ok: false; readonly error: ToolCallError };
@@ -101,7 +106,11 @@ export interface ToolCatalogOptions {
  * `getTools()` is called or someone subscribes.
  */
 export interface ToolCatalog {
-  /** Queries now (native `getTools`), updates the snapshot, and returns the tools. */
+  /**
+   * Queries now (native `getTools`), updates the snapshot, and returns the tools. Never
+   * rejects: without WebMCP, or when the browser rejects discovery, it resolves `[]`, and the
+   * snapshot's `status` (`"unsupported"` / `"error"`) says why.
+   */
   getTools(): Promise<readonly CatalogTool[]>;
   /** The latest result, synchronously. */
   getSnapshot(): ToolCatalogSnapshot;
