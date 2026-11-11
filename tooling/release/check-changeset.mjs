@@ -7,7 +7,7 @@
 //   - otherwise                                          -> `changeset status --since=<base>` decides
 //     (it fails when files of the package changed without a change note)
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, existsSync, readdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, existsSync, readdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { changelogHasVersion, classifyPullRequest, pendingChangesets } from "./lib.mjs";
@@ -33,16 +33,21 @@ const basePending = (() => {
 })();
 
 // Version the base in a throwaway worktree to learn which version the pending notes compute.
+// `changeset version` is used (not `status`) because it does not depend on a local base branch,
+// which CI checkouts do not have.
 const expectedVersion = (() => {
   if (!basePending.length) return undefined;
   const dir = mkdtempSync(join(tmpdir(), "changeset-base-"));
   try {
     git("worktree", "add", "--detach", dir, mergeBase);
-    const out = join(dir, "status.json");
-    execFileSync("node", [changesetBin, "status", `--output=${out}`], { cwd: dir, stdio: ["ignore", "ignore", "inherit"] });
-    const status = JSON.parse(readFileSync(out, "utf8"));
-    const name = JSON.parse(readFileSync(join(dir, manifestPath), "utf8")).name;
-    return status.releases.find((r) => r.name === name)?.newVersion;
+    symlinkSync(join(repo, "node_modules"), join(dir, "node_modules"), "dir");
+    try {
+      execFileSync("node", [changesetBin, "version"], { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    } catch (error) {
+      console.error(`::error::could not compute the expected version on ${mergeBase}:\n${error.stdout ?? ""}${error.stderr ?? ""}`);
+      process.exit(1);
+    }
+    return JSON.parse(readFileSync(join(dir, manifestPath), "utf8")).version;
   } finally {
     try { git("worktree", "remove", "--force", dir); } catch { rmSync(dir, { recursive: true, force: true }); }
   }
