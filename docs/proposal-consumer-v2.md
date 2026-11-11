@@ -38,10 +38,7 @@ catalog.subscribe(listener);       // only for code that must react to changes (
 
 catalog.isCatalogTool(name);       // membership: was this name issued by this catalog? (current or retired)
 catalog.isAvailable(name);         // availability: is it in the latest snapshot right now?
-await catalog.callTool(name, input, { signal }); // never throws → ToolCallResult
-
-catalog.getTool(name);             // latest snapshot entry (sync), or undefined
-// typed calls: callTool(name, input, { definition }), see §8
+await catalog.callTool(name, input, { signal }); // never throws → ToolCallResult (see §10)
 catalog.update({ fromOrigins });
 catalog.dispose();                 // ends everything, including subscriptions
 ```
@@ -68,7 +65,7 @@ interface CatalogTool {
 | `unavailable` | issued by this catalog, but not currently available (removed, frame gone); nothing executed, **never rerouted** |
 | `tool_failed` | the tool returned a failure envelope (`failure` attached) |
 | `rejected` | the browser rejected the call (`domException`) |
-| `input_invalid` / `output_invalid` / `definition_mismatch` | only with `{ definition }` (§8) |
+| `invalid_arguments` | `input` is not a JSON object (or `undefined`); nothing executed |
 
 Why **two** predicates:
 
@@ -81,9 +78,9 @@ What the snapshot can and cannot be:
 
 - **It is descriptions plus JSON Schema.** A remote page's validators cannot cross the page boundary, and the SDK never rebuilds validators from JSON Schema (D14).
 - **It cannot be definitions or implementations.**
-- **Typed calls** still require importing the shared `defineTool` definition (`callTool(name, input, { definition })`, §8).
+- **No typed consumer calls** (§10). Validation is the provider's job: a webmcp-sdk tool validates its input with its own definition and answers `input_invalid` in its envelope.
 
-**Removed from the current API:** `id`, `DiscoveredTool.call`, `catalog.call(id)`, `toProviderName`, `find` (renamed `findByDefinition`), `not_found` (split into `unknown_tool` / `unavailable`).
+**Removed from the current API:** `id`, `DiscoveredTool.call`, `catalog.call(id)`, `toProviderName`, `find`/`KnownTool`, `not_found` (split into `unknown_tool` / `unavailable`), and the consumer-side `input_invalid` / `output_invalid`.
 
 ## 4. End-to-end: AI SDK (checked against `ai@7.0.169`, `@ai-sdk/react@4.0.173`, 2026-11-11)
 
@@ -354,7 +351,7 @@ const owner = [pageTools, widgetTools].find((c) => c.isCatalogTool(toolCall.tool
   - a `reservedNames` list (a second concept; the prefix covers both cases).
 - **Ownership and lifetime:** the catalog that issued a name owns it until `dispose()`. After `dispose()`, `isCatalogTool(name)` stays `true` and `callTool` answers `unavailable`, so a late call is answered by its owner instead of falling through.
 
-## 8. Narrowing tool calls, unknown vs known contracts (proposal)
+## 8. Narrowing tool calls, unknown vs known contracts (*level 2 withdrawn, see §10*)
 
 The AI SDK hands the client `toolCall.toolName: string` and `toolCall.input: unknown` (dynamic tools). There are two honest levels:
 
@@ -396,7 +393,7 @@ if (tool?.webmcpName === searchProducts.name) {
 - **Arguments are unknown** unless you bring the definition.
 - **Names are unique per instance only** (§7).
 
-## 9. One `callTool`, two uses: opaque model calls and manual calls with known contracts (proposal)
+## 9. ~~One `callTool`, two uses~~ (*withdrawn, see §10*)
 
 **Need (user):** a pattern independent of the AI SDK for:
 
@@ -437,6 +434,38 @@ await catalog.callTool(searchProducts, { q: "x" }, { origin: "https://widgets.ex
   - wrong or missing fields with a definition;
   - the result type for each form;
   - `origin` only allowed with a definition.
+
+## 10. Decision (user steering, 2026-11-11): one dynamic `callTool`, no typed consumer calls
+
+**Withdrawn:**
+
+- `callTool(definition, input)` (§9);
+- `callTool(name, input, { definition })` (§8 level 2);
+- the `getTool` lookup they needed.
+
+**Why:** a definition is a static **contract**, while a discovered tool is a runtime **instance**. One catalog can hold several instances of the same contract (several origins, or several windows of the same origin), so a definition cannot designate the instance to call, and an origin cannot either (two frames, one origin). Making both target and contract explicit would mean extra API for a manual case nobody has asked for. **Not replaced** by any bind, find or typed registry.
+
+**The consumer API is the dynamic path:**
+
+```ts nocheck
+callTool(name: string, input?: unknown, options?: { signal?: AbortSignal }): Promise<ToolCallResult>;
+
+type ToolCallResult =
+  | { ok: true; value: unknown }   // the tool's (validated, on the provider side) JSON result
+  | { ok: false; error: ToolCallError };
+
+type ToolCallError =               // every variant has `message`
+  | { kind: "unknown_tool"; message: string }       // not a name this catalog issued; nothing executed
+  | { kind: "unavailable"; message: string }        // issued, but not currently available; nothing executed; never rerouted
+  | { kind: "invalid_arguments"; message: string }  // `input` is not a JSON object; nothing executed
+  | { kind: "tool_failed"; message: string; failure: ToolFailure } // the tool's failure envelope (e.g. its own `input_invalid`)
+  | { kind: "rejected"; message: string; domException: string };   // the browser rejected the call
+```
+
+- **`input: unknown`, not `Record<string, unknown>`.** Model frameworks hand over `unknown` (the AI SDK's `toolCall.input` is `unknown`), so callers need no cast. The object requirement is checked at runtime: `undefined` becomes `{}`, and a non-object becomes `invalid_arguments` with nothing sent. That is honest, because the type does not pretend to know the arguments.
+- **`value: unknown`:** discovered tools have no static types. The provider side still validates: a webmcp-sdk tool runs its input and output schemas, and its failures arrive as `tool_failed` with the envelope.
+- **`isCatalogTool(name)` is about the name only.** It routes and narrows nothing about the arguments.
+- **Unchanged and still under review, not auto-validated:** the sticky names (§2), `namePrefix` and multi-catalog use (§7), and the predicate names.
 
 ## 6. Open points for the user (one at a time)
 
