@@ -1,7 +1,7 @@
 import { HomeLayout } from "fumadocs-ui/layouts/home";
-import { Link } from "react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { baseOptions } from "@/lib/layout.shared";
-import { PageMeta } from "@/components/page-meta";
+import { pageHead } from "@/lib/page-head";
 import { repoUrl, site } from "@/lib/site";
 
 const steps = [
@@ -10,10 +10,14 @@ const steps = [
   { name: "registerTool", what: "the lifetime", text: "WebMCP's own model: an AbortSignal. Validation and agent-readable errors included." },
 ];
 
-export default function Home() {
+export const Route = createFileRoute("/")({
+  head: () => pageHead({ path: "/" }),
+  component: Home,
+});
+
+function Home() {
   return (
     <HomeLayout {...baseOptions()}>
-      <PageMeta path="/" />
       {/* HomeLayout already renders the <main> landmark. */}
       <div className="flex flex-col items-center px-4 py-16 md:py-24 gap-12 flex-1">
         <section className="flex flex-col items-center text-center gap-4 max-w-2xl">
@@ -24,10 +28,10 @@ export default function Home() {
             agent-readable errors, and discover them from an in-page agent. React bindings included.
           </p>
           <div className="flex flex-wrap gap-3 justify-center">
-            <Link className="text-sm bg-fd-primary text-fd-primary-foreground rounded-full font-medium px-4 py-2.5" to="/docs/quick-start">
+            <Link className="text-sm bg-fd-primary text-fd-primary-foreground rounded-full font-medium px-4 py-2.5" to="/docs/$" params={{ _splat: "quick-start" }}>
               Quick start
             </Link>
-            <Link className="text-sm border rounded-full font-medium px-4 py-2.5 hover:bg-fd-accent" to="/docs">
+            <Link className="text-sm border rounded-full font-medium px-4 py-2.5 hover:bg-fd-accent" to="/docs/$" params={{ _splat: "" }}>
               Read the docs
             </Link>
             <a className="text-sm border rounded-full font-medium px-4 py-2.5 hover:bg-fd-accent" href={repoUrl}>

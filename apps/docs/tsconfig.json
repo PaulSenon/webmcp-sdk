@@ -1,6 +1,6 @@
 {
-  "include": ["**/*", ".react-router/types/**/*"],
-  "exclude": ["node_modules", "build", "out"],
+  "include": ["**/*"],
+  "exclude": ["node_modules", "dist", "out"],
   "compilerOptions": {
     "lib": ["DOM", "DOM.Iterable", "ES2023"],
     "types": ["node", "vite/client"],
@@ -8,8 +8,7 @@
     "module": "esnext",
     "moduleResolution": "bundler",
     "jsx": "react-jsx",
-    "rootDirs": [".", "./.react-router/types"],
-    "paths": { "@/*": ["./app/*"] },
+    "paths": { "@/*": ["./src/*"] },
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "isolatedModules": true,

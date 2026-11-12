@@ -26,8 +26,8 @@ test("docs pages hydrate and navigate on the client", async ({ page }) => {
   await page.goto("/docs");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Introduction");
   await expect(page.getByRole("main")).toHaveCount(1);
-  // A client-side navigation fetches the prerendered .data payload instead of reloading.
-  const data = page.waitForResponse((r) => r.url().endsWith("/docs/react.data") && r.ok());
+  // A client-side navigation fetches the loader result prerendered as static JSON, instead of reloading.
+  const data = page.waitForResponse((r) => r.url().includes("/__tsr/staticServerFnCache/") && r.ok());
   await page.getByRole("link", { name: "React", exact: true }).first().click();
   await data;
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("React");
@@ -52,10 +52,13 @@ test("search runs in the browser on the static index", async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
-test("unknown URLs get the 404 page", async ({ page }) => {
-  const errors = trackErrors(page);
-  const response = await page.goto("/docs/does-not-exist");
-  expect(response?.status()).toBe(404);
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Page not found");
-  expect(errors.filter((e) => !e.includes("404"))).toEqual([]); // the browser logs the 404 response itself
-});
+for (const url of ["/docs/does-not-exist", "/does-not-exist"]) {
+  test(`unknown URLs get the 404 page: ${url}`, async ({ page }) => {
+    const errors = trackErrors(page);
+    const response = await page.goto(url);
+    expect(response?.status()).toBe(404);
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Page not found");
+    await expect(page).toHaveURL(url); // hydrated in place, no redirect
+    expect(errors.filter((e) => !e.includes("404"))).toEqual([]); // the browser logs the 404 response itself
+  });
+}

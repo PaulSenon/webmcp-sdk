@@ -11,7 +11,7 @@ const port = Number(process.env.PORT ?? 4321);
 const types = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".json": "application/json",
   ".svg": "image/svg+xml", ".xml": "application/xml", ".txt": "text/plain; charset=utf-8", ".md": "text/markdown; charset=utf-8",
-  ".data": "text/x-script", ".png": "image/png", ".ico": "image/x-icon", ".woff2": "font/woff2",
+  ".png": "image/png", ".ico": "image/x-icon", ".woff2": "font/woff2",
 };
 const isFile = (p) => existsSync(p) && statSync(p).isFile();
 

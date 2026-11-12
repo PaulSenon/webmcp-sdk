@@ -5,7 +5,7 @@ The public documentation of [`@senon/webmcp-sdk`](../../packages/webmcp-sdk). Pr
 ```sh
 pnpm docs:dev      # dev server with hot reload (http://localhost:5173)
 pnpm docs:build    # static site in apps/docs/out
-pnpm docs:check    # typecheck + code blocks + build + link check (what CI runs)
+pnpm docs:check    # typecheck + code blocks + build + route tree + link check (what CI runs)
 pnpm docs:test     # browser smoke tests of out/ (after a build; needs `playwright install chromium`)
 pnpm --filter @senon/webmcp-sdk-docs preview   # serve out/ like production, http://localhost:4321
 ```
@@ -15,14 +15,24 @@ pnpm --filter @senon/webmcp-sdk-docs preview   # serve out/ like production, htt
 | | |
 | - | - |
 | Docs framework | [Fumadocs](https://fumadocs.dev) 16 (`fumadocs-core`, `fumadocs-ui`, `fumadocs-mdx`) |
-| App framework | React Router 8 in framework mode with `ssr: false` + `prerender` (Fumadocs' official React Router integration) |
-| Build | Vite 7, Tailwind CSS 4, TypeScript 7 (the repository's native compiler) |
+| App framework | [TanStack Start](https://tanstack.com/start) 1.169 (TanStack Router, file-based routes) with **static prerendering** |
+| Build | Vite 8, Tailwind CSS 4, TypeScript 7 (the repository's native compiler; the library itself stays on its own Vite 7) |
 
-Fumadocs needs a React framework underneath. It supports Next.js, React Router, TanStack Start and Waku. **React Router with prerendering** gives the cleanest static output here:
+Fumadocs needs a React framework underneath; it officially supports TanStack Start. We use Start for its developer experience (type-safe file routes and links, `head()` per route, server functions) while **production runs no application code on a server**:
 
-- **Static by construction.** `ssr: false` + `prerender` writes one HTML file per URL plus a `.data` payload for client-side navigation. The list of URLs comes from the content files ([`prerender.ts`](prerender.ts)), not from a crawler, so it is exact.
-- **Same toolchain as the library.** Vite (the version the library's tests use) and TypeScript 7 native. Next.js would need the classic TypeScript compiler API, which TS 7 no longer has (so a second TypeScript 6 just for the docs). It would also bring native SWC/sharp binaries into the build, a larger surface for threat T17 (docs build compromise, see `docs/release-research/02-threat-model.md`).
-- **TanStack Start** also works with Fumadocs, but it is younger and releases very often, and its static mode crawls links. It was not needed.
+- **Every URL is prerendered at build time.** `tanstackStart({ prerender: { enabled: true, crawlLinks: false, autoStaticPathsDiscovery: false, failOnError: true }, pages })` renders each page in [`prerender.ts`](prerender.ts), a list derived from the content files. Crawling is off, so no page depends on being linked from another, and a page that fails to render fails the build.
+- **Not the SPA mode** of Fumadocs' `tanstack-start-spa` template: that mode serves a client-rendered shell for every URL it did not crawl. Here every page is real HTML, and unknown URLs get `404.html`.
+- **Client navigation without a server.** The docs loader is a server function wrapped in `staticFunctionMiddleware` (`@tanstack/start-static-server-functions`). During prerendering its result is written to `__tsr/staticServerFnCache/<hash>.json`, and client-side navigations fetch that file. Before fetching, the loader checks the slug against the Fumadocs source in the browser, so an unknown slug renders the not-found page instead of fetching a file that does not exist.
+- **Resource routes are build-time only.** `api/search.json`, `sitemap.xml`, `robots.txt`, `llms*.txt` and the per-page Markdown are file routes with a `GET` handler. The prerender writes their responses to files; nothing answers requests at runtime. No Nitro, no adapter, no `_shell.html`.
+- **Reproducible.** TanStack serializes each route match with its load time; [`scripts/finalize-out.mjs`](scripts/finalize-out.mjs) pins that to `SOURCE_DATE_EPOCH` (default: the HEAD commit time), so two builds of one commit give identical `out/` trees.
+
+Trade-offs:
+
+- **Vite 8 for the docs app**, required by TanStack Start (`vite >= 8`), while the library keeps Vite 7. The two are isolated per workspace package.
+- **TanStack Start moves fast** (frequent releases). Every TanStack and Fumadocs version is pinned exactly; upgrade them together and run `pnpm docs:check` and `pnpm docs:test`.
+- **`src/routeTree.gen.ts` is generated** by the router plugin on `dev`/`build` and **committed**, as TanStack recommends (types work without a build). `pnpm docs:check` fails if the build regenerates a different file.
+- **The 404 route** (`src/routes/$.tsx`) renders the not-found page while prerendering (TanStack refuses to prerender a non-2xx page) and throws `notFound()` in the browser, so `404.html` hydrates to the same tree at any URL.
+- **Next.js** was not chosen: it needs the classic TypeScript compiler API (gone in TS 7) and native SWC/sharp binaries in the build, a larger surface for threat T17 (docs build compromise, see `docs/release-research/02-threat-model.md`).
 
 Not used, on purpose: generated Open Graph images (they need a native image renderer in the build), web fonts from third-party CDNs, analytics. The site loads no third-party script.
 
@@ -32,22 +42,26 @@ Not used, on purpose: generated Open Graph images (they need a native image rend
 apps/docs/
 ├── content/docs/          # pages (.mdx) and navigation (meta.json): the content
 │   └── api/               # GENERATED (gitignored): API reference, see below
-├── app/
-│   ├── routes.ts          # every URL of the site
-│   ├── root.tsx           # HTML shell, search dialog, "not published yet" banner
-│   ├── routes/            # home, docs pages, 404, search index, sitemap.xml, robots.txt
-│   ├── llms/              # llms.txt, llms-full.txt, Markdown version of each page
-│   ├── components/        # MDX components, search dialog, <head> metadata, banner
-│   └── lib/               # site constants (site.ts), routes, Fumadocs source
+├── src/
+│   ├── router.tsx         # router (not-found component, preloading, scroll restoration)
+│   ├── routeTree.gen.ts   # GENERATED by the router plugin, committed
+│   ├── routes/            # file routes: every URL of the site
+│   │   ├── __root.tsx     # HTML shell, search dialog, "not published yet" banner
+│   │   ├── index.tsx      # home
+│   │   ├── docs/$.tsx     # docs pages (loader prerendered as static JSON)
+│   │   ├── $.tsx          # not-found (published as 404.html)
+│   │   ├── api/search[.]json.ts, sitemap[.]xml.ts, robots[.]txt.ts
+│   │   └── llms[.]txt.ts, llms-full[.]txt.ts, llms[.]mdx/docs/$.ts
+│   ├── components/        # MDX components, search dialog, banner, not-found page
+│   └── lib/               # site constants (site.ts), URL layout, <head> metadata, Fumadocs source
 ├── scripts/
 │   ├── generate-api.mjs   # API reference from the library's declarations
-│   ├── finalize-out.mjs   # build/client -> out/, enforces the output contract
-│   ├── check-links.mjs    # offline link/anchor/metadata check of out/
+│   ├── finalize-out.mjs   # dist/client -> out/, reproducibility, output contract
+│   ├── check-links.mjs    # offline link/anchor/metadata/sitemap check of out/
 │   └── preview.mjs        # local static server with the production host's rules
 ├── e2e/site.spec.ts       # Playwright smoke tests of out/
 ├── prerender.ts           # list of URLs to prerender
 ├── site-url.ts            # SITE_URL validation
-├── react-router.config.ts
 └── vite.config.ts
 ```
 
@@ -69,7 +83,7 @@ Rules for content:
 - **Every ` ```ts ` / ` ```tsx ` block is typechecked** against the library's sources by [`packages/webmcp-sdk/scripts/check-readme.mjs`](../../packages/webmcp-sdk/scripts/check-readme.mjs), the same checker as the README's. The conventions are the same: ` ```ts nocheck ` skips a block (pseudo-code, a polyfill import); ` ```ts file=name.ts ` makes a block importable by other blocks as `./name.js`. Site pages share one module group (`definitions.ts`, `tools.ts`, `shop-*.ts` are defined once); the README has its own. `title="…"` is only the label shown above the block.
 - **Links:** use root-relative paths with the page, also for anchors on the same page (`/docs/errors#unexpected-errors`, not `#unexpected-errors`), and GitHub URLs (`https://github.com/PaulSenon/webmcp-sdk/blob/main/…`) for repository files. `check-links` verifies both, offline.
 - **Internal notes stay internal:** `docs/design.md`, research and release-research notes are not site pages. Link to them on GitHub when a reader needs them.
-- MDX components available without import: Fumadocs defaults (`Callout`, `Cards`/`Card`, code blocks with tabs, ` ```npm ` install tabs…) plus `Tabs`/`Tab` and `Steps`/`Step` (see [`app/components/mdx.tsx`](app/components/mdx.tsx)).
+- MDX components available without import: Fumadocs defaults (`Callout`, `Cards`/`Card`, code blocks with tabs, ` ```npm ` install tabs…) plus `Tabs`/`Tab` and `Steps`/`Step` (see [`src/components/mdx.tsx`](src/components/mdx.tsx)).
 
 ## API reference
 
@@ -83,14 +97,14 @@ The output is deterministic and not committed: the reference cannot drift from t
 
 ## Static output contract
 
-`pnpm docs:build` produces **`apps/docs/out/`**, to be served at the **root path `/`** (no base path). [`scripts/finalize-out.mjs`](scripts/finalize-out.mjs) fails the build if a required file is missing or a server file slipped in.
+`pnpm docs:build` produces **`apps/docs/out/`**, to be served at the **root path `/`** (no base path). TanStack Start writes to `dist/client`; [`scripts/finalize-out.mjs`](scripts/finalize-out.mjs) copies it to `out/`, publishes `404.html`, and fails the build if a required file is missing or a server file or SPA shell slipped in. `dist/server` is only used during the build.
 
 | path | what |
 | - | - |
 | `index.html`, `docs/**/index.html` | one prerendered page per URL (`/docs/react` → `docs/react/index.html`) |
-| `docs.data`, `docs/**.data` | payloads fetched by client-side navigation (`/docs/react` → `docs/react.data`) |
+| `__tsr/staticServerFnCache/<hash>.json` | docs loader results, fetched by client-side navigation. The name is a hash of the function and its arguments, **not of the content**: do not cache as immutable |
 | `404.html` | the not-found page (`noindex`) |
-| `assets/` | hashed JS/CSS: immutable, cacheable forever |
+| `assets/` | hashed JS/CSS (content hash in the file name): immutable, cacheable forever |
 | `api/search.json` | static search index, downloaded by the search dialog on first use |
 | `sitemap.xml`, `robots.txt` | with absolute URLs from `SITE_URL` |
 | `llms.txt`, `llms-full.txt`, `llms.mdx/docs/**/content.md` | the docs as Markdown, for LLMs |
@@ -100,7 +114,7 @@ The output is deterministic and not committed: the reference cannot drift from t
 
 - `html_handling: "drop-trailing-slash"`: `/docs/react` serves `docs/react/index.html`, and `/docs/react/` redirects to it. Links on the site never have a trailing slash.
 - `not_found_handling: "404-page"`: unknown URLs get `404.html` with status 404.
-- Long cache for `/assets/*`; short cache (or revalidation) for everything else.
+- Long, immutable cache for `/assets/*` only; short cache (or revalidation) for everything else, including `/__tsr/*`.
 
 **Environment:**
 
@@ -112,7 +126,7 @@ The output is deterministic and not committed: the reference cannot drift from t
 
 ## Before and after the first release
 
-Until `@senon/webmcp-sdk` is on npm, every page shows a "not published yet" banner (owner decision D8). After the first release, set `published: true` in [`app/lib/site.ts`](app/lib/site.ts), and update `installation.mdx` (drop the pre-release section) and `changelog.mdx`.
+Until `@senon/webmcp-sdk` is on npm, every page shows a "not published yet" banner (owner decision D8). After the first release, set `published: true` in [`src/lib/site.ts`](src/lib/site.ts), and update `installation.mdx` (drop the pre-release section) and `changelog.mdx`.
 
 ## Licence
 

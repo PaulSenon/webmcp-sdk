@@ -79,8 +79,20 @@ for (const file of htmlFiles.sort()) {
   }
 }
 
+// Every URL in the sitemap (built from the Fumadocs source) must be a prerendered file: no page
+// relies on crawling or on a client-side fallback.
+const sitemap = readFileSync(join(out, "sitemap.xml"), "utf8");
+const sitemapUrls = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => new URL(decode(m[1])).pathname);
+for (const path of sitemapUrls) {
+  const target = resolve(path);
+  if (!target?.file?.endsWith(".html")) errors.push(`sitemap.xml: ${path} is not a prerendered page`);
+}
+if (sitemapUrls.length !== htmlFiles.length - 1) {
+  errors.push(`sitemap.xml lists ${sitemapUrls.length} URLs, out/ has ${htmlFiles.length - 1} pages besides 404.html`);
+}
+
 if (errors.length) {
   console.error(`check-links: ${errors.length} problem(s):\n${errors.map((e) => `  ${e}`).join("\n")}`);
   process.exit(1);
 }
-console.log(`check-links: ${htmlFiles.length} pages, ${checked} links and assets OK.`);
+console.log(`check-links: ${htmlFiles.length} pages, ${checked} links and assets, ${sitemapUrls.length} sitemap URLs OK.`);
