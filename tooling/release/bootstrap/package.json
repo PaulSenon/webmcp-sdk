@@ -1,0 +1,13 @@
+{
+  "name": "@senon/webmcp-sdk",
+  "version": "0.0.0-bootstrap.0",
+  "description": "One-time placeholder used to create the npm package so its trusted publisher can be configured. Never approved; install a real version instead.",
+  "license": "MIT",
+  "author": "Paul Senon",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PaulSenon/webmcp-sdk.git",
+    "directory": "packages/webmcp-sdk"
+  },
+  "files": []
+}

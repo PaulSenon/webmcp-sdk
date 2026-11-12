@@ -43,6 +43,8 @@ gh workflow run release.yml --ref main -f confirm_version=x.y.z
 
 The staged version can only become public through you. This is the step that a compromised CI build cannot fake, so do it every time:
 
+(`npm stage` needs npm ≥ 11.15.0: if `npm --version` is older, prefix the commands with `npx --yes npm@11.21.2` instead of `npm`.)
+
 1. **One stage, the expected one:** `npm stage list @senon/webmcp-sdk` (logged in) shows exactly the version you dispatched, with the dist-tag `latest` (or `next`). Reject anything else.
 2. **Same bytes as the run:** download the staged tarball (`npm stage download <id>`, or from the npmjs UI), then `openssl dgst -sha512 -binary <file> | base64`. Prefixed with `sha512-`, it must equal the *integrity* shown in the run's `build` and `stage` summaries.
 3. **Same contents as the source** (independent rebuild on your machine):
@@ -53,7 +55,7 @@ The staged version can only become public through you. This is the step that a c
    node tooling/release/compare-tarballs.mjs <staged.tgz> /tmp/local-build/pkg.tgz
    ```
    Any difference: **reject** (`npm stage reject <id>`) and investigate.
-4. Approve on npmjs.com (2FA). Then, in the Actions run, approve the **release-finalize** environment.
+4. Approve: `npm stage approve <id>` (2FA), or **Approve** in the **Staged Packages** tab on npmjs.com. Then, in the Actions run, **Review deployments** → `release-finalize` → **Approve and deploy**.
 
 ## 5. Finalize
 
@@ -83,18 +85,27 @@ On a `next` branch: `pnpm changeset pre enter next`, then version PRs into `next
 
 ## 8. One-time bootstrap (first publish)
 
-npm documents that a staged publish can create a new package, but not whether a trusted publisher can be configured *before* the package exists. So, once:
+Why it is needed: npm lets you configure a trusted publisher only on a package that **already exists** (`npm trust`: "Package must exist"), and a newly created trusted publisher **expires unless it completes its first successful publish within 2 days**. Staging a package that does not exist yet creates it with a public npm placeholder version `0.0.0-stage` ([staged publishing](https://docs.npmjs.com/staged-publishing)). So the package is created once from your machine by staging a code-free placeholder ([`tooling/release/bootstrap/`](../tooling/release/bootstrap/)), which you then **reject**. None of our bytes are published outside CI, and the first real version gets provenance.
 
-1. **Check the scope.** On npmjs.com, logged in as your npm user, confirm that you own the org/user `senon`. `@senon/image-sizes` is published by `psenon`, which suggests you do: **Organizations → senon**. If `senon` is not yours, see the alternatives in the PR description.
-2. **Account security:** 2FA with a passkey/security key (Account → Two-Factor Authentication).
-3. **Placeholder version** (explicit provenance exception): build it from a clean checkout of `main`:
-   ```sh
-   cd packages/webmcp-sdk && npm pkg set version=0.0.0-bootstrap.0 && node scripts/test-package.mjs --out /tmp/boot && git checkout package.json
-   npm login                                   # 2FA
-   npm stage publish /tmp/boot/pkg.tgz --tag bootstrap --access public
-   npm stage approve <id>                      # 2FA
-   ```
-   If the npmjs UI already offers a trusted publisher for the unpublished name, skip this step.
-4. **Trusted publisher:** npmjs.com → `@senon/webmcp-sdk` → Settings → Trusted publishing → GitHub Actions: owner `PaulSenon`, repository `webmcp-sdk`, workflow `release.yml`, environment `npm-release`. Allow **staged publishing only** (no direct publish, no dist-tag). The config expires if unused for 2 days, so do steps 5–6 right after.
-5. **First real release:** merge the version PR for `0.1.0`, then sections 3–5 above.
-6. **Lock down:** package Settings → Publishing access → **Require two-factor authentication and disallow tokens**. Then `npm dist-tag rm @senon/webmcp-sdk bootstrap` and `npm deprecate @senon/webmcp-sdk@0.0.0-bootstrap.0 "placeholder, not a release"`. Run `npm token list` and revoke any write token.
+All npm commands use one pinned CLI through [`tooling/release/bootstrap.mjs`](../tooling/release/bootstrap.mjs) (`npm@11.21.2`; `npm stage` and `npm trust` need ≥ 11.15.0). Nothing is installed globally. Run everything from the repo root on an up-to-date `main`. npm asks for 2FA itself (browser or prompt); never paste a code or token anywhere else.
+
+Prerequisites: npm account `psenon` with 2FA enabled (a security key/passkey is preferred), member of the npm org `senon` with the role **owner** or **admin**.
+
+| # | Step | Command / place | Expected |
+|---|---|---|---|
+| 1 | Log in (browser) | `npx --yes npm@11.21.2 login` | `Logged in on https://registry.npmjs.org/.` |
+| 2 | Preflight (read-only) | `node tooling/release/bootstrap.mjs check` | `OK` lines: logged in as `psenon`, org `senon` role `owner`/`admin`, package does not exist yet |
+| 3 | Create the package | `node tooling/release/bootstrap.mjs stage` | a stage ID for `@senon/webmcp-sdk@0.0.0-bootstrap.0`, dist-tag `bootstrap` |
+| 4 | Reject the placeholder (2FA) | `node tooling/release/bootstrap.mjs reject <stage-id>` | `OK stage rejected; @senon/webmcp-sdk exists with versions ["0.0.0-stage"]` |
+| — | *Steps 5–8 in one sitting (the trust config expires after 2 days without a publish).* | | |
+| 5 | Trusted publisher, stage-only (2FA) | `node tooling/release/bootstrap.mjs trust` | `npm trust list` shows GitHub · `PaulSenon/webmcp-sdk` · `release.yml` · `npm-release`, with stage publish only |
+| 6 | First release | merge the version PR for `0.1.0`, then sections 3–5 | `0.1.0` on npm with provenance, tag and GitHub release |
+| 7 | Lock down | npmjs.com → `@senon/webmcp-sdk` → **Settings** → **Publishing access** → **Require two-factor authentication and disallow tokens** → **Update Package Settings** | trusted publishing keeps working; no token can publish |
+| 8 | Log out | `npx --yes npm@11.21.2 logout` | the CLI session token is revoked |
+
+Fallbacks:
+
+- **`stage` refuses because the package does not exist** (npm docs and some third-party write-ups disagree): publish the placeholder directly once, `npx --yes npm@11.21.2 publish tooling/release/bootstrap --tag bootstrap --access public` (2FA), then continue at step 5. After `0.1.0`: `npx --yes npm@11.21.2 deprecate @senon/webmcp-sdk@0.0.0-bootstrap.0 "placeholder, not a release"` and `npx --yes npm@11.21.2 dist-tag rm @senon/webmcp-sdk bootstrap`.
+- **The package disappears after the rejection** (`reject` reports it): run `stage` again, approve the placeholder this time (`npx --yes npm@11.21.2 stage approve <id>`), then apply the post-release clean-up above.
+- **The trust config expired** (more than 2 days without a successful publish): `npx --yes npm@11.21.2 trust list @senon/webmcp-sdk`, then `npx --yes npm@11.21.2 trust revoke @senon/webmcp-sdk --id <id>`, and run step 5 again.
+- **If `senon` is not yours:** use your user scope (`@psenon/webmcp-sdk`) or a verified-free unscoped name; the rename touches `packages/webmcp-sdk/package.json`, the imports, the tag ruleset pattern and this runbook.
