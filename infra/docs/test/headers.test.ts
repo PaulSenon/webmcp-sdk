@@ -30,11 +30,11 @@ test("_headers file: one global rule plus immutable hashed assets, within Cloudf
   const file = renderHeadersFile({ indexable: true });
   assert.match(file, /^# Generated/);
   assert.match(file, /\n\/\*\n {2}Content-Security-Policy: default-src 'self';/);
-  assert.match(file, /\n\/_next\/static\/\*\n {2}Cache-Control: public, max-age=31536000, immutable\n$/);
+  assert.match(file, /\n\/assets\/\*\n {2}Cache-Control: public, max-age=31536000, immutable\n$/);
   assert.equal(IMMUTABLE_CACHE_CONTROL, "public, max-age=31536000, immutable");
   for (const line of file.split("\n")) assert.ok(line.length <= 2000);
   const rules = file.split("\n").filter((l) => l.startsWith("/"));
-  assert.deepEqual(rules, ["/*", "/_next/static/*"]);
+  assert.deepEqual(rules, ["/*", "/assets/*"]);
   assert.doesNotMatch(file, /X-Robots-Tag/);
   assert.match(renderHeadersFile({ indexable: false }), /X-Robots-Tag: noindex, nofollow/);
 });

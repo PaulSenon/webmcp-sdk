@@ -6,11 +6,12 @@
 // https://developers.cloudflare.com/workers/static-assets/headers/
 
 /**
- * Content-Security-Policy for a fully static, prerendered docs site (Next.js static export via
- * Fumadocs). Every resource is same-origin; nothing is loaded from third parties.
+ * Content-Security-Policy for a fully static, prerendered docs site (Fumadocs on React Router 7
+ * with Vite, apps/docs). Every resource is same-origin; nothing is loaded from third parties.
  *
- * `script-src 'unsafe-inline'` is required because Next.js inlines its bootstrap and RSC payload
- * scripts in every page and a static export cannot add per-request nonces. The policy still
+ * `script-src 'unsafe-inline'` is required because React Router inlines its hydration context and
+ * module bootstrap scripts in every prerendered page (and the theme switcher an anti-flash script),
+ * and a static site cannot add per-request nonces. The policy still
  * blocks every external script origin, plugins, framing, `<base>` hijacking, and exfiltration via
  * fetch/XHR/WebSocket to other origins (connect-src). A hash-based policy is a proposed follow-up
  * (docs/docs-deploy.md, "Deferred").
@@ -66,9 +67,10 @@ export function securityHeaders({ indexable }: { indexable: boolean }): Array<[s
 
 /**
  * Path patterns whose files are content-hashed by the build and therefore safe to cache forever.
- * Next.js puts every hashed chunk, stylesheet and font under /_next/static/.
+ * Vite (React Router build of apps/docs) puts every hashed chunk, stylesheet and font under
+ * /assets/; nothing else is written there.
  */
-export const IMMUTABLE_PATHS = ["/_next/static/*"] as const;
+export const IMMUTABLE_PATHS = ["/assets/*"] as const;
 export const IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable";
 
 // HTML and every other un-hashed file keep Cloudflare's default

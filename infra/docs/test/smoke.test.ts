@@ -11,10 +11,10 @@ import { parseOrigin, runSmoke } from "../src/smoke.ts";
 let root: string;
 before(() => {
   root = mkdtempSync(join(tmpdir(), "docs-smoke-"));
-  mkdirSync(join(root, "_next/static/chunks"), { recursive: true });
-  writeFileSync(join(root, "index.html"), '<script src="/_next/static/chunks/app-1a2b.js"></script>home');
+  mkdirSync(join(root, "assets"), { recursive: true });
+  writeFileSync(join(root, "index.html"), '<script type="module" src="/assets/entry.client-1a2b.js"></script>home');
   writeFileSync(join(root, "404.html"), "not found page");
-  writeFileSync(join(root, "_next/static/chunks/app-1a2b.js"), "1");
+  writeFileSync(join(root, "assets/entry.client-1a2b.js"), "1");
 });
 after(() => rmSync(root, { recursive: true, force: true }));
 
@@ -34,7 +34,7 @@ async function serve(b: Behaviour): Promise<{ url: string; server: Server }> {
     if (path === "/") {
       const body = stale-- > 0 ? "old" : readFileSync(join(root, "index.html"));
       res.writeHead(200, { ...headers, "content-type": "text/html; charset=utf-8" }).end(body);
-    } else if (path.startsWith("/_next/static/")) {
+    } else if (path.startsWith("/assets/")) {
       res.writeHead(200, { ...headers, "cache-control": b.mutableAssets ? "public, max-age=0" : IMMUTABLE_CACHE_CONTROL }).end("1");
     } else {
       res.writeHead(b.softNotFound ? 200 : 404, { ...headers, "content-type": "text/html" }).end(readFileSync(join(root, "404.html")));

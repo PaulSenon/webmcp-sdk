@@ -21,7 +21,7 @@ function site(files: Record<string, string> = {}) {
 }
 
 test("accepts a static export", () => {
-  const report = checkSiteDir(site({ "_next/static/chunks/a.js": "1", "guide/index.html": "g" }));
+  const report = checkSiteDir(site({ "assets/entry.client-a1b2.js": "1", "guide/index.html": "g" }));
   assert.equal(report.files, 4);
   assert.deepEqual(report.warnings, []);
 });

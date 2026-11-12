@@ -102,9 +102,9 @@ export async function runSmoke(options: SmokeOptions): Promise<SmokeResult> {
 
   // 4. A content-hashed asset referenced by the home page is cached as immutable.
   const html = readFileSync(join(options.siteDir, "index.html"), "utf8");
-  const asset = /["'](\/_next\/static\/[^"'?#]+)["']/.exec(html)?.[1];
+  const asset = /["'](\/assets\/[^"'?#]+)["']/.exec(html)?.[1];
   if (!asset) {
-    warnings.push("index.html references no /_next/static/ asset; immutable caching not checked");
+    warnings.push("index.html references no /assets/ asset; immutable caching not checked");
   } else {
     const res = await get(`.${asset}`);
     await res.arrayBuffer();
