@@ -41,6 +41,7 @@ jobs:
       - run: pnpm test:react18
       - run: pnpm test:package
       - run: pnpm test:tooling
+      - run: pnpm test:infra # docs infra (infra/docs): typecheck + unit tests, no credentials
       - name: Change note
         if: github.event_name == 'pull_request'
         env:

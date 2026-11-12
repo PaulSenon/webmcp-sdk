@@ -1,0 +1,26 @@
+{
+  "name": "@senon/webmcp-sdk-docs-infra",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Infrastructure as code (Alchemy v2) for the webmcp-sdk documentation site on Cloudflare Workers static assets. Not published.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24.11.1"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test 'test/*.test.ts'",
+    "check": "pnpm typecheck && pnpm test",
+    "check:local": "node scripts/local-check.ts",
+    "dev": "DO_NOT_TRACK=1 alchemy dev"
+  },
+  "devDependencies": {
+    "@alchemy.run/cloudflare": "2.0.0-beta.85",
+    "@effect/platform-node": "4.1.2",
+    "@types/node": "24.19.2",
+    "alchemy": "2.0.0-beta.85",
+    "effect": "4.1.2",
+    "typescript": "7.0.2"
+  }
+}
