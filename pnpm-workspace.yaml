@@ -1,5 +1,6 @@
 packages:
   - packages/*
+  - apps/*
 
 # Supply-chain policy. Committed so CI and every contributor get the same rules
 # (these were previously only in the maintainer's global pnpm config).

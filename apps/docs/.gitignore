@@ -1,0 +1,5 @@
+# React Router / fumadocs-mdx generated files and build output
+/.react-router/
+/.source/
+/build/
+/out/

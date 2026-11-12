@@ -16,6 +16,9 @@
     "test:tooling": "node --test 'tooling/release/*.test.mjs'",
     "test:all": "pnpm --filter @senon/webmcp-sdk run test:all && pnpm test:package && pnpm test:tooling",
     "build": "pnpm --filter @senon/webmcp-sdk run build",
+    "docs:dev": "pnpm --filter @senon/webmcp-sdk-docs run dev",
+    "docs:build": "pnpm --filter @senon/webmcp-sdk-docs run build",
+    "docs:check": "pnpm --filter @senon/webmcp-sdk-docs run check",
     "changeset": "changeset"
   },
   "devDependencies": {
