@@ -2,6 +2,8 @@
 // only, never from argv interpolation in YAML. Outputs go to $GITHUB_OUTPUT / $GITHUB_STEP_SUMMARY.
 //
 //   node infra/docs/scripts/cli.ts stage        PR_NUMBER (optional)      -> stage=pr-<n> | production
+//   node infra/docs/scripts/cli.ts target       PR_NUMBER?, PRODUCTION_SUBDOMAIN, PREVIEW_SUBDOMAIN, BUILD_STAGE?, BUILD_URL?
+//   node infra/docs/scripts/cli.ts check-store  CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN
 //   node infra/docs/scripts/cli.ts url          STAGE, WORKERS_SUBDOMAIN  -> url=<https://…/>
 //   node infra/docs/scripts/cli.ts check-site   DOCS_SITE_DIR
 //   node infra/docs/scripts/cli.ts headers      STAGE                     -> prints the _headers file
@@ -10,7 +12,7 @@ import { appendFileSync } from "node:fs";
 import { renderHeadersFile } from "../src/headers.ts";
 import { checkSiteDir } from "../src/site-dir.ts";
 import { runSmoke } from "../src/smoke.ts";
-import { isIndexable, previewStage, stageKind, workersDevUrl } from "../src/stage.ts";
+import { STATE_STORE_WORKER, isIndexable, previewStage, stageKind, workersDevUrl } from "../src/stage.ts";
 
 const env = (name: string): string => {
   const value = process.env[name];
@@ -35,6 +37,39 @@ const commands: Record<string, () => Promise<void> | void> = {
       throw new Error(`production is deployed from refs/heads/main only, not ${process.env.GITHUB_REF}`);
     }
     output("stage", stage);
+  },
+  // Deploy jobs: recompute stage and URL from trusted inputs (event payload, repository variables,
+  // this checkout of main) instead of trusting the build job, which ran untrusted code. When the
+  // build's values are given, they must match.
+  target() {
+    const pr = process.env.PR_NUMBER ?? "";
+    const stage = pr ? previewStage(pr) : "production";
+    const subdomain = stage === "production" ? env("PRODUCTION_SUBDOMAIN") : env("PREVIEW_SUBDOMAIN");
+    const url = workersDevUrl(stage, subdomain);
+    for (const [key, trusted] of [["BUILD_STAGE", stage], ["BUILD_URL", url]] as const) {
+      const claimed = process.env[key];
+      if (claimed !== undefined && claimed !== trusted) {
+        throw new Error(`${key} from the build job (${JSON.stringify(claimed)}) differs from ${JSON.stringify(trusted)}`);
+      }
+    }
+    output("stage", stage);
+    output("url", url);
+  },
+  // `alchemy deploy --yes` would create a missing state store (or replace one of another version)
+  // even in CI. Refuse to run unless the bootstrapped store exists (docs/docs-deploy.md §4.2).
+  async "check-store"() {
+    const accountId = env("CLOUDFLARE_ACCOUNT_ID");
+    if (!/^[0-9a-f]{32}$/.test(accountId)) throw new Error("CLOUDFLARE_ACCOUNT_ID is not a 32-hex account id");
+    const res = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${STATE_STORE_WORKER}/settings`,
+      { headers: { authorization: `Bearer ${env("CLOUDFLARE_API_TOKEN")}` } },
+    );
+    await res.arrayBuffer();
+    if (res.status === 404) {
+      throw new Error(`state store ${STATE_STORE_WORKER} not found in this account: bootstrap it first (docs/docs-deploy.md §4.2)`);
+    }
+    if (!res.ok) throw new Error(`cannot read state store ${STATE_STORE_WORKER}: HTTP ${res.status} (token permissions?)`);
+    console.log(`state store ${STATE_STORE_WORKER} present`);
   },
   url() {
     output("url", workersDevUrl(env("STAGE"), env("WORKERS_SUBDOMAIN")));

@@ -6,6 +6,8 @@ export type RemoteStage = "production" | `pr-${number}`;
 
 export const PRODUCTION = "production";
 export const WORKER_BASE_NAME = "webmcp-sdk-docs";
+/** Dedicated Alchemy state-store Worker, so this project never shares a store with other stacks. */
+export const STATE_STORE_WORKER = "webmcp-sdk-docs-state";
 
 const PR_STAGE = /^pr-([1-9][0-9]{0,6})$/;
 // Alchemy stage syntax ([a-z0-9][-_a-z0-9]*), kept short so derived Worker names stay < 63 chars.

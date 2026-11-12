@@ -13,15 +13,22 @@ import * as Effect from "effect/Effect";
 import { fileURLToPath } from "node:url";
 import { renderHeadersFile } from "./src/headers.ts";
 import { checkSiteDir } from "./src/site-dir.ts";
-import { isIndexable, isRemoteStage, workerName } from "./src/stage.ts";
-
-/** Dedicated state-store Worker, so this project never shares a store with other Alchemy stacks. */
-export const STATE_STORE_WORKER = "webmcp-sdk-docs-state";
+import { STATE_STORE_WORKER, isIndexable, isRemoteStage, workerName } from "./src/stage.ts";
 
 // DOCS_STATE=cloudflare is set by the deploy workflow only. Everything else uses local state, so a
 // local `alchemy deploy` or `alchemy dev` can never read or write production state by accident.
 const remoteState = process.env.DOCS_STATE === "cloudflare";
 const accountId = process.env.CLOUDFLARE_ACCOUNT_ID || undefined;
+
+// Remote state outside GitHub Actions is for the one-time bootstrap and inspection
+// (docs/docs-deploy.md §4.2). `destroy` skips the stack program below, so its stage checks do not
+// run: without this guard, `alchemy destroy --stage production` from a laptop would go through.
+if (remoteState && !process.env.GITHUB_ACTIONS && process.env.DOCS_ALLOW_LOCAL_REMOTE !== "1") {
+  throw new Error(
+    "DOCS_STATE=cloudflare is reserved for CI. For a deliberate local operation on remote state " +
+      "(state bootstrap, state list, emergency), also set DOCS_ALLOW_LOCAL_REMOTE=1.",
+  );
+}
 
 // The static site to serve: `pnpm docs:build` output by default; CI passes the downloaded artifact.
 const siteDir =

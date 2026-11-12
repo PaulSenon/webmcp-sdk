@@ -15,5 +15,5 @@ allowBuilds:
   esbuild: false
   # workerd (via @alchemy.run/cloudflare, infra/docs): same pattern as esbuild, its postinstall only
   # checks or re-downloads the platform binary that is already installed as an optional dependency.
-  # The docs infra never runs workerd in CI (no `alchemy dev`), so the script is not needed.
+  # `alchemy dev` (docs-build's local check) runs that binary fine without the script.
   workerd: false

@@ -5,9 +5,10 @@
 #   build              runs PR code (the site build and its dependencies): no secret, read-only
 #                      token, no cache. Produces the static site as an artifact.
 #   deploy-*,          hold a Cloudflare token (environment secret). They never execute PR code:
-#   teardown-preview   infra code and lockfile come from the base commit (main) and only the infra
-#                      package's dependencies are installed; the site artifact is data, validated
-#                      (regular files only, no symlinks) before upload.
+#   teardown-preview   infra code and lockfile come from the current main (never the PR, never an
+#                      older main whose Alchemy would downgrade the state store), only the infra
+#                      package's dependencies are installed, stage and URL are recomputed from
+#                      trusted inputs, and the site artifact is data, validated before upload.
 #   comment-preview    pull-requests: write, no Cloudflare secret.
 # Previews only for same-repository PRs into main, never forks or Dependabot (no pull_request_target,
 # no workflow_run). Every Cloudflare job is inert until the repository variable
@@ -22,9 +23,14 @@ on:
   workflow_dispatch:
     inputs:
       destroy_preview:
-        description: "PR number whose preview to tear down (leave empty to redeploy production from main)"
+        description: "PR number whose preview to tear down"
         required: false
         type: string
+      rollback_run_id:
+        description: "Production rollback: id of an older successful docs run on main whose site to redeploy"
+        required: false
+        type: string
+      # Both empty: rebuild and redeploy production from main.
 
 permissions: {}
 
@@ -39,7 +45,7 @@ jobs:
     if: >-
       (github.event_name == 'pull_request' && github.event.action != 'closed')
       || github.event_name == 'push'
-      || (github.event_name == 'workflow_dispatch' && inputs.destroy_preview == '')
+      || (github.event_name == 'workflow_dispatch' && inputs.destroy_preview == '' && inputs.rollback_run_id == '')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -146,55 +152,83 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+      pull-requests: read # is the PR still open?
     cache-mode: none
     environment:
       name: docs-preview
-      url: ${{ needs.build.outputs.url }}
+      url: ${{ steps.target.outputs.url }}
     concurrency:
       group: docs-preview-${{ github.event.pull_request.number }}
       cancel-in-progress: false # never interrupt a deploy; the newest pending run wins
+    outputs:
+      url: ${{ steps.target.outputs.url }}
     steps:
-      # Infra code and lockfile from the base commit, not from the PR.
+      # Infra code and lockfile from the current main, never from the PR (and never an older main:
+      # an older Alchemy would downgrade the state store in place).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: main
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
           package-manager-cache: false
-      - run: pnpm --filter @senon/webmcp-sdk-docs-infra install --frozen-lockfile
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      - id: target
+        name: Stage and URL from trusted inputs
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PRODUCTION_SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
+          PREVIEW_SUBDOMAIN: ${{ vars.DOCS_PREVIEW_WORKERS_SUBDOMAIN || vars.DOCS_WORKERS_SUBDOMAIN }}
+          BUILD_STAGE: ${{ needs.build.outputs.stage }}
+          BUILD_URL: ${{ needs.build.outputs.url }}
+        run: node infra/docs/scripts/cli.ts target
+      - id: open
+        name: PR still open?
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          state="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .state)"
+          echo "open=$([ "$state" = open ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          if [ "$state" != open ]; then echo "::notice::PR is $state: not deploying (teardown has run or will run)"; fi
+      - if: steps.open.outputs.open == 'true'
+        run: pnpm --filter @senon/webmcp-sdk-docs-infra install --frozen-lockfile
+      - if: steps.open.outputs.open == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.build.outputs.artifact_id }}
           path: ${{ runner.temp }}/site
-      - name: Check the artifact
+      - if: steps.open.outputs.open == 'true'
+        name: Check the artifact
         env:
           DOCS_SITE_DIR: ${{ runner.temp }}/site
         run: node infra/docs/scripts/cli.ts check-site
-      - name: Deploy
+      - if: steps.open.outputs.open == 'true'
+        name: Deploy
         env:
-          STAGE: ${{ needs.build.outputs.stage }}
+          STAGE: ${{ steps.target.outputs.stage }}
           DOCS_STATE: cloudflare
           DOCS_SITE_DIR: ${{ runner.temp }}/site
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          SITE_URL: ${{ needs.build.outputs.url }}
         run: |
           case "$STAGE" in pr-[1-9]*) ;; *) echo "::error::unexpected stage $STAGE"; exit 1 ;; esac
-          if [ -z "$SITE_URL" ]; then echo "::error::set the repository variable DOCS_WORKERS_SUBDOMAIN"; exit 1; fi
+          node infra/docs/scripts/cli.ts check-store
           pnpm --filter @senon/webmcp-sdk-docs-infra exec alchemy deploy --stage "$STAGE" --yes --no-input
-      - name: Smoke test
+      - if: steps.open.outputs.open == 'true'
+        name: Smoke test
         env:
-          STAGE: ${{ needs.build.outputs.stage }}
-          SMOKE_URL: ${{ needs.build.outputs.url }}
+          STAGE: ${{ steps.target.outputs.stage }}
+          SMOKE_URL: ${{ steps.target.outputs.url }}
           DOCS_SITE_DIR: ${{ runner.temp }}/site
         run: node infra/docs/scripts/cli.ts smoke
 
   comment-preview:
     name: docs-comment-preview
-    needs: [build, deploy-preview]
+    needs: deploy-preview
     if: always() && (needs.deploy-preview.result == 'success' || needs.deploy-preview.result == 'failure')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -208,13 +242,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
-          URL: ${{ needs.build.outputs.url }}
+          URL: ${{ needs.deploy-preview.outputs.url }}
           SHA: ${{ github.event.pull_request.head.sha }}
           RESULT: ${{ needs.deploy-preview.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          if [ "$RESULT" = "success" ]; then
+          case "$URL" in https://*.workers.dev/|"") ;; *) echo "::error::unexpected URL"; exit 1 ;; esac
+          if [ "$RESULT" = "success" ] && [ -n "$URL" ]; then
             line="**Docs preview:** $URL (commit \`${SHA:0:7}\`)"
           else
             line="**Docs preview failed** for commit \`${SHA:0:7}\`: [run]($RUN_URL)"
@@ -224,12 +259,12 @@ jobs:
 
   teardown-preview:
     name: docs-teardown-preview
+    # No base-branch filter: a PR retargeted after its preview was deployed must still be cleaned up.
     if: >-
       vars.DOCS_DEPLOY_ENABLED == 'true'
       && ((github.event_name == 'pull_request'
             && github.event.action == 'closed'
             && github.event.pull_request.head.repo.full_name == github.repository
-            && github.event.pull_request.base.ref == 'main'
             && github.event.pull_request.user.login != 'dependabot[bot]'
             && github.actor != 'dependabot[bot]')
           || (github.event_name == 'workflow_dispatch' && inputs.destroy_preview != '' && github.ref == 'refs/heads/main'))
@@ -246,7 +281,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          ref: main
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -265,99 +300,131 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           case "$STAGE" in pr-[1-9]*) ;; *) echo "::error::refusing to destroy $STAGE"; exit 1 ;; esac
+          node infra/docs/scripts/cli.ts check-store
           pnpm --filter @senon/webmcp-sdk-docs-infra exec alchemy destroy --stage "$STAGE" --yes --no-input
           echo "Preview \`$STAGE\` destroyed." >> "$GITHUB_STEP_SUMMARY"
 
   deploy-production:
     name: docs-deploy-production
     needs: build
+    # Normal path: after a successful build of main. Rollback path: workflow_dispatch with
+    # rollback_run_id (no build; deploys that run's artifact with the current infra).
     if: >-
-      vars.DOCS_DEPLOY_ENABLED == 'true'
+      !cancelled()
+      && vars.DOCS_DEPLOY_ENABLED == 'true'
       && github.ref == 'refs/heads/main'
-      && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-      && needs.build.outputs.has_site == 'true'
+      && ((needs.build.result == 'success' && needs.build.outputs.has_site == 'true'
+            && (github.event_name == 'push' || github.event_name == 'workflow_dispatch'))
+          || (github.event_name == 'workflow_dispatch' && inputs.rollback_run_id != '' && inputs.destroy_preview == ''))
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
+      actions: read # rollback: read another run's metadata and artifact
     cache-mode: none
     environment:
       name: docs-production # deployment branch policy: main only
-      url: ${{ needs.build.outputs.url }}
+      url: ${{ steps.target.outputs.url }}
     concurrency:
       group: docs-production
       cancel-in-progress: false # never interrupt a production deploy
     steps:
-      # Two pushes can reach this job out of order. Only the newest commit on main deploys, unless
-      # this is a deliberate re-run (rollback: docs/docs-deploy.md).
-      - id: fresh
-        name: Newest commit on main?
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: main
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - id: source
+        name: What to deploy
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
-          ATTEMPT: ${{ github.run_attempt }}
+          ROLLBACK_RUN_ID: ${{ inputs.rollback_run_id }}
+          BUILD_ARTIFACT_ID: ${{ needs.build.outputs.artifact_id }}
         run: |
           set -euo pipefail
+          if [ -n "$ROLLBACK_RUN_ID" ]; then
+            case "$ROLLBACK_RUN_ID" in *[!0-9]*) echo "::error::rollback_run_id must be a number"; exit 1 ;; esac
+            run="$(gh api "repos/$REPO/actions/runs/$ROLLBACK_RUN_ID" \
+              --jq '[.path, .event, .head_branch, .conclusion, .head_repository.full_name, .head_sha] | @tsv')"
+            IFS=$'\t' read -r path event branch conclusion repo sha <<< "$run"
+            if [ "$path" != ".github/workflows/docs.yml" ] || [ "$event" != push ] || [ "$branch" != main ] \
+              || [ "$conclusion" != success ] || [ "$repo" != "$REPO" ]; then
+              echo "::error::run $ROLLBACK_RUN_ID is not a successful docs run of a push to main"; exit 1
+            fi
+            artifact="$(gh api "repos/$REPO/actions/runs/$ROLLBACK_RUN_ID/artifacts" \
+              --jq '[.artifacts[] | select(.name == "docs-site-production" and (.expired | not))][0].id // empty')"
+            if [ -z "$artifact" ]; then echo "::error::run $ROLLBACK_RUN_ID has no unexpired docs-site-production artifact"; exit 1; fi
+            echo "::notice::rollback to $sha (run $ROLLBACK_RUN_ID)"
+            { echo "deploy=true"; echo "run_id=$ROLLBACK_RUN_ID"; echo "artifact_id=$artifact"; echo "sha=$sha"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Two pushes can reach this job out of order: only the newest commit on main deploys.
           head="$(gh api "repos/$REPO/commits/main" --jq .sha)"
-          if [ "$head" = "$SHA" ] || [ "$ATTEMPT" != "1" ]; then
-            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          if [ "$head" = "$SHA" ]; then
+            { echo "deploy=true"; echo "run_id=${GITHUB_RUN_ID}"; echo "artifact_id=$BUILD_ARTIFACT_ID"; echo "sha=$SHA"; } >> "$GITHUB_OUTPUT"
           else
             echo "deploy=false" >> "$GITHUB_OUTPUT"
             echo "::notice::main is at $head, newer than $SHA: skipping (the newer run deploys)"
           fi
-      - if: steps.fresh.outputs.deploy == 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - if: steps.fresh.outputs.deploy == 'true'
-        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
-      - if: steps.fresh.outputs.deploy == 'true'
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version-file: .nvmrc
-          package-manager-cache: false
-      - if: steps.fresh.outputs.deploy == 'true'
+      - id: target
+        name: Stage and URL from trusted inputs
+        env:
+          PRODUCTION_SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
+          PREVIEW_SUBDOMAIN: ${{ vars.DOCS_PREVIEW_WORKERS_SUBDOMAIN || vars.DOCS_WORKERS_SUBDOMAIN }}
+          BUILD_STAGE: ${{ needs.build.outputs.stage }}
+          BUILD_URL: ${{ needs.build.outputs.url }}
+        run: |
+          # On rollback there is no build in this run: nothing to compare.
+          if [ -z "$BUILD_STAGE" ]; then unset BUILD_STAGE BUILD_URL; fi
+          node infra/docs/scripts/cli.ts target
+      - if: steps.source.outputs.deploy == 'true'
         run: pnpm --filter @senon/webmcp-sdk-docs-infra install --frozen-lockfile
-      - if: steps.fresh.outputs.deploy == 'true'
+      - if: steps.source.outputs.deploy == 'true'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          artifact-ids: ${{ steps.source.outputs.artifact_id }}
+          run-id: ${{ steps.source.outputs.run_id }}
+          github-token: ${{ github.token }}
           path: ${{ runner.temp }}/site
-      - if: steps.fresh.outputs.deploy == 'true'
+      - if: steps.source.outputs.deploy == 'true'
         name: Check the artifact
         env:
           DOCS_SITE_DIR: ${{ runner.temp }}/site
         run: node infra/docs/scripts/cli.ts check-site
-      - if: steps.fresh.outputs.deploy == 'true'
+      - if: steps.source.outputs.deploy == 'true'
         name: Deploy
         env:
-          STAGE: ${{ needs.build.outputs.stage }}
+          STAGE: ${{ steps.target.outputs.stage }}
           DOCS_STATE: cloudflare
           DOCS_SITE_DIR: ${{ runner.temp }}/site
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          SITE_URL: ${{ needs.build.outputs.url }}
         run: |
           test "$STAGE" = "production"
-          if [ -z "$SITE_URL" ]; then echo "::error::set the repository variable DOCS_WORKERS_SUBDOMAIN"; exit 1; fi
+          node infra/docs/scripts/cli.ts check-store
           pnpm --filter @senon/webmcp-sdk-docs-infra exec alchemy deploy --stage production --yes --no-input
-      - if: steps.fresh.outputs.deploy == 'true'
+      - if: steps.source.outputs.deploy == 'true'
         name: Smoke test
         env:
-          STAGE: ${{ needs.build.outputs.stage }}
-          SMOKE_URL: ${{ needs.build.outputs.url }}
+          STAGE: ${{ steps.target.outputs.stage }}
+          SMOKE_URL: ${{ steps.target.outputs.url }}
           DOCS_SITE_DIR: ${{ runner.temp }}/site
         run: node infra/docs/scripts/cli.ts smoke
-      - if: steps.fresh.outputs.deploy == 'true'
+      - if: steps.source.outputs.deploy == 'true'
         name: Summary
         env:
-          SHA: ${{ github.sha }}
-          URL: ${{ needs.build.outputs.url }}
+          SHA: ${{ steps.source.outputs.sha }}
+          URL: ${{ steps.target.outputs.url }}
         run: |
           {
             echo "### Production: \`$SHA\` → $URL"
             echo ""
             echo "Rollback: Cloudflare dashboard → Workers → webmcp-sdk-docs → Deployments → Rollback,"
-            echo "or re-run this job from an older successful run (docs/docs-deploy.md §Rollback)."
+            echo "or Run workflow with rollback_run_id = an older successful run (docs/docs-deploy.md §5)."
           } >> "$GITHUB_STEP_SUMMARY"
