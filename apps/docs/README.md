@@ -7,7 +7,7 @@ pnpm docs:dev      # dev server with hot reload (http://localhost:5173)
 pnpm docs:build    # static site in apps/docs/out
 pnpm docs:check    # typecheck + code blocks + build + link check (what CI runs)
 pnpm docs:test     # browser smoke tests of out/ (after a build; needs `playwright install chromium`)
-pnpm --filter @senon/webmcp-sdk-docs preview   # serve out/ like production, http://localhost:4173
+pnpm --filter @senon/webmcp-sdk-docs preview   # serve out/ like production, http://localhost:4321
 ```
 
 ## Stack and why
@@ -106,7 +106,7 @@ The output is deterministic and not committed: the reference cannot drift from t
 
 | variable | used for | default |
 | - | - | - |
-| `SITE_URL` | canonical URLs, Open Graph `og:url`, `sitemap.xml`, `robots.txt` | `http://localhost:4173` (local builds only) |
+| `SITE_URL` | canonical URLs, Open Graph `og:url`, `sitemap.xml`, `robots.txt` | `http://localhost:4321` (local builds only) |
 
 `SITE_URL` must be a bare `http(s)` origin (`https://docs.example.com`); anything with a path, query or fragment fails the build. **Deploy builds must set it.** The build needs no secrets and no network beyond `pnpm install`.
 

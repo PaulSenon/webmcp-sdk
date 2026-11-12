@@ -7,7 +7,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
 
 const out = new URL("../out", import.meta.url).pathname;
-const port = Number(process.env.PORT ?? 4173);
+const port = Number(process.env.PORT ?? 4321);
 const types = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".json": "application/json",
   ".svg": "image/svg+xml", ".xml": "application/xml", ".txt": "text/plain; charset=utf-8", ".md": "text/markdown; charset=utf-8",

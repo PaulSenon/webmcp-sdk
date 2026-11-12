@@ -2,7 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 // Smoke tests of the built site (out/), served the way the production host serves it.
 // Run `pnpm build` first; `pnpm test:e2e` does not build.
-const port = 4174;
+const port = 4322;
 
 export default defineConfig({
   testDir: "e2e",

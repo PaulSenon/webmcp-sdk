@@ -1,5 +1,5 @@
 // Shared by vite.config.ts (build-time constant) and the build scripts. No dependencies.
-export const DEFAULT_SITE_URL = "http://localhost:4173";
+export const DEFAULT_SITE_URL = "http://localhost:4321";
 
 /**
  * Validates SITE_URL: an absolute http(s) origin. The site is served at the root path, so a
