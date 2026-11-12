@@ -1,0 +1,78 @@
+---
+title: Implementing tools
+description: Handlers with inferred types, dependencies as factories, and outcomes as outputs.
+---
+
+`implementTool(definition, handler)` attaches your code to a definition. The handler receives the validated input and `{ signal }`, and returns the output (sync or async):
+
+```ts
+import { implementTool } from "@senon/webmcp-sdk";
+import { searchProducts } from "./definitions.js";
+declare const api: { search(q: string, limit: number, signal: AbortSignal): Promise<{ sku: string; title: string }[]> };
+
+export const searchProductsTool = implementTool(searchProducts, async ({ q, limit }, { signal }) => {
+  return { hits: await api.search(q, limit, signal) };
+});
+```
+
+`definitions.ts` is defined in [Defining tools](/docs/defining-tools).
+
+## Dependencies: one factory per implementation
+
+When a tool needs data from your app (a store, the current user, a component's state), make the implementation a function of exactly that data:
+
+```ts
+import { implementTool } from "@senon/webmcp-sdk";
+import { addToCart } from "./definitions.js";
+
+interface Cart { add(sku: string, quantity: number): Promise<number> }
+
+export const addToCartTool = ({ cart }: { cart: Cart }) =>
+  implementTool(addToCart, async ({ sku, quantity }) => ({ itemCount: await cart.add(sku, quantity) }));
+
+// Composition happens where you register:
+declare const cart: Cart;
+const tools = [addToCartTool({ cart })];
+```
+
+- **Each tool stays isolated** and testable: `addToCartTool({ cart: fakeCart })`.
+- **Forgetting a dependency is a compile error.**
+- **Agents never see these dependencies.** They are not arguments.
+- If several places register the same set, write a function that calls the per-tool factories.
+
+## Without an output schema
+
+A handler may return any JSON value, or nothing (sent as `null`). `Date`, `bigint` and functions are compile errors. The SDK serializes the result itself, so a runtime failure (a cycle, for example) becomes a clear [`output_invalid`](/docs/what-agents-receive).
+
+- `JSON.stringify` is lossy without failing: it drops `undefined` and functions in objects, and turns `Date` into a string. **Declare an `output` schema when the shape matters.**
+- Values typed with an `interface` are rejected by TypeScript's index-signature rule (type aliases and object literals are fine): declare an output schema (recommended) or spread the value (`{ ...value }`). The same applies to `ToolError` `data`.
+
+## Outcomes are outputs: user confirmation
+
+A user declining a confirmation is a normal result, not an error. Declare it in your output:
+
+```ts
+import { z } from "zod";
+import { defineTool, implementTool } from "@senon/webmcp-sdk";
+declare function confirmDialog(text: string): Promise<boolean>;
+declare function placeOrder(): Promise<string>;
+
+const checkout = defineTool({
+  name: "checkout",
+  description: "Place the order. The user is asked to confirm; if they decline, do not retry unless they ask.",
+  annotations: { consequentialHint: true },
+  output: z.discriminatedUnion("status", [
+    z.object({ status: z.literal("placed"), orderId: z.string() }),
+    z.object({ status: z.literal("declined"), message: z.string() }),
+  ]),
+});
+
+export const checkoutTool = implementTool(checkout, async () => {
+  if (!(await confirmDialog("Place this order?"))) {
+    return { status: "declined", message: "The user declined. Do not retry unless they ask again." };
+  }
+  return { status: "placed", orderId: await placeOrder() };
+});
+```
+
+The confirmation UI is your page's own code: WebMCP's current draft has no API for it.

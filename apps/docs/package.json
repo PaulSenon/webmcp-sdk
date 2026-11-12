@@ -10,7 +10,11 @@
     "build": "node scripts/generate-api.mjs && react-router build && node scripts/finalize-out.mjs",
     "preview": "node scripts/preview.mjs",
     "typecheck": "react-router typegen && tsc -p tsconfig.json",
-    "generate:api": "node scripts/generate-api.mjs"
+    "generate:api": "node scripts/generate-api.mjs",
+    "check:snippets": "pnpm --filter @senon/webmcp-sdk run check:docs",
+    "check:links": "node scripts/check-links.mjs",
+    "check": "pnpm typecheck && pnpm check:snippets && pnpm build && pnpm check:links",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@react-router/node": "8.5.1",
@@ -24,6 +28,7 @@
     "react-router": "8.5.1"
   },
   "devDependencies": {
+    "@playwright/test": "1.59.1",
     "@react-router/dev": "8.5.1",
     "@tailwindcss/vite": "4.3.5",
     "@types/mdx": "2.0.14",

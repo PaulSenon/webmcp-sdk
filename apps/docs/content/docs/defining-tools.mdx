@@ -1,0 +1,145 @@
+---
+title: Defining tools
+description: Names, descriptions, annotations and schemas from any Standard Schema library.
+---
+
+A definition is a plain object: name, metadata and schemas. It has no code and no browser dependency, so you can share it between the page that implements the tool, your tests, and code that calls the tool.
+
+The guides on this site share these two definitions:
+
+```ts title="definitions.ts" file=definitions.ts
+import { z } from "zod";
+import { defineTool } from "@senon/webmcp-sdk";
+
+export const searchProducts = defineTool({
+  name: "search_products",
+  title: "Search products",
+  description: "Search the catalog by keyword. Returns at most `limit` products.",
+  input: z.object({
+    q: z.string().min(1),
+    limit: z.number().int().min(1).max(50).default(10),
+  }),
+  output: z.object({ hits: z.array(z.object({ sku: z.string(), title: z.string() })) }),
+  annotations: { readOnlyHint: true },
+});
+
+export const addToCart = defineTool({
+  name: "add_to_cart",
+  description: "Add a product to the cart by SKU. Returns the new item count.",
+  input: z.object({ sku: z.string(), quantity: z.number().int().min(1).default(1) }),
+  output: z.object({ itemCount: z.number().int() }),
+});
+```
+
+| field | |
+| ----- | - |
+| `name` | unique in the document; 1–128 of `A–Z a–z 0–9 _ - .`. **A name is a contract:** if a tool's meaning changes, give it a new name |
+| `title` | optional human-readable label |
+| `description` | what the tool does and when to use it; agents read this to choose |
+| `input` | optional object schema for the arguments |
+| `output` | optional schema for the result. If declared, every result is validated against it |
+| `annotations` | WebMCP hints for agents (not enforced): `readOnlyHint`, `consequentialHint`, `untrustedContentHint`, `debugging` |
+
+Pass a schema or omit the property. A schema that *may* be `undefined` (`input: cond ? schema : undefined`) is a compile error; define two tools instead.
+
+`defineTool` is the only function that throws: `WebMCPError("invalid_definition")` for an invalid name or an empty description, because those are programming errors.
+
+## Schemas: any Standard Schema library
+
+A tool schema needs two capabilities. **Validation** checks values at runtime. **JSON Schema conversion** describes the tool to agents. The compiler requires both.
+
+| library | how |
+| ------- | --- |
+| Zod ≥ 4.2, ArkType ≥ 2.1 | pass the schema directly |
+| Valibot | wrap with `toStandardJsonSchema(schema)` from `@valibot/to-json-schema` |
+| Effect 4 | `Schema.toStandardJSONSchemaV1(schema)` |
+| anything else | `withJsonSchema(schema, { input, output? })` |
+
+```ts
+import * as v from "valibot";
+import { toStandardJsonSchema } from "@valibot/to-json-schema";
+import { type } from "arktype";
+import { defineTool, withJsonSchema, type StandardSchemaV1 } from "@senon/webmcp-sdk";
+
+defineTool({ name: "lookup", description: "Find an order by id.", input: type({ id: "string" }) });
+
+defineTool({
+  name: "search_docs",
+  description: "Search the documentation.",
+  input: toStandardJsonSchema(v.object({ query: v.pipe(v.string(), v.minLength(1)) })),
+});
+
+declare const legacy: StandardSchemaV1<{ q: string }>; // validates, but cannot describe itself
+defineTool({
+  name: "legacy_search",
+  description: "Search with the legacy validator.",
+  input: withJsonSchema(legacy, { input: { type: "object", properties: { q: { type: "string" } }, required: ["q"] } }),
+});
+
+defineTool({
+  name: "bad_schema",
+  description: "Rejected at compile time.",
+  // @ts-expect-error Property 'jsonSchema' is missing: validation-only schema
+  input: v.object({ query: v.string() }),
+});
+```
+
+- **Your validator is the source of truth.** The SDK always runs your original validator through the Standard Schema API. The JSON Schema only describes the tool to agents. With `withJsonSchema`, keeping the two in sync is up to you.
+- **Input must describe an object.** `z.string()`, arrays, `z.any()` and `z.never()` are compile errors.
+
+## Input side and output side
+
+Transforms and defaults give a schema two types. The SDK uses the right one on each side:
+
+| | the agent sees (JSON Schema) | your handler sees |
+| - | ---------------------------- | ----------------- |
+| `input` | the **input** side (`limit` optional) | the **output** side (`limit: number`, defaults applied) |
+| `output` | the **output** side | it returns the **input** side |
+
+```ts
+import { z } from "zod";
+import { defineTool, implementTool, type InferToolInput, type InferToolOutput } from "@senon/webmcp-sdk";
+
+const scheduleMeeting = defineTool({
+  name: "schedule_meeting",
+  description: "Schedule a meeting. `start` is an ISO 8601 date-time.",
+  input: z.object({ start: z.iso.datetime(), minutes: z.number().int().default(30) }),
+  output: z.object({ id: z.string(), start: z.date().transform((d) => d.toISOString()) }),
+});
+
+type AgentSends = InferToolInput<typeof scheduleMeeting>; // { start: string; minutes?: number | undefined }
+type AgentGets = InferToolOutput<typeof scheduleMeeting>; // { id: string; start: string }
+
+implementTool(scheduleMeeting, ({ start, minutes }) => {
+  // minutes: number (default applied); return a Date, the agent receives a string
+  return { id: "m_1", start: new Date(Date.parse(start) + minutes * 60_000) };
+});
+```
+
+## Async validation and refinements
+
+Validators may be async, and the SDK always awaits them. Refinements are **not** expressible in JSON Schema, so repeat the rule in the description:
+
+```ts
+import { z } from "zod";
+import { defineTool } from "@senon/webmcp-sdk";
+declare function skuExists(sku: string): Promise<boolean>;
+
+defineTool({
+  name: "reorder",
+  description: "Reorder a product. The SKU must exist (see search_products).",
+  input: z.object({ sku: z.string() }).refine(async ({ sku }) => skuExists(sku), {
+    message: "Unknown SKU. Call search_products to find valid SKUs.",
+    path: ["sku"],
+  }),
+});
+```
+
+## Schemas that cannot become JSON Schema
+
+The types only check that a library *can* convert. A particular schema can still fail at runtime, for example Zod `z.date()` on the advertised side. Conversion runs when the tool is registered. A failure marks that tool `"error"` (`json_schema_unavailable`) and registers nothing for it (a non-object input root is reported the same way).
+
+- **Catch it in CI** with [`toJSONSchema`](/docs/testing).
+- **Fix it** by choosing a wire type (`z.iso.datetime()`) or using `withJsonSchema`.
+
+The SDK never weakens a schema silently.

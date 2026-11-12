@@ -1,0 +1,32 @@
+---
+title: Testing
+description: Run tools without a browser, and catch non-convertible schemas in CI.
+---
+
+Definitions and implementations are plain values, so tests need no browser:
+
+```ts
+import { runTool, toJSONSchema } from "@senon/webmcp-sdk";
+import { addToCartTool, type Cart } from "./tools.js";
+import { addToCart } from "./definitions.js";
+
+const fakeCart: Cart = { add: async () => 1 };
+
+// Exactly what a registration would run: validate input → handler → validate output → map failures
+const ok = await runTool(addToCartTool({ cart: fakeCart }), { sku: "TEE-1" });
+const bad = await runTool(addToCartTool({ cart: fakeCart }), { sku: 42 });
+if (!bad.ok && bad.failure.kind === "input_invalid") console.log(bad.failure.issues);
+
+// Catch non-convertible schemas in CI
+const schemas = toJSONSchema(addToCart);
+for (const [side, r] of Object.entries(schemas)) if (r && !r.ok) throw new Error(`${side}: ${r.message}`);
+```
+
+`tools.ts` and `definitions.ts` are the modules of [Registering tools](/docs/registering-tools#the-examples-tools) and [Defining tools](/docs/defining-tools).
+
+- **`runTool`** runs the same pipeline as a registered tool: input validation, your handler, output validation, failure mapping. Its result is `{ ok: true, value }` or `{ ok: false, failure }`.
+- **`toJSONSchema`** runs the JSON Schema conversion that registration would run, eagerly, so a schema such as Zod `z.date()` on the advertised side fails in CI instead of at registration.
+
+## Registration tests
+
+For registration tests, pass any object with a `registerTool` method as `modelContext`, or install [`@w3c/webmcp-polyfill`](https://github.com/webmachinelearning/webmcp-polyfill). See [Polyfills and custom model contexts](/docs/polyfills#an-explicit-model-context).

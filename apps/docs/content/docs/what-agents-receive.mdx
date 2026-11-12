@@ -1,0 +1,36 @@
+---
+title: What agents receive
+description: Results on success, and the failure envelope with its four kinds.
+---
+
+**On success:** your validated output, as-is.
+
+**On failure:** an envelope, returned rather than thrown. In WebMCP, a thrown error reaches the agent as an opaque `OperationError` without its message.
+
+```json
+{ "isError": true, "error": { "kind": "input_invalid", "handlerCalled": false,
+  "message": "Arguments rejected; the tool did not run. Fix the fields below and call again.",
+  "issues": [{ "path": "quantity", "message": "Too small: expected number to be >=1" }] } }
+```
+
+| `kind` | `handlerCalled` | when | extra fields |
+| ------ | --------------- | ---- | ------------ |
+| `input_invalid` | `false` | arguments failed the input schema; the tool did not run | `issues` (at most 20, readable paths), `omittedIssues` when more were found |
+| `tool_error` | `true` | the handler threw a `ToolError` | `code`, `data` |
+| `internal` | `true` / `false` | an unexpected error (a defect, or a validator that crashed); no details | — |
+| `output_invalid` | `true` | the tool ran, but its result failed the declared output and was withheld; **the action may have been performed** | — |
+
+## Messages
+
+| case | message |
+| - | - |
+| `internal`, after the handler was invoked | "The tool failed unexpectedly. It may have partially run; check the current state before retrying." |
+| `internal`, before invocation | "The tool failed unexpectedly before running. The tool did not run." |
+| `output_invalid` | "The tool ran, but its result failed validation. The action may have been performed; check the current state before retrying." |
+
+## Details
+
+- **`handlerCalled`** is a fact, not a promise. When it is `true`, effects may have happened, so agents should check the current state before retrying. The SDK never claims a retry is safe.
+- **`outputSchema`:** when a tool declares an `output`, it is advertised as `anyOf: [<your output>, <the envelope>]`, so strict agents do not discard failures as malformed. Without one, no `outputSchema` is advertised.
+- **Detection:** `isToolFailureEnvelope(value)` checks `isError === true`, a known `kind` and a string `message`.
+- **Ambiguity:** a *successful* result shaped exactly like the envelope is indistinguishable from a failure on the wire. Avoid that shape in your outputs (see [Limitations](/docs/limitations)).

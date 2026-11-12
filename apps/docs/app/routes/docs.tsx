@@ -14,6 +14,8 @@ export async function loader({ params }: Route.LoaderArgs) {
   const slugs = params["*"].split("/").filter((v) => v.length > 0);
   const page = source.getPage(slugs);
   if (!page) throw new Response("Not found", { status: 404 });
+  // Runs at prerender time, so a page without a description fails the build.
+  if (!page.data.description) throw new Error(`content/docs/${page.path}: frontmatter needs a description`);
   return {
     path: page.path,
     url: page.url,

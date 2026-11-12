@@ -7,6 +7,7 @@ export default function NotFound() {
   return (
     <HomeLayout {...baseOptions()}>
       <title>Page not found | webmcp-sdk</title>
+      <meta name="description" content="This page does not exist, or it moved." />
       <meta name="robots" content="noindex" />
       <div className="p-4 flex flex-col items-center justify-center text-center flex-1">
         <h1 className="text-xl font-bold mb-2">Page not found</h1>

@@ -1,0 +1,65 @@
+---
+title: Errors
+description: ToolError for failures the agent should understand; everything else stays private.
+---
+
+Throw `ToolError` for failures the agent should understand. Anything else stays private.
+
+```ts
+import { implementTool, ToolError } from "@senon/webmcp-sdk";
+import { addToCart } from "./definitions.js";
+
+interface Stock { available(sku: string): Promise<number>; reserve(sku: string, n: number): Promise<number> }
+
+export const reserveStockTool = ({ stock }: { stock: Stock }) =>
+  implementTool(addToCart, async ({ sku, quantity }) => {
+    const left = await stock.available(sku);
+    if (left < quantity) {
+      throw new ToolError(`Only ${left} left. Ask for at most ${left}.`, { code: "OUT_OF_STOCK", data: { left } });
+    }
+    return { itemCount: await stock.reserve(sku, quantity) };
+  });
+```
+
+- **`message`** (required) is what the agent reads, so make it say what to do next.
+- **`code`** (optional) is a stable identifier for programs.
+- **`data`** (optional) carries JSON facts.
+- **`cause`** stays local.
+
+Only these three fields are sent: never `stack`, `cause`, or other properties.
+
+## Subclasses
+
+Subclasses work the same way. Put whatever should reach the agent in `data`:
+
+```ts
+import { ToolError } from "@senon/webmcp-sdk";
+
+export class OutOfStockError extends ToolError {
+  constructor(readonly sku: string, left: number) {
+    super(`Only ${left} left for ${sku}. Ask for at most ${left}.`, { code: "OUT_OF_STOCK", data: { sku, left } });
+  }
+}
+```
+
+## Unexpected errors
+
+**Anything else thrown is a defect.** The agent gets a generic message (`"internal"`), and you get the original via `onUnexpectedError`. It is also called for `output_invalid` and for `ToolError` data that could not be serialized, and never for `input_invalid` or a valid `ToolError`:
+
+```ts
+import { registerTool } from "@senon/webmcp-sdk";
+import { addToCartTool, type Cart } from "./tools.js";
+declare const cart: Cart;
+
+await registerTool(addToCartTool({ cart }), {
+  onUnexpectedError: (error, { toolName, kind, handlerCalled }) => console.error(toolName, kind, handlerCalled, error),
+});
+```
+
+`tools.ts` is defined in [Registering tools](/docs/registering-tools#the-examples-tools).
+
+## Good to know
+
+- `ToolError` is recognized by a brand (`isToolError`), so it also works if two copies of the package end up in your bundle.
+- **What you write explicitly** in `message` or `data` is sent as-is. Do not forward third-party error messages blindly.
+- `WebMCPError` is the SDK's own error (invalid definitions, registration failures), with a `code` such as `invalid_definition`, `duplicate_name`, `json_schema_unavailable` or `registration_failed`. See the [API reference](/docs/api/core#webmcperror).
