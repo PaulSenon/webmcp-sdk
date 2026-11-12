@@ -6,12 +6,14 @@
 // https://developers.cloudflare.com/workers/static-assets/headers/
 
 /**
- * Content-Security-Policy for a fully static, prerendered docs site (Fumadocs on React Router 7
+ * Content-Security-Policy for a fully static, prerendered docs site (Fumadocs on TanStack Start
  * with Vite, apps/docs). Every resource is same-origin; nothing is loaded from third parties.
  *
- * `script-src 'unsafe-inline'` is required because React Router inlines its hydration context and
- * module bootstrap scripts in every prerendered page (and the theme switcher an anti-flash script),
- * and a static site cannot add per-request nonces. The policy still
+ * `script-src 'unsafe-inline'` is required because TanStack Start inlines its serialized router
+ * state (hydration data) in every prerendered page, and the theme switcher an anti-flash script;
+ * a static site cannot add per-request nonces. Module chunks, `modulepreload` links, the search
+ * index (/api/search.json) and the client-navigation data (/__tsr/staticServerFnCache/*.json) are
+ * all same-origin, and the client bundle uses no eval. The policy still
  * blocks every external script origin, plugins, framing, `<base>` hijacking, and exfiltration via
  * fetch/XHR/WebSocket to other origins (connect-src). A hash-based policy is a proposed follow-up
  * (docs/docs-deploy.md, "Deferred").
@@ -67,8 +69,11 @@ export function securityHeaders({ indexable }: { indexable: boolean }): Array<[s
 
 /**
  * Path patterns whose files are content-hashed by the build and therefore safe to cache forever.
- * Vite (React Router build of apps/docs) puts every hashed chunk, stylesheet and font under
+ * Vite (TanStack Start build of apps/docs) puts every hashed chunk, stylesheet and font under
  * /assets/; nothing else is written there.
+ *
+ * Not /__tsr/*: the names of TanStack's static server-function results hash the function and its
+ * arguments, not the content, so a redeploy changes the file behind the same URL.
  */
 export const IMMUTABLE_PATHS = ["/assets/*"] as const;
 export const IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable";
