@@ -19,6 +19,7 @@
     "docs:dev": "pnpm --filter @senon/webmcp-sdk-docs run dev",
     "docs:build": "pnpm --filter @senon/webmcp-sdk-docs run build",
     "docs:check": "pnpm --filter @senon/webmcp-sdk-docs run check",
+    "docs:test": "pnpm --filter @senon/webmcp-sdk-docs run test:e2e",
     "changeset": "changeset"
   },
   "devDependencies": {

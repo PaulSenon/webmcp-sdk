@@ -13,6 +13,7 @@ Type-safe [WebMCP](https://webmachinelearning.github.io/webmcp/) tools for TypeS
 | Path | What |
 | - | - |
 | [`packages/webmcp-sdk`](packages/webmcp-sdk) | the library (`@senon/webmcp-sdk`, entry points `.` and `./react`), its tests, type tests and end-to-end tests |
+| [`apps/docs`](apps/docs) | the documentation site (Fumadocs, fully static; not published to npm) |
 | [`docs/`](docs) | design notes, research, implementation log; [`docs/release-research/`](docs/release-research) for the release and supply-chain design |
 | [`docs/releasing.md`](docs/releasing.md) | how a release is made (maintainers) |
 | [`tooling/release/`](tooling/release) | release scripts used by `.github/workflows/release.yml` |
@@ -29,6 +30,8 @@ pnpm test:all                           # typecheck, README/docs snippets, unit,
 ```
 
 Individual suites: `pnpm check`, `pnpm test`, `pnpm test:react18`, `pnpm test:browser`, `pnpm test:e2e`, `pnpm test:package`, `pnpm test:tooling`. Opt-in native WebMCP: `WEBMCP_NATIVE_CHANNEL=chrome pnpm test:e2e:native`.
+
+Documentation site: `pnpm docs:dev`, `pnpm docs:build` (static output in `apps/docs/out`), `pnpm docs:check`, `pnpm docs:test`. See [`apps/docs/README.md`](apps/docs/README.md).
 
 ## Contributing
 
