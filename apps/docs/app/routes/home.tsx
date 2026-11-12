@@ -14,7 +14,8 @@ export default function Home() {
   return (
     <HomeLayout {...baseOptions()}>
       <PageMeta path="/" />
-      <main className="flex flex-col items-center px-4 py-16 md:py-24 gap-12 flex-1">
+      {/* HomeLayout already renders the <main> landmark. */}
+      <div className="flex flex-col items-center px-4 py-16 md:py-24 gap-12 flex-1">
         <section className="flex flex-col items-center text-center gap-4 max-w-2xl">
           <img src="/icon.svg" alt="" width={64} height={64} />
           <h1 className="text-3xl md:text-4xl font-bold">Type-safe WebMCP tools for TypeScript</h1>
@@ -49,7 +50,7 @@ export default function Home() {
           WebMCP is an experimental W3C Community Group draft. {site.packageName} is not affiliated with the unrelated{" "}
           <code>webmcp-sdk</code> or <code>@webmcp-sdk/*</code> packages on npm.
         </p>
-      </main>
+      </div>
     </HomeLayout>
   );
 }

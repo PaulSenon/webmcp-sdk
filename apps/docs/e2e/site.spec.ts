@@ -14,6 +14,7 @@ test("home page renders and links to the docs", async ({ page }) => {
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Type-safe WebMCP tools for TypeScript");
   await expect(page.getByText("Not published yet.")).toBeVisible();
   await expect(page.getByText("not affiliated with the unrelated")).toBeVisible();
+  await expect(page.getByRole("main")).toHaveCount(1); // one main landmark (HomeLayout renders it)
   await page.getByRole("link", { name: "Quick start" }).first().click();
   await expect(page).toHaveURL(/\/docs\/quick-start$/);
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Quick start");
@@ -24,6 +25,7 @@ test("docs pages hydrate and navigate on the client", async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto("/docs");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Introduction");
+  await expect(page.getByRole("main")).toHaveCount(1);
   // A client-side navigation fetches the prerendered .data payload instead of reloading.
   const data = page.waitForResponse((r) => r.url().endsWith("/docs/react.data") && r.ok());
   await page.getByRole("link", { name: "React", exact: true }).first().click();
