@@ -6,10 +6,11 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "dev": "react-router dev",
-    "build": "react-router build && node scripts/finalize-out.mjs",
+    "dev": "node scripts/generate-api.mjs && react-router dev",
+    "build": "node scripts/generate-api.mjs && react-router build && node scripts/finalize-out.mjs",
     "preview": "node scripts/preview.mjs",
-    "typecheck": "react-router typegen && tsc -p tsconfig.json"
+    "typecheck": "react-router typegen && tsc -p tsconfig.json",
+    "generate:api": "node scripts/generate-api.mjs"
   },
   "dependencies": {
     "@react-router/node": "8.5.1",

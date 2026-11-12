@@ -22,6 +22,11 @@ export async function loader({ params }: Route.LoaderArgs) {
   };
 }
 
+// content/docs/api/ is generated from the library's declarations (scripts/generate-api.mjs).
+const generatedDir = "api/";
+const editUrl = (path: string) =>
+  path.startsWith(generatedDir) ? repoFile("packages/webmcp-sdk/src") : repoFile(`apps/docs/content/docs/${path}`);
+
 function Content({ path, url, markdownUrl }: { path: string; url: string; markdownUrl: string }) {
   const page = docs.getPage(path);
   if (!page) throw new Error(`unknown page: ${path}`);
@@ -35,8 +40,8 @@ function Content({ path, url, markdownUrl }: { path: string; url: string; markdo
       <DocsDescription>{page.description}</DocsDescription>
       <div className="flex flex-row flex-wrap gap-2 items-center border-b -mt-4 pb-6 text-sm">
         <MarkdownCopyButton markdownUrl={markdownUrl} />
-        <a className="text-fd-muted-foreground hover:text-fd-foreground" href={repoFile(`apps/docs/content/docs/${path}`)}>
-          Edit on GitHub
+        <a className="text-fd-muted-foreground hover:text-fd-foreground" href={editUrl(path)}>
+          {path.startsWith(generatedDir) ? "Source on GitHub" : "Edit on GitHub"}
         </a>
       </div>
       <DocsBody>

@@ -12,7 +12,7 @@ const contentUrl = createGetUrl(docsContentRoute);
 export async function prerenderPaths(staticPaths: string[]): Promise<string[]> {
   const paths = new Set(staticPaths);
   paths.add(notFoundRoute); // becomes out/404.html
-  for await (const file of glob("**/*.mdx", { cwd: "content/docs" })) {
+  for await (const file of glob("**/*.{md,mdx}", { cwd: "content/docs" })) {
     const slugs = getSlugs(file);
     paths.add(docsUrl(slugs));
     paths.add(contentUrl([...slugs, "content.md"]));
