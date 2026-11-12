@@ -14,6 +14,8 @@ before(() => {
   mkdirSync(join(root, "assets"), { recursive: true });
   writeFileSync(join(root, "index.html"), '<script type="module" src="/assets/entry.client-1a2b.js"></script>home');
   writeFileSync(join(root, "404.html"), "not found page");
+  mkdirSync(join(root, "guide"));
+  writeFileSync(join(root, "guide/index.html"), "guide");
   writeFileSync(join(root, "assets/entry.client-1a2b.js"), "1");
 });
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -24,6 +26,7 @@ interface Behaviour {
   dropHeader?: string;
   softNotFound?: boolean; // 200 instead of 404
   mutableAssets?: boolean;
+  autoTrailingSlash?: boolean; // html_handling "auto-trailing-slash": /guide redirects to /guide/
 }
 
 async function serve(b: Behaviour): Promise<{ url: string; server: Server }> {
@@ -34,6 +37,10 @@ async function serve(b: Behaviour): Promise<{ url: string; server: Server }> {
     if (path === "/") {
       const body = stale-- > 0 ? "old" : readFileSync(join(root, "index.html"));
       res.writeHead(200, { ...headers, "content-type": "text/html; charset=utf-8" }).end(body);
+    } else if (path === "/guide" || path === "/guide/") {
+      const canonical = b.autoTrailingSlash ? "/guide/" : "/guide";
+      if (path === canonical) res.writeHead(200, { ...headers, "content-type": "text/html" }).end("guide");
+      else res.writeHead(307, { ...headers, location: canonical }).end();
     } else if (path.startsWith("/assets/")) {
       res.writeHead(200, { ...headers, "cache-control": b.mutableAssets ? "public, max-age=0" : IMMUTABLE_CACHE_CONTROL }).end("1");
     } else {
@@ -85,6 +92,13 @@ test("fails when production sends noindex, or a preview does not", async () => {
 test("fails on soft 404 and on mutable hashed assets", async () => {
   assert.ok((await smoke({ indexable: true, softNotFound: true })).failures.some((f) => /want 404/.test(f)));
   assert.ok((await smoke({ indexable: true, mutableAssets: true })).failures.some((f) => /cache-control/.test(f)));
+});
+
+test("fails when pages need a trailing slash (links and canonical URLs have none)", async () => {
+  const r = await smoke({ indexable: true, autoTrailingSlash: true });
+  assert.equal(r.ok, false);
+  assert.ok(r.failures.some((f) => f.startsWith("/guide → 307")));
+  assert.ok(r.failures.some((f) => f.startsWith("/guide/ → 200")));
 });
 
 test("URL validation", () => {

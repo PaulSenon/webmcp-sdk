@@ -65,8 +65,9 @@ export default Alchemy.Stack(
       name: workerName(stage),
       assets: {
         directory: siteDir,
-        // /guide serves guide.html or guide/index.html; trailing slashes are normalized by redirect.
-        htmlHandling: "auto-trailing-slash",
+        // /guide serves guide.html or guide/index.html, and /guide/ redirects to /guide: the site's
+        // links, canonical URLs and sitemap never end with a slash (apps/docs/README.md).
+        htmlHandling: "drop-trailing-slash",
         // Unmatched paths get the site's 404.html with status 404.
         notFoundHandling: "404-page",
         // Owned here; overrides any _headers / _redirects in the build output.

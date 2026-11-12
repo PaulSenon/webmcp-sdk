@@ -2,7 +2,7 @@
 // uploaded, with the headers this package defines, and that unknown paths get the 404 page.
 // Runs against Cloudflare after a deploy, and against `alchemy dev` (workerd) in PR checks.
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { IMMUTABLE_CACHE_CONTROL, securityHeaders } from "./headers.ts";
 
@@ -114,7 +114,38 @@ export async function runSmoke(options: SmokeOptions): Promise<SmokeResult> {
     } else checks.push(`${asset} → 200, immutable`);
   }
 
+  // 5. Clean URLs (html_handling "drop-trailing-slash"): a prerendered page directory is served
+  //    without a trailing slash and the slashed form redirects to it. The site's links, canonical
+  //    URLs and sitemap never end with a slash, so the other modes would redirect every one of them.
+  const page = firstPageDir(options.siteDir);
+  if (!page) {
+    warnings.push("the site has no <dir>/index.html page; trailing-slash handling not checked");
+  } else {
+    const clean = await get(page);
+    await clean.arrayBuffer();
+    const slashed = await get(`${page}/`);
+    await slashed.arrayBuffer();
+    const location = slashed.headers.get("location");
+    const target = location ? new URL(location, new URL(`${page}/`, origin)).pathname : undefined;
+    const before = failures.length;
+    if (clean.status !== 200) failures.push(`/${page} → ${clean.status}, want 200 (html_handling drop-trailing-slash)`);
+    if (slashed.status < 300 || slashed.status > 399 || target !== new URL(page, origin).pathname) {
+      failures.push(`/${page}/ → ${slashed.status} ${location ?? ""}, want a redirect to /${page}`);
+    }
+    if (failures.length === before) checks.push(`/${page} → 200, /${page}/ → redirect to /${page}`);
+  }
+
   return { ok: failures.length === 0, failures, warnings, checks };
+}
+
+/** First top-level directory of the site with an index.html (a prerendered page), if any. */
+function firstPageDir(siteDir: string): string | undefined {
+  return readdirSync(siteDir)
+    .sort()
+    .find((name) => {
+      const index = join(siteDir, name, "index.html");
+      return statSync(join(siteDir, name)).isDirectory() && existsSync(index) && statSync(index).isFile();
+    });
 }
 
 function checkHeaders(where: string, headers: Headers, indexable: boolean, failures: string[], checks: string[]) {
