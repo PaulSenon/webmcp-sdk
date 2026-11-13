@@ -62,3 +62,29 @@ for (const url of ["/docs/does-not-exist", "/does-not-exist"]) {
     expect(errors.filter((e) => !e.includes("404"))).toEqual([]); // the browser logs the 404 response itself
   });
 }
+
+for (const url of ["/", "/docs/react", "/does-not-exist"]) {
+  test(`skip link to the content, visible on focus: ${url}`, async ({ page }) => {
+    const errors = trackErrors(page);
+    await page.goto(url);
+    const skip = page.locator('a[href="#nd-page"]');
+    await expect(skip).toHaveCount(1);
+    await expect(skip).toHaveText("Skip to Content");
+    // The target is inside the page's single <main>.
+    await expect(page.getByRole("main")).toHaveCount(1);
+    await expect(page.getByRole("main").locator("#nd-page")).toHaveCount(1);
+    // Visually hidden until focused.
+    expect((await skip.boundingBox())?.width ?? 0).toBeLessThanOrEqual(1);
+    // Reachable from the keyboard, in the first few Tab stops.
+    let focused = false;
+    for (let i = 0; i < 5 && !focused; i++) {
+      await page.keyboard.press("Tab");
+      focused = await skip.evaluate((el) => el === document.activeElement);
+    }
+    expect(focused).toBe(true);
+    expect((await skip.boundingBox())?.width ?? 0).toBeGreaterThan(20);
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(/#nd-page$/);
+    expect(errors.filter((e) => !e.includes("404"))).toEqual([]);
+  });
+}
