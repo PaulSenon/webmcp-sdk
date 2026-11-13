@@ -87,6 +87,7 @@ jobs:
           advanced-security: false # plain annotations; no security-events permission
           annotations: true
           online-audits: false
+          persona: pedantic # strictest audit set; every finding must be fixed or explained
       - name: actionlint (release binary, checksum-verified)
         env:
           ACTIONLINT_VERSION: "1.7.12"
