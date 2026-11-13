@@ -4,12 +4,12 @@ Maintainer runbook for the documentation site (`apps/docs`) on Cloudflare. It co
 
 - Infrastructure as code: [`infra/docs`](../infra/docs) (Alchemy v2, private workspace package `@senon/webmcp-sdk-docs-infra`).
 - Pipeline: [`.github/workflows/docs.yml`](../.github/workflows/docs.yml).
-- **Deploys are off** until the repository variable `DOCS_DEPLOY_ENABLED` is `true` (§4.5). Until then the workflow only builds and checks, without credentials.
+- **Deploys are off** until the repository variable `DOCS_DEPLOY_ENABLED` is `true` (§4.2). Until then the workflow only builds and checks, without credentials.
 
 ## 1. Architecture
 
 ```
-             pull_request (same repo, into main)             push to main / workflow_dispatch
+   pull_request (same repo, into main; drafts build only)    push to main / workflow_dispatch
                         │                                                │
    ┌────────────────────▼────────────────────────────────────────────────▼──────────────────┐
    │ docs-build    (no secret, contents: read, cache-mode: none, runs PR code)              │
@@ -19,14 +19,17 @@ Maintainer runbook for the documentation site (`apps/docs`) on Cloudflare. It co
                │ artifact (static files = data)                         │
    ┌───────────▼──────────────────────────────┐   ┌─────────────────────▼────────────────────┐
    │ docs-deploy-preview   env docs-preview   │   │ docs-deploy-production env docs-production│
-   │  checkout current main, infra deps only, │   │  newest main commit, or rollback_run_id  │
-   │  PR still open? check artifact, deploy   │   │  checkout main, infra deps only,         │
-   │  --stage pr-<n>, smoke test              │   │  alchemy deploy --stage production, smoke│
-   └───────────┬──────────────────────────────┘   └─────────────────────┬────────────────────┘
-               │ url                                                    │
-   ┌───────────▼──────────────┐  PR closed ─► docs-teardown-preview ─► alchemy destroy pr-<n>
-   │ docs-comment-preview     │  (pull-requests: write, no Cloudflare secret)
-   └──────────────────────────┘
+   │  checkout current main, infra deps only  │   │  newest main commit, or rollback_run_id  │
+   │  PR open, not draft, head == built SHA?  │   │  GATE: all required checks of the SHA    │
+   │  GATE: all required checks of the SHA    │   │  still head of main? check account+store │
+   │  still head? check account + store,      │   │  alchemy deploy --stage production, smoke│
+   │  alchemy deploy --stage pr-<n>, smoke    │   └──────────────────────────────────────────┘
+   └───────────┬──────────────────────────────┘
+               │ url, status        closed / converted_to_draft ─► docs-teardown-preview (destroy)
+   ┌───────────▼────────────────────────────────────────────▼──┐  weekly ─► docs-sweep-previews
+   │ docs-comment-preview: one marker comment per PR, upserted  │  (destroys pr-<n> of closed,
+   │ (pull-requests: write, no Cloudflare secret)               │   draft or deleted PRs)
+   └────────────────────────────────────────────────────────────┘
 
  Cloudflare account "preview" (recommended)        Cloudflare account "production"
    Worker webmcp-sdk-docs-pr-<n>  (assets only)      Worker webmcp-sdk-docs       (assets only)
@@ -62,7 +65,7 @@ Changing the CSP (for example to embed a third-party demo) is an infra PR, revie
 | Stage | Worker | State | Who |
 | - | - | - | - |
 | `production` | `webmcp-sdk-docs` | Cloudflare state store | CI, `main` only, env `docs-production` |
-| `pr-<n>` | `webmcp-sdk-docs-pr-<n>` | Cloudflare state store | CI, same-repo PRs into `main`, env `docs-preview`; destroyed on close |
+| `pr-<n>` | `webmcp-sdk-docs-pr-<n>` | Cloudflare state store (preview account) | CI, same-repo non-draft PRs into `main`, env `docs-preview`; destroyed on close or conversion to draft |
 | anything else (`live_$USER`, `dev_$USER`, …) | `webmcp-sdk-docs-<stage>` | local `.alchemy/` (gitignored) | developers |
 
 The stack refuses mismatches: remote stages require `DOCS_STATE=cloudflare` (set by the workflow only), local stages refuse it. Outside GitHub Actions, `DOCS_STATE=cloudflare` is refused at import unless `DOCS_ALLOW_LOCAL_REMOTE=1` is also set; this matters because `alchemy destroy` does not run the stack program, so the stage checks alone would not stop `alchemy destroy --stage production` from a laptop. A local `alchemy deploy` therefore never reads or writes remote state by accident. `prod`, `pr-x`, `pr-01` are reserved and rejected.
@@ -77,7 +80,7 @@ DOCS_SITE_DIR=../../apps/docs/out pnpm check:local   # same check CI runs: local
 
 ### State store
 
-`Cloudflare.state({ workerName: "webmcp-sdk-docs-state", accountId })` ([State Store](https://alchemy.run/state-store)): a Worker + SQLite Durable Object in the deploy account, state encrypted at rest with a key kept in the account's Secrets Store, bearer token also in Secrets Store. Durable (Cloudflare storage), free (SQLite-backed Durable Objects are on the Free plan: 5 GB, 100,000 requests/day; [DO pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)), not in the repository, locked per stage while a deploy runs. The dedicated `workerName` means it never shares state with any other Alchemy project, and `accountId` is pinned. In CI, Alchemy reads the store's token by uploading an ephemeral *edge preview* of the state-store Worker that binds the secret: that is why the token needs Secrets Store **Edit** ([Alchemy CI](https://alchemy.run/environments/ci), [Secrets Store access control](https://developers.cloudflare.com/secrets-store/access-control/)). Caveat verified in the Alchemy source: `--yes` (required in CI) also authorizes Alchemy to *create* a missing store and to *replace* a store of another version (`updateStateStore`). So the workflow (a) runs `cli.ts check-store` before every `alchemy` call and fails if the bootstrapped store is absent, and (b) always runs the infra of the **current** `main`, never an older commit whose Alchemy would downgrade the store. You bootstrap each store once (§4.2); an Alchemy upgrade merged to main upgrades it on the next deploy.
+`Cloudflare.state({ workerName: "webmcp-sdk-docs-state", accountId })` ([State Store](https://alchemy.run/state-store)): a Worker + SQLite Durable Object in the deploy account, state encrypted at rest with a key kept in the account's Secrets Store, bearer token also in Secrets Store. Durable (Cloudflare storage), free (SQLite-backed Durable Objects are on the Free plan: 5 GB, 100,000 requests/day; [DO pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)), not in the repository, locked per stage while a deploy runs. The dedicated `workerName` means it never shares state with any other Alchemy project, and `accountId` is pinned. In CI, Alchemy reads the store's token by uploading an ephemeral *edge preview* of the state-store Worker that binds the secret: that is why the token needs Secrets Store **Edit** ([Alchemy CI](https://alchemy.run/environments/ci), [Secrets Store access control](https://developers.cloudflare.com/secrets-store/access-control/)). Caveat verified in the Alchemy source: `--yes` (required in CI) also authorizes Alchemy to *create* a missing store and to *replace* a store of another version (`updateStateStore`). So the workflow (a) runs `cli.ts check-store` before every `alchemy` call and fails if the bootstrapped store is absent, and (b) always runs the infra of the **current** `main`, never an older commit whose Alchemy would downgrade the store. You bootstrap each store once (§4.2, `scripts/bootstrap.ts`); an Alchemy upgrade merged to main upgrades it on the next deploy.
 
 Alternatives considered: AWS/GCP stores (need a second cloud), Postgres (needs a database), local file state committed to git (rejected: state in the repo, races), R2-backed (needs a payment method on file to enable R2).
 
@@ -85,17 +88,24 @@ Alternatives considered: AWS/GCP stores (need a second cloud), Postgres (needs a
 
 | Job | Trigger | Holds | Runs PR code? |
 | - | - | - | - |
-| `docs-build` | every PR event except close, push to `main`, dispatch | read-only token | **yes** (site build) |
-| `docs-deploy-preview` | PR from this repo into `main`, not Dependabot, still open, deploys enabled | env `docs-preview` Cloudflare token | no: current main's infra + the artifact; stage and URL recomputed from the event and repository variables, compared with the build's |
-| `docs-comment-preview` | after preview deploy | `pull-requests: write` | no |
-| `docs-teardown-preview` | PR closed (same-repo, any base branch), or dispatch with `destroy_preview` | env `docs-preview` token | no |
-| `docs-deploy-production` | push to `main`, dispatch on `main` (rebuild, or `rollback_run_id`), deploys enabled | env `docs-production` token | no: current main's infra |
+| `docs-build` | PR opened/synchronize/reopened/ready_for_review (**drafts included**), push to `main`, dispatch | read-only token | **yes** (site build) |
+| `docs-deploy-preview` | same-repo, **non-draft** PR into `main`, not Dependabot, deploys enabled | env `docs-preview` Cloudflare token, `checks: read`, `pull-requests: read` | no: current main's infra + the artifact |
+| `docs-teardown-preview` | PR **closed** (merged or not) or **converted to draft** (same repo, any base), or dispatch `destroy_preview` | env `docs-preview` token | no |
+| `docs-comment-preview` | after a preview deploy or teardown | `pull-requests: write` only | no (main's `infra/docs`, no dependencies) |
+| `docs-sweep-previews` | weekly cron (Mon 04:17 UTC) or dispatch `sweep_previews` | env `docs-preview` token, `pull-requests: read` | no |
+| `docs-deploy-production` | push to `main`, dispatch on `main` (rebuild, or `rollback_run_id`) | env `docs-production` token, `checks: read` | no: current main's infra |
 
+- **Draft policy (chosen).** A draft PR builds and is checked like any PR, but gets no preview. `ready_for_review` deploys it; `converted_to_draft` tears it down exactly like `closed`; `reopened` deploys again unless the PR is a draft. Rationale: drafts are work in progress and previews cost a Worker slot (100 per Free account) and public exposure.
+- **Deploy gate** ([`src/gate.ts`](../infra/docs/src/gate.ts), one list): a commit deploys, preview or production, only once **every required check run of that exact SHA** is green: `checks`, `browser`, `workflow-lint`, `docs` (ci.yml) and `docs-build` (docs.yml). Read via the check-runs API (`checks: read`), newest run per name, only runs created by the `github-actions` app (another installed app cannot fake a green), polled every 20 s for at most 40 min. Any conclusion other than `success` (failure, cancelled, timed out, skipped, neutral) or the timeout **fails closed**. The deploy jobs are not in the list, so the gate never waits on itself; `docs-build` is finished before the deploy job starts (`needs`). For a preview the SHA is the PR head (GitHub attaches `pull_request` check runs to the head commit).
+- **Latest SHA only.** Previews: just before the gate and again right after it, the job reads the PR (`GET /pulls/<n>`) and deploys only if it is open, not a draft, and its head is still the commit this run built; otherwise it skips (the newer push has its own run). Production: deploys only if the run's commit is the head of `main`, checked before and again after the gate (rollback dispatches excepted).
+- **PR comment.** Exactly one per PR, found by the hidden marker `<!-- webmcp-sdk-docs-preview -->` *and* authorship `github-actions[bot]` (a human pasting the marker is ignored), updated in place through the REST API (`PATCH /issues/comments/<id>`), created when missing. It shows ✅ deployed (URL, short SHA, run link), ❌ failed, 🧹 removed (closed / draft / manual / sweeper) or ⚠️ teardown failed. A teardown updates an existing comment but never creates one (a PR that never had a preview gets no comment). Values are validated (SHA, `*.workers.dev` URL, run URL) before going into Markdown.
+- **Cleanup.** Event-driven teardown on close and on conversion to draft, plus the **weekly sweeper**: it lists the `pr-*` stages in the preview state store (`alchemy state list webmcp-sdk-docs`), reads each PR, and destroys the stage when the PR is closed, a draft or deleted, re-reading the PR right before each destroy. It catches PRs closed while deploys were off, failed teardowns, and PRs GitHub runs no workflow for (merge conflicts: no merge ref). Inert until `DOCS_DEPLOY_ENABLED`. Residual race: a PR reopened between the re-read and the destroy loses its preview until its next push.
+- **Account isolation.** Separate environment secrets (`docs-preview` / `docs-production`, each with its own branch policy); stages validated by regex (`production` or `pr-<n>`, and a `case` guard before every alchemy call); before any alchemy call, `check-store` verifies that the token's account serves the workers.dev subdomain expected **for that stage** (so production secrets pointing at the preview account, or the reverse, fail) and that the bootstrapped state store exists; the workflow refuses `DOCS_PREVIEW_WORKERS_SUBDOMAIN` equal to `DOCS_WORKERS_SUBDOMAIN` (or missing) unless `DOCS_SINGLE_ACCOUNT=true` is set deliberately; each account has its own state store.
 - **No plan without credentials.** Alchemy's `plan` reads the live account (it fails with an auth error before printing anything), so a PR cannot show a cloud diff without a token. Instead `docs-build` serves the build with `alchemy dev` in local workerd (the same asset router, with the PR's headers and 404 config) and runs the post-deploy smoke test against it. The cloud diff is printed by `alchemy deploy` in the deploy job logs.
-- **Concurrency.** Build: per PR, cancels superseded PR builds (never main). Deploys: `docs-preview-<n>` and `docs-production`, `cancel-in-progress: false`, so an in-flight deploy is never interrupted and the newest pending run wins. Two pushes whose builds finish out of order cannot deploy an older commit: production deploys only if the run's commit is still the head of `main` (re-running an old run is therefore a no-op; roll back with `rollback_run_id`). A preview deploy whose PR was closed meanwhile is skipped, so it cannot resurrect a preview after teardown.
+- **Concurrency.** Build: per PR, cancels superseded PR builds (never main). Deploys: `docs-preview-<n>` and `docs-production`, `cancel-in-progress: false`, so an in-flight deploy is never interrupted and the newest pending run wins. Re-running an old production run is a no-op (it is no longer the head of `main`); roll back with `rollback_run_id`. A preview deploy whose PR was closed or drafted meanwhile is skipped, so it cannot resurrect a preview after teardown.
 - **Smoke test** ([`src/smoke.ts`](../infra/docs/src/smoke.ts)), after every deploy: waits (up to 3 min) until `/` serves the uploaded `index.html` byte for byte (proves the new version is live), checks every security header, `noindex` iff preview, an unknown path returns 404 with the uploaded `404.html`, `_headers`/`_redirects` are not served, an `/assets/` file referenced by `index.html` is `immutable`, and a page directory is served at `/<dir>` with `/<dir>/` redirecting to it. Headers on the 404 response are a warning only: Cloudflare does not document whether `_headers` applies to `404-page` responses (local workerd does apply them).
-- **Hygiene** (same as `ci.yml`/`release.yml`): `permissions: {}` at the top, least privilege per job, actions pinned by SHA (only GitHub-owned + `pnpm/action-setup`), Alchemy called through `pnpm exec` (no third-party action), `persist-credentials: false`, every expression in `run:` passed through `env:`, `cache-mode: none` and `package-manager-cache: false` on every job, zizmor (pedantic) and actionlint clean, Alchemy telemetry off (`DO_NOT_TRACK=1`; it is on by default and sends anonymised usage to `otel.alchemy.run`).
-- **Required checks.** `pnpm test:infra` (typecheck + 24 unit tests) runs inside the existing required `checks` job. The new jobs are not required. Recommendation once `apps/docs` exists: make `docs-build` required (it has no path filter, so it always reports).
+- **Hygiene** (same as `ci.yml`/`release.yml`): `permissions: {}` at the top, least privilege per job, actions pinned by SHA (only GitHub-owned + `pnpm/action-setup`), Alchemy called through `pnpm exec` (no third-party action), `persist-credentials: false`, every expression in `run:` passed through `env:`, `cache-mode: none` and `package-manager-cache: false` on every job, zizmor **pedantic** (also in CI: `persona: pedantic`) and actionlint clean, Alchemy telemetry off (`DO_NOT_TRACK=1`; it is on by default and sends anonymised usage to `otel.alchemy.run`).
+- **Required checks.** `pnpm test:infra` (typecheck + unit tests) runs inside the existing required `checks` job. Recommendation once #6 is merged: add `docs` and `docs-build` to the ruleset (both always report; §4.2 step 5). Never the deploy jobs.
 
 ## 2. Threat model delta (vs [`02-threat-model.md`](release-research/02-threat-model.md))
 
@@ -104,12 +114,12 @@ The Cloudflare design replaces GitHub Pages (D3) and changes T13/T17; T3/T7 are 
 | # | Threat | Controls | Residual |
 | - | - | - | - |
 | **T13'** | **Malicious docs deploy / defacement** | production token only in env `docs-production` (branch policy `main`, no admin bypass), so it needs a merged PR (ruleset); preview token in env `docs-preview` (policies `main`, `refs/pull/*/merge`); fork PRs get no secrets and no preview job; no `pull_request_target`/`workflow_run`; Dependabot PRs excluded; **separate Cloudflare account for previews** so the preview token cannot reach production; production token scoped to two Workers (Editor, cannot create or delete) | a writer can edit `docs.yml` in a same-repo PR and use the *preview* token: contained to the preview account **only with two accounts** (in single-account mode this is a production compromise for any writer). The build job's outputs are untrusted: deploy jobs recompute stage/URL and compare. A merged malicious change deploys (rollback §5) |
-| **T17'** | **Docs build compromise** (site deps, MDX, plugins run in the build) | build job has no secret, no write token, no cache; deploy jobs never install site deps (infra-only filtered install from the **base** commit); artifact validated as data: regular files only, no symlinks (Alchemy uploads a symlink's target), no control characters in names (log-command forgery), no `.env*`/`.npmrc`/`.git`/`*.pem`, Cloudflare limits; headers/redirects from infra, overriding the build's | a compromised build can still serve malicious static content (that is its job); CSP limits it to same-origin script, no exfiltration via `connect-src`. Detection: review of the deployed diff is manual |
+| **T17'** | **Docs build compromise** (site deps, MDX, plugins run in the build) | build job has no secret, no write token, no cache; deploy jobs never install site deps (infra-only filtered install from the **current main**); artifact validated as data: regular files only, no symlinks (Alchemy uploads a symlink's target), no control characters in names (log-command forgery), no `.env*`/`.npmrc`/`.git`/`*.pem`, Cloudflare limits; headers/redirects from infra, overriding the build's | a compromised build can still serve malicious static content (that is its job); CSP limits it to same-origin script, no exfiltration via `connect-src`. Detection: review of the deployed diff is manual |
 | T20 | **Cloudflare token theft** | per-environment tokens; account-owned `cfat_` tokens (scannable by GitHub secret scanning); production: Workers Editor on 2 Workers + Secrets Store Edit, in a dedicated account (nothing else to reach); expiry set (1 year); masked by GitHub; never passed to steps other than `alchemy deploy/destroy`; no caches in those jobs | stolen production token can overwrite the site and read/write its state; revoke in Cloudflare (§5). I found no Cloudflare-documented exchange of a GitHub OIDC token for API credentials (2026-11-12), so the token is static; switch to it if Cloudflare ships one |
-| T21 | **State store tampering / leak** | state encrypted at rest, store token in Secrets Store, store reachable only with the deploy token; separate stores per account; local stages cannot use it | anyone with the deploy token can read state (Worker names, hashes; no secret values: the site has none) |
+| T21 | **State store tampering / leak, account mix-up** | state encrypted at rest, store token in Secrets Store, store reachable only with the deploy token; separate stores per account; local stages cannot use it; `check-store` refuses a token whose account does not serve the stage's expected subdomain; equal production/preview subdomains refused unless `DOCS_SINGLE_ACCOUNT=true` | anyone with the deploy token can read state (Worker names, hashes; no secret values: the site has none) |
 | T22 | **Preview abuse** (phishing on our workers.dev, cookie tossing) | previews only for writers' PRs; `noindex`; separate account ⇒ different registrable domain (`workers.dev` is on the Public Suffix List, so each account subdomain is its own site); the site sets no cookies; previews destroyed on close | previews are public while the PR is open (Access gating: §6) |
 | T23 | **Alchemy / Effect supply chain** (beta framework with the token) | exact pins, lockfile, pnpm `minimumReleaseAge` 3 d, Dependabot cooldown 7 d, `docs-infra` group reviewed as a unit; the only install script in the infra tree (`workerd`) is disabled; telemetry off | a malicious Alchemy release that passes review runs with the deploy token. Bounded by the token scope above |
-| T24 | **Out-of-order or stale deploy** | `cancel-in-progress: false`, head-of-main check, PR-open check, smoke test compares served bytes with the artifact; rollback deploys a validated old artifact (successful `docs` push run on `main`, same repo) with the current infra | anyone with write access can dispatch a rollback (no reviewers on `docs-production`); add a required reviewer there if a 2nd maintainer joins |
+| T24 | **Out-of-order, stale or unchecked deploy** | gate on every required check of the exact SHA (fail closed, `github-actions` app only), `cancel-in-progress: false`, head-of-main and PR-head checks before and after the gate, draft/closed checks, smoke test compares served bytes with the artifact; rollback deploys a validated old artifact (successful `docs` push run on `main`, same repo) with the current infra | anyone with write access can dispatch a rollback (no reviewers on `docs-production`); add a required reviewer there if a 2nd maintainer joins |
 
 T3 (cache poisoning): no cache anywhere in `docs.yml`, including the build whose artifact production serves. T7 (actions): same pins and allowlist; Alchemy is a pinned npm dependency, not an action.
 
@@ -128,93 +138,91 @@ T3 (cache poisoning): no cache anywhere in `docs.yml`, including the build whose
 
 No payment method is needed. Watch-outs: Secrets Store is a beta without published pricing (if it ever becomes paid, the state store can move to another backend), and Free plan limits fail closed (errors, not bills).
 
-## 4. One-time setup (Isaac)
+## 4. One-time setup
 
-About 30 minutes. Do it after this PR **and** the site PR are merged. Nothing here goes in the repository.
+Split by who must do it. **Isaac** does only what needs his Cloudflare login, his 2FA or a decision. **An agent** (or Isaac, same commands) does the rest from a workstation with `gh` logged in as a repository admin. Nothing here goes in the repository, no token ever appears in chat, argv, logs or shell history.
 
-### 4.1 Cloudflare accounts
+Order: §4.0 merge plan, then (a), then (b). About 15 minutes of Isaac's time.
 
-1. Log in at <https://dash.cloudflare.com> (or sign up; the user must be 7 days old to create extra accounts). Turn on 2FA with a security key: *My Profile → Authentication*.
-2. **Accounts → Create Account** twice: `webmcp-sdk-docs` (production) and `webmcp-sdk-docs-preview`. Free plan, no payment method. Two accounts are what makes the security claims hold (T13', T22). *(Single-account mode works technically: same values in both environments; but then any writer's PR can use the preview token, an Admin token, against production. Only acceptable while you are the sole writer, and then add a required reviewer on `docs-preview`.)*
-3. In each account: **Workers & Pages** once, accept the `workers.dev` subdomain it proposes, and note it (`<sub>` in `https://<name>.<sub>.workers.dev`). Note each **Account ID** (*Account home → ⋯ → Copy account ID*).
+### 4.0 Merge order and staging
 
-### 4.2 Bootstrap the state stores (your machine, your own login)
+1. Merge **#7** (this PR): infra inert, CI checks it against the fixture site.
+2. Rebase **#6** (the site) onto `main` and regenerate the lockfile (`pnpm install`, never by hand). Its `ci.yml` adds the `docs` job; resolve the `ci.yml` conflict by keeping both #6's `docs` job and #7's `persona: pedantic`.
+3. Do (a) and (b) below, including `DOCS_DEPLOY_ENABLED=true`. Then push to #6 (or *Re-run all jobs* of its latest docs run): **#6's preview is the staging site** (`https://webmcp-sdk-docs-pr-6.<preview-sub>.workers.dev/`). It deploys only once every required check of #6's head is green (`checks`, `browser`, `workflow-lint`, `docs`, `docs-build`), and its URL is posted in the PR comment. Isaac reviews the content there; every push redeploys it.
+4. Merging **#6** tears the preview down and deploys production from the merge commit, again only once all its required checks are green.
 
-CI cannot create them. In a clean checkout of `main`:
+Why it works with this design: deploy jobs check out **main's** infra (present after step 1), while `docs-build` builds #6's own `apps/docs`. Until #6 is merged, `main` has no `apps/docs`, so production deploy jobs are skipped (`has_site` false) instead of waiting for a `docs` check that does not exist on main yet.
 
-```sh
-pnpm install --frozen-lockfile
-cd infra/docs
-export DO_NOT_TRACK=1
-pnpm exec alchemy profile create docs-admin
-pnpm exec alchemy profile edit --profile docs-admin     # add Cloudflare: OAuth in the browser is fine here
-export DOCS_STATE=cloudflare DOCS_ALLOW_LOCAL_REMOTE=1     # deliberate local use of remote state
-CLOUDFLARE_ACCOUNT_ID=<production account id> pnpm exec alchemy state bootstrap --profile docs-admin
-CLOUDFLARE_ACCOUNT_ID=<preview account id>    pnpm exec alchemy state bootstrap --profile docs-admin
-unset DOCS_STATE DOCS_ALLOW_LOCAL_REMOTE
-```
+### 4.1 (a) Isaac only
 
-If the OAuth login lacks a Secrets Store scope, reconfigure the profile with an API token instead (`alchemy profile edit --profile docs-admin --reconfigure Cloudflare`). Each run creates, in that account only, the Worker `webmcp-sdk-docs-state`, a Secrets Store and its two secrets. Check in the dashboard: *Workers & Pages* lists `webmcp-sdk-docs-state`; *Secrets Store* lists `AlchemyStateStoreToken_webmcp_sdk_docs_state` and the encryption key.
+**1. Log in, 2FA.** <https://dash.cloudflare.com/login>. *My Profile* (top-right menu) → **Authentication** → **Add** next to *Security Key Authentication* (or *Mobile App Authentication* first, which security keys require), and save the backup codes ([2FA](https://developers.cloudflare.com/fundamentals/user-profiles/2fa/)). Your existing Workers Paid subscription stays on your personal account; nothing here changes it.
 
-### 4.3 API tokens (account-owned)
+**2. Decide: one account or two.** Recommended: **two** (`webmcp-sdk-docs` for production, `webmcp-sdk-docs-preview` for previews). The preview token must be Workers **Admin** (it creates and deletes Workers), so in a shared account it could overwrite production; with two accounts it cannot reach production at all, and only a merge to `main` changes production. One account is acceptable while you are the only person with write access to the repository; then set the repository variable `DOCS_SINGLE_ACCOUNT=true` (the workflow refuses equal production/preview subdomains without it).
 
-In each account: **Manage account → Account API tokens → Create Token → Custom token**. Set an **expiration** (1 year; put a reminder in your calendar). No IP filter (GitHub-hosted runners have no stable IPs).
+**3. Create the account(s).** Dashboard → **Accounts** (account list) → **Create Account** → name → **Create Account** ([create account](https://developers.cloudflare.com/fundamentals/account/create-account/): your user must be ≥ 7 days old and Super Administrator of an existing account; up to 5 extra Free accounts). Free plan, no payment method, same login. This step cannot be done with an account API token: the API (`POST /accounts`, `standalone: true`) needs a *user* token, and Alchemy's `Cloudflare.Account` resource only supports the partner/tenant API (`AccountCreationForbidden` for standard users; checked in its source).
 
-**Preview account**, name `github-docs-preview`:
+**4. Copy each Account ID.** In the account: **Search** (Cmd/Ctrl-K) → *Copy account ID*, or **Workers & Pages** → *Account Details* → **Account ID** ([find IDs](https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/)). Not a secret, but stored as one.
 
-| Permission | Scope | Level |
-| - | - | - |
-| Workers | All Workers in the account (product) | **Admin** (creates and deletes `webmcp-sdk-docs-pr-<n>`) |
-| Secrets Store | Account | **Edit** |
+**5. workers.dev subdomain.** Nothing to do: the bootstrap creates it by API if the account has none (`PUT /accounts/{id}/workers/subdomain`, permission Workers Scripts Write, [API](https://developers.cloudflare.com/api/resources/workers/subresources/subdomains/methods/update/)). Only choose the names, for example `webmcp-sdk-docs` and `webmcp-sdk-docs-preview` (globally unique; if taken, pick another). If you already opened **Workers & Pages** and accepted a proposed subdomain, the bootstrap keeps it and never changes an existing one.
 
-**Production account**, name `github-docs-production`. The production Worker does not exist yet and per-Worker permissions only apply to existing Workers, so create it in two steps:
+**6. Create one token per account.** In that account: **Manage Account** → **API Tokens** (Account API Tokens) → **Create Token** → **Create Custom Token** ([account tokens](https://developers.cloudflare.com/fundamentals/api/get-started/account-owned-tokens/)). Name, permissions below, **Token expiration**: 1 year (calendar reminder). No *Client IP Address Filtering* (GitHub-hosted runners have no fixed IPs). **Continue to summary** → **Create Token**. The value is shown once.
 
-1. Now: Workers **Admin** (product) + Secrets Store **Edit**.
-2. After the first successful production deploy (§4.5), *Edit token* and replace the Workers permission with:
+| Account | Token name | Permission | Scope | Level |
+| - | - | - | - | - |
+| preview | `github-docs-preview` | Workers | All Workers (product) | **Admin** |
+| preview | | Secrets Store | Account | **Edit** |
+| production | `github-docs-production` | Workers | All Workers (product) | **Admin** (temporary, see step 8) |
+| production | | Secrets Store | Account | **Edit** |
+
+Why these: the same token bootstraps the state store (creates the `webmcp-sdk-docs-state` Worker, its Durable Object, a Secrets Store and two secrets), creates the workers.dev subdomain, and deploys. Secrets Store **Edit**, not Read, because Alchemy reads the store's token in CI through an edge preview that *binds* the secret ([Secrets Store access control](https://developers.cloudflare.com/secrets-store/access-control/)). If the account-token form does not offer Secrets Store, create the same token as a user token (*My Profile* → **API Tokens**) restricted to that one account.
+
+**7. Hand each token to the agent, never through chat.** The agent opens a local secure input card (T3 `request_secret` with `delivery: "file"`); you paste the token there. It lands in a temporary file readable only by you; the agent passes the file path to the scripts and deletes it afterwards.
+
+**8. Narrow the production token (after (b) step 4).** Production account → **Manage Account** → **API Tokens** → `github-docs-production` → **Edit**: replace *Workers / All Workers / Admin* with
 
 | Permission | Scope | Level |
 | - | - | - |
-| Workers | All Workers (product) | **Metadata Read-Only** (Alchemy reads the account's workers.dev subdomain) |
-| Workers | Individual Workers: `webmcp-sdk-docs`, `webmcp-sdk-docs-state` | **Editor** (deploy; cannot create or delete) |
+| Workers | All Workers (product) | **Metadata Read-Only** (Alchemy reads the account's subdomain and lists Workers) |
+| Workers | **Specified Workers**: `webmcp-sdk-docs`, `webmcp-sdk-docs-state` | **Editor** (deploy; cannot create or delete) |
 | Secrets Store | Account | **Edit** |
 
-Then *Actions → docs → Run workflow* on `main` (empty input) to confirm a deploy still works. If it fails with a 403 (per-Worker scoping for the state store's edge-preview has not been verified live), use Workers **Editor** at the product scope instead: still cannot create or delete Workers, and the account contains nothing else. If the dashboard does not offer Secrets Store for account-owned tokens, create a user-owned token (*My Profile → API Tokens*) with the same permissions restricted to that one account.
+([per-Worker roles](https://developers.cloudflare.com/workers/authorization/workers/)). The token value does not change. Then let the agent re-run the production deploy. If it fails with a 403 (per-Worker scoping of the state store's edge preview is not verified live), use Workers **Editor** at product scope instead: still cannot create or delete Workers. Never go back to Admin.
 
-The tokens never go anywhere but the GitHub environment secrets below. Do not paste them in a terminal history; use the GitHub UI or `gh secret set` reading from stdin.
+### 4.2 (b) Agent steps
 
-### 4.4 GitHub
+Run from the repository root on an up-to-date `main` (`git pull`, `pnpm install --frozen-lockfile`), with `gh` logged in as a repository admin. `TOKEN_FILE` is the file from (a) 7. No `set -x`.
 
-The environments `docs-production` (branch policy `main`) and `docs-preview` (policies `main` and `refs/pull/*/merge`) already exist, without reviewers and without admin bypass. Add:
-
-| Where | Name | Value |
-| - | - | - |
-| env `docs-production` → secrets | `CLOUDFLARE_API_TOKEN` | production token |
-| env `docs-production` → secrets | `CLOUDFLARE_ACCOUNT_ID` | production account ID |
-| env `docs-preview` → secrets | `CLOUDFLARE_API_TOKEN` | preview token |
-| env `docs-preview` → secrets | `CLOUDFLARE_ACCOUNT_ID` | preview account ID |
-| repository → variables | `DOCS_WORKERS_SUBDOMAIN` | production account's workers.dev subdomain (`<sub>` only) |
-| repository → variables | `DOCS_PREVIEW_WORKERS_SUBDOMAIN` | preview account's subdomain (omit in single-account mode) |
-| repository → variables | `DOCS_DEPLOY_ENABLED` | `true`, **last** (§4.5) |
+**1. Bootstrap each account** ([`infra/docs/scripts/bootstrap.ts`](../infra/docs/scripts/bootstrap.ts), idempotent, safe to re-run):
 
 ```sh
-gh secret set CLOUDFLARE_API_TOKEN  --env docs-production    # paste, Enter, Ctrl-D
-gh secret set CLOUDFLARE_ACCOUNT_ID --env docs-production
-gh secret set CLOUDFLARE_API_TOKEN  --env docs-preview
-gh secret set CLOUDFLARE_ACCOUNT_ID --env docs-preview
-gh variable set DOCS_WORKERS_SUBDOMAIN --body <production sub>
-gh variable set DOCS_PREVIEW_WORKERS_SUBDOMAIN --body <preview sub>
+node infra/docs/scripts/bootstrap.ts --role preview    --account-id <preview id>    --token-file "$TOKEN_FILE" --subdomain <preview sub>
+node infra/docs/scripts/bootstrap.ts --role production --account-id <production id> --token-file "$TOKEN_FILE" --subdomain <production sub>
 ```
 
-### 4.5 Enable
+It verifies the token (`/accounts/{id}/tokens/verify`, else `/user/tokens/verify`) and prints only its kind, status and expiry, the account name and ID; ensures the workers.dev subdomain (creates it only if missing, never renames); runs `alchemy state bootstrap` non-interactively if the store is absent (environment credentials, `CI=true`, no profile, no OAuth, throwaway home and working directory so no Alchemy log persists, token redacted from any output); re-checks the store; prints the commands for the next step. `--check` only reads. The token is never accepted on argv.
+
+**2. GitHub secrets and variables** (token through stdin only):
 
 ```sh
-gh variable set DOCS_DEPLOY_ENABLED --body true
-gh workflow run docs.yml --ref main          # first production deploy
+gh secret set CLOUDFLARE_API_TOKEN  --env docs-preview    < "$PREVIEW_TOKEN_FILE"
+printf %s <preview id>    | gh secret set CLOUDFLARE_ACCOUNT_ID --env docs-preview
+gh secret set CLOUDFLARE_API_TOKEN  --env docs-production < "$PRODUCTION_TOKEN_FILE"
+printf %s <production id> | gh secret set CLOUDFLARE_ACCOUNT_ID --env docs-production
+gh variable set DOCS_WORKERS_SUBDOMAIN         --body <production sub>
+gh variable set DOCS_PREVIEW_WORKERS_SUBDOMAIN --body <preview sub>      # two accounts
+# one account instead: gh variable set DOCS_SINGLE_ACCOUNT --body true  (and no preview variable)
+rm -f "$PREVIEW_TOKEN_FILE" "$PRODUCTION_TOKEN_FILE"
 ```
 
-Check the run: `docs-deploy-production` green, smoke test summary all ✅, <https://webmcp-sdk-docs.<sub>.workers.dev/> serves the site. Then narrow the production token (§4.3 step 2) and run the workflow again. Open a test PR: the bot comments the preview URL; close it: `docs-teardown-preview` removes the Worker.
+The environments `docs-production` (branch policy `main`) and `docs-preview` (`main`, `refs/pull/*/merge`) already exist, without reviewers and without admin bypass.
 
-To pause all deploys at any time: `gh variable set DOCS_DEPLOY_ENABLED --body false` (jobs are skipped, CI stays green).
+**3. Enable:** `gh variable set DOCS_DEPLOY_ENABLED --body true`.
+
+**4. Verify.** Staging: push to #6 (or re-run its docs run); check `docs-deploy-preview` green, the smoke-test summary all ✅, the PR comment with the URL. After #6 is merged: `docs-deploy-production` green and `https://webmcp-sdk-docs.<production sub>.workers.dev/` served. Then ask Isaac for (a) 8, and dispatch `gh workflow run docs.yml --ref main` to confirm production still deploys with the narrowed token. Optional: convert a test PR to draft and back to check teardown/redeploy and the comment updates; `gh workflow run docs.yml --ref main -f sweep_previews=true` for the sweeper.
+
+**5. Required checks.** Propose to the coordinator/Isaac (rulesets are not edited by this PR) adding `docs` and `docs-build` to the `main` ruleset's required status checks, next to `checks`, `browser`, `workflow-lint`, `dependency-review`. The deploy jobs (`docs-deploy-*`, `docs-teardown-preview`, `docs-comment-preview`, `docs-sweep-previews`) must **not** be required: they are skipped on most events.
+
+Pause everything at any time: `gh variable set DOCS_DEPLOY_ENABLED --body false`.
 
 ## 5. Operations
 
@@ -222,10 +230,12 @@ To pause all deploys at any time: `gh variable set DOCS_DEPLOY_ENABLED --body fa
 | - | - |
 | Bad content in production, now | **Cloudflare dashboard → production account → Workers & Pages → `webmcp-sdk-docs` → Deployments → previous version → Rollback** (instant, no CI). Then fix forward on `main` (revert PR); the next deploy differs from what state recorded, so it uploads |
 | Roll back to a given commit | Actions → **docs** → *Run workflow* on `main`, `rollback_run_id` = the id of a successful docs run of that commit (in its URL `/actions/runs/<id>`). The job checks it is a push run on `main` of this repo, then deploys its `docs-site-production` artifact (kept 90 days) with the current infra. CLI: `gh workflow run docs.yml --ref main -f rollback_run_id=<id>`. Re-running an old run does nothing (it is no longer the head of main) |
-| A preview was not removed (deploys were off, job failed) | Actions → docs → *Run workflow* on `main` with `destroy_preview` = PR number |
+| A preview was not removed (deploys were off, job failed) | wait for the weekly sweeper, or now: Actions → docs → *Run workflow* on `main` with `destroy_preview` = PR number (or `sweep_previews` ticked) |
+| A deploy waits, then fails at *Gate* | a required check of that commit failed or is still missing after 40 min: fix it or re-run it, then re-run the deploy job |
+| `check-store` fails | wrong secrets for this environment (the account's workers.dev subdomain is not the expected one) or the store was never bootstrapped: §4.2 step 1 |
 | Smoke test failed after deploy | the deploy is live: read the summary; roll back as above if users are affected |
 | Token leaked or suspicious | Cloudflare → *Account API tokens* → **Roll** or delete; update the env secret; review *Audit logs*. Production token compromise: also check *Deployments* for unknown versions |
-| Rotate yearly | *Roll* the token, `gh secret set CLOUDFLARE_API_TOKEN --env …` |
+| Rotate yearly | *Roll* the token, hand it over as in §4.1 step 7, `gh secret set CLOUDFLARE_API_TOKEN --env … < file` |
 | Alchemy upgrade (Dependabot `docs-infra` PR) | review the changelog and lockfile diff as untrusted (T16); after merge, the first deploy may upgrade the state-store Worker in place (Alchemy does this when its version changes) |
 | `alchemy deploy` says the stage is locked | another deploy of the same stage is running, or a run was killed: wait, then re-run |
 | Inspect state | locally: `DOCS_STATE=cloudflare DOCS_ALLOW_LOCAL_REMOTE=1 CLOUDFLARE_ACCOUNT_ID=<id> pnpm exec alchemy state list --profile docs-admin`. Never `alchemy destroy` with these variables: destroy skips the stack's stage checks |
@@ -241,16 +251,15 @@ To pause all deploys at any time: `gh variable set DOCS_DEPLOY_ENABLED --body fa
 ## 6. Deferred (proposals, not implemented)
 
 1. **Hash-based CSP.** At deploy time, compute the SHA-256 of every inline `<script>` per HTML file and inject a `<meta http-equiv="Content-Security-Policy">` with `script-src 'self' 'sha256-…'`. Browsers enforce both policies, so the header keeps `frame-ancestors` and the meta removes `'unsafe-inline'`. Needs the real site output to test; follows the site PR.
-2. **Orphan preview sweeper** (planned next). Weekly scheduled job: list `pr-*` stages in the preview state store and destroy those whose PR is closed. Remaining orphan cases today: a PR closed while deploys were disabled, or a PR GitHub runs no workflow for (merge conflicts: no merge ref). Until then: the `destroy_preview` dispatch input.
-3. **Cloudflare Access on previews** (Zero Trust Free, 50 users): previews visible only to you. Adds an Access app and a token permission.
-4. **`docs-build` as a required check** once `apps/docs` exists.
-5. **Drift detection**: scheduled `alchemy drift` against production (read-only token) and an uptime check of the production URL.
-6. **Escape hatch if Alchemy v2 stalls**: the same site deploys with Wrangler (`assets.directory`, `not_found_handling`, `html_handling`, `_headers` from `cli.ts headers`), with the same tokens and workflow structure.
-7. **Versioned docs** (D8: stable at `/`, `main` at `/next/`) once there is a release: build both into one directory before upload; the infra does not change.
+2. **Cloudflare Access on previews** (Zero Trust Free, 50 users): previews visible only to you. Adds an Access app and a token permission.
+3. **Drift detection**: scheduled `alchemy drift` against production (read-only token) and an uptime check of the production URL.
+4. **Escape hatch if Alchemy v2 stalls**: the same site deploys with Wrangler (`assets.directory`, `not_found_handling`, `html_handling`, `_headers` from `cli.ts headers`), with the same tokens and workflow structure.
+5. **Versioned docs** (D8: stable at `/`, `main` at `/next/`) once there is a release: build both into one directory before upload; the infra does not change.
 
-## 7. Sources (checked 2026-11-12)
+## 7. Sources (checked 2026-11-12/13)
 
 - Cloudflare: [Pages → start new projects with Workers](https://developers.cloudflare.com/pages/), [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/), [static assets billing](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/), [limits](https://developers.cloudflare.com/workers/platform/limits/), [`_headers`](https://developers.cloudflare.com/workers/static-assets/headers/), [SSG and 404](https://developers.cloudflare.com/workers/static-assets/routing/static-site-generation/), [Workers roles and per-Worker scopes](https://developers.cloudflare.com/workers/authorization/workers/) and [changelog 2026-09-15](https://developers.cloudflare.com/changelog/post/2026-09-15-granular-worker-permissions/), [account API tokens](https://developers.cloudflare.com/fundamentals/api/get-started/account-owned-tokens/), [API token permissions](https://developers.cloudflare.com/fundamentals/api/reference/permissions/), [Secrets Store access control](https://developers.cloudflare.com/secrets-store/access-control/), [Secrets Store limits](https://developers.cloudflare.com/changelog/post/2025-05-19-paygo-updates/), [Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/), [additional Free accounts](https://developers.cloudflare.com/fundamentals/account/create-account/), [Public Suffix List](https://publicsuffix.org/list/public_suffix_list.dat) (`workers.dev`).
 - Alchemy v2: [getting started](https://alchemy.run/getting-started), [static sites](https://alchemy.run/cloudflare/frontend/static-site), [state store](https://alchemy.run/state-store), [CI](https://alchemy.run/environments/ci), [profiles and CI env vars](https://alchemy.run/environments/profiles), [stages](https://alchemy.run/environments/stages), [plan](https://alchemy.run/cli/plan), [deploy](https://alchemy.run/cli/deploy), [destroy](https://alchemy.run/cli/destroy); source of `alchemy@2.0.0-beta.85` and `@alchemy.run/cloudflare@2.0.0-beta.85` (asset config override of `_headers`/`_redirects`, symlink handling, edge-preview secret read, telemetry opt-out `DO_NOT_TRACK`).
-- GitHub: [environment branch policies evaluate `refs/pull/<n>/merge` for `pull_request`](https://github.blog/changelog/2025-11-07-actions-pull_request_target-and-environment-branch-protections-changes/) (since 2025-12-08).
+- GitHub: [pull_request activity types incl. `ready_for_review`, `converted_to_draft`; no secrets for forks](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows), [check runs API](https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference), [environment branch policies evaluate `refs/pull/<n>/merge` for `pull_request`](https://github.blog/changelog/2025-11-07-actions-pull_request_target-and-environment-branch-protections-changes/) (since 2025-12-08).
+- Alchemy, verified in the beta.85 source: `alchemy state bootstrap` sets `updateStateStore: true` and resolves credentials from `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID` with `CI=true` (no profile, no prompt); exercised up to the account-access check with a dummy token. `Cloudflare.Account` uses the tenant API only.
 - Verified locally (no account): `alchemy plan` needs credentials (fails on the first Worker read); `alchemy dev` serves an assets-only Worker offline in workerd and applies the `_headers` rules to 200 and 404 responses.
