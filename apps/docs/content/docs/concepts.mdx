@@ -1,0 +1,46 @@
+---
+title: Core concepts
+description: Definitions, implementations, registrations, and how failures reach the agent.
+---
+
+## Definition: the contract
+
+A **definition** is a plain object: name, metadata and schemas. It has no code and no browser dependency, so you can share it between the page that implements the tool, your tests, and code that calls the tool.
+
+- **A name is a contract.** If a tool's meaning changes, give it a new name.
+- **The description is for agents.** They read it to choose a tool, so say what it does and when to use it.
+- **Schemas are Standard Schema** with JSON Schema support. Your validator is the source of truth; the JSON Schema only describes the tool to agents.
+
+`defineTool` is the only function that throws, because an invalid name or an empty description is a programming error. See [Defining tools](/docs/defining-tools).
+
+## Implementation: your code
+
+`implementTool(definition, handler)` attaches a handler. The handler receives the validated input and `{ signal }`, and returns the output, sync or async. Types are inferred from the definition, on the right side of each schema:
+
+| | the agent sees (JSON Schema) | your handler sees |
+| - | ---------------------------- | ----------------- |
+| `input` | the **input** side (defaults optional) | the **output** side (defaults applied, transforms run) |
+| `output` | the **output** side | it returns the **input** side |
+
+When a tool needs data from your app, make the implementation a function of exactly that data (one factory per implementation). See [Implementing tools](/docs/implementing-tools).
+
+## Registration: where and for how long
+
+Registration mirrors WebMCP's `registerTool(tool, { signal })`: **the `signal` is the tool's lifetime**, and aborting it removes the tool. Whoever owns the `AbortController` cleans up; there is nothing else to keep. In React, the hooks own the lifetimes for you. See [Registering tools](/docs/registering-tools) and [React](/docs/react).
+
+**Progressive enhancement:** without WebMCP (most browsers today, and SSR), registration resolves `"unsupported"` and does nothing. Real failures, such as a duplicate name, reject like the native call.
+
+## Failures: in-band and agent-readable
+
+In WebMCP, a thrown error reaches the agent as an opaque `OperationError` without its message. The SDK therefore **returns** failures as an envelope instead of throwing:
+
+- `input_invalid`: the arguments failed the input schema; the handler did not run.
+- `tool_error`: your handler threw a `ToolError`, whose `message`, `code` and `data` are sent.
+- `internal`: anything else (a defect); the agent gets a generic message, you get the original through `onUnexpectedError`.
+- `output_invalid`: the result failed the declared output schema and was withheld.
+
+Each failure says whether the handler was called (`handlerCalled`), so agents know whether effects may have happened. See [Errors](/docs/errors) and [What agents receive](/docs/what-agents-receive).
+
+## Discovery: the other side
+
+An **in-page agent** (a chat widget, a copilot) uses a **catalog** to list the tools of the page and its frames, give them provider-safe names, and route calls back. See [Discovering and calling tools](/docs/discovering-tools).

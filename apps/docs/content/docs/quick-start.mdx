@@ -1,0 +1,55 @@
+---
+title: Quick start
+description: Define, implement and register a first WebMCP tool.
+---
+
+A tool has three parts: a **definition** (the agent-facing contract), an **implementation** (your code), and a **registration** (where and for how long the tool is available).
+
+```ts title="todos.ts"
+import { z } from "zod";
+import { defineTool, implementTool, registerTool } from "@senon/webmcp-sdk";
+
+const todos: string[] = [];
+
+// 1. Define: the agent-facing contract
+const addTodo = defineTool({
+  name: "add_todo",
+  title: "Add todo",
+  description: "Add an item to the user's todo list. Returns the new item count.",
+  input: z.object({ text: z.string().min(1) }),
+  output: z.object({ count: z.number() }),
+});
+
+// 2. Implement: input and output types come from the definition
+const addTodoTool = implementTool(addTodo, ({ text }) => {
+  todos.push(text);
+  return { count: todos.length };
+});
+
+// 3. Register, with WebMCP's own lifetime model: an AbortSignal
+const controller = new AbortController();
+await registerTool(addTodoTool, { signal: controller.signal }); // "registered", or "unsupported" without WebMCP; rejects on real failures (e.g. duplicate name)
+// later: remove the tool
+controller.abort();
+```
+
+## What just happened
+
+- `defineTool` checked the name and description, and kept the schemas. It has no code and no browser dependency.
+- `implementTool` attached a handler whose `text` argument is typed `string` and whose return value must match `{ count: number }`.
+- `registerTool` converted the schemas to JSON Schema, registered the tool with `document.modelContext`, and wired validation around your handler. Aborting the signal removes the tool.
+
+If an agent calls `add_todo` with `{ "text": "" }`, your handler does not run: the agent receives an [`input_invalid` failure](/docs/what-agents-receive) that names the field and says what to fix.
+
+## Try it in a browser
+
+You need WebMCP: Chrome with the WebMCP flag or origin trial, or the [official polyfill](/docs/polyfills). Without it, `registerTool` resolves `"unsupported"`, which is the expected progressive-enhancement path.
+
+## Next
+
+<Cards>
+  <Card title="Core concepts" href="/docs/concepts" />
+  <Card title="Defining tools" href="/docs/defining-tools" />
+  <Card title="React" href="/docs/react" />
+  <Card title="Testing" href="/docs/testing" />
+</Cards>

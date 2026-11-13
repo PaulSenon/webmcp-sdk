@@ -69,6 +69,28 @@ jobs:
       # real-model suites are opt-in (WEBMCP_NATIVE / OPENAI_API_KEY) and skip here.
       - run: pnpm test:e2e
 
+  docs:
+    name: docs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Typecheck, code blocks of README/docs/site, static build into apps/docs/out, offline link check.
+      # No SITE_URL here: deploy builds set it (canonical URLs, sitemap); this build is never published.
+      - run: pnpm docs:check
+      - run: pnpm --filter @senon/webmcp-sdk-docs exec playwright install chromium
+      - run: pnpm docs:test
+
   workflow-lint:
     name: workflow-lint
     runs-on: ubuntu-24.04

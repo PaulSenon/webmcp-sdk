@@ -1,0 +1,45 @@
+---
+title: Introduction
+description: Type-safe WebMCP tools for TypeScript, with validation, agent-readable errors and React bindings.
+---
+
+[WebMCP](https://webmachinelearning.github.io/webmcp/) lets a web page expose functions ("tools") to AI agents through `document.modelContext`. With **webmcp-sdk** you:
+
+- **define** tools with [Standard Schema](https://standardschema.dev) (Zod, Valibot, ArkType, Effect…);
+- **implement** them with fully inferred types;
+- **register** them with automatic input/output validation and agent-readable errors;
+- **discover and call** the tools of a page from an in-page agent.
+
+The core is framework-agnostic. React bindings are included (`@senon/webmcp-sdk/react`).
+
+<Callout type="warn" title="Unpublished prototype">
+  The framework-independent core and the React bindings are implemented and tested, but nothing is published to npm yet. The package name will be `@senon/webmcp-sdk`. WebMCP itself is an experimental W3C Community Group draft: see [Platform status](/docs/platform-status).
+</Callout>
+
+## Three steps
+
+```ts nocheck
+defineTool({...})   →   implementTool(definition, handler)   →   registerTool(tool, { signal })
+   what (contract)          how (your code)                       where & when (WebMCP's own lifetime model)
+```
+
+<Cards>
+  <Card title="Quick start" href="/docs/quick-start" description="A first tool, end to end, in one file." />
+  <Card title="Core concepts" href="/docs/concepts" description="Definitions, implementations, lifetimes and failures." />
+  <Card title="React" href="/docs/react" description="Hooks and components that own the lifetimes for you." />
+  <Card title="API reference" href="/docs/api/core" description="Every export, generated from the TypeScript declarations." />
+</Cards>
+
+## What the SDK does for you
+
+- **Validates arguments** before your handler runs. The browser does not. Invalid arguments come back to the agent with field paths, and your handler is not called.
+- **Validates your result** against `output` when you declare one.
+- **Publishes a JSON Schema** of the input (and output) generated from the same schemas.
+- **Turns failures into short, actionable messages** for the agent, without leaking internals.
+- **Stays out of the way without WebMCP.** In most browsers today, and during SSR, registration resolves `"unsupported"` and does nothing. Real failures (a duplicate name, for example) reject, like the native call.
+
+## Not to be confused with
+
+This project is **not affiliated** with the unrelated `webmcp-sdk` or `@webmcp-sdk/*` packages on npm. Its package is `@senon/webmcp-sdk`.
+
+Source, issues and discussions: [github.com/PaulSenon/webmcp-sdk](https://github.com/PaulSenon/webmcp-sdk). MIT licensed.

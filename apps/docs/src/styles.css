@@ -1,0 +1,22 @@
+@import "tailwindcss";
+@import "fumadocs-ui/css/emerald.css";
+@import "fumadocs-ui/css/preset.css";
+
+html {
+  scrollbar-gutter: stable;
+}
+
+html > body[data-scroll-locked] {
+  margin-right: 0px !important;
+  --removed-body-scroll-bar-size: 0px !important;
+}
+
+/* Skip links: hidden until focused. Fumadocs' docs layout renders <a href="#nd-page" class="sr-only">
+   (never visible on its own); the home and 404 pages render <SkipLink /> with the same target. */
+.skip-link {
+  @apply sr-only;
+}
+.skip-link:focus,
+a[href="#nd-page"].sr-only:focus {
+  @apply not-sr-only fixed top-2 start-2 z-100 rounded-md border bg-fd-background px-3 py-2 text-sm font-medium text-fd-foreground ring-2 ring-fd-ring;
+}

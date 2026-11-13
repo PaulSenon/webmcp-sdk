@@ -1,0 +1,45 @@
+---
+title: Security and releases
+description: How to report a vulnerability, how releases are made, and how to verify what you install.
+---
+
+## Reporting a vulnerability
+
+Report vulnerabilities privately through GitHub: **Security → Report a vulnerability** on [PaulSenon/webmcp-sdk](https://github.com/PaulSenon/webmcp-sdk/security/advisories/new). Do not open a public issue. You should get an answer within a week.
+
+Only the latest published version of `@senon/webmcp-sdk` receives fixes (the package is `0.x`).
+
+## How releases are made
+
+Releases are **explicit**: nothing is published on push or merge.
+
+<Steps>
+  <Step>Pull requests that change the package carry a change note (Changesets); a version PR turns the notes into a version and a `CHANGELOG.md` entry.</Step>
+  <Step>The maintainer starts the release workflow by hand. CI runs the tests, packs **one** tarball, and *stages* it on npm through trusted publishing (OIDC, no tokens).</Step>
+  <Step>The maintainer checks that the staged tarball has the same bytes as the CI build and the same contents as an independent local rebuild, then approves it on npm with 2FA. Only then is the version installable.</Step>
+  <Step>A final job checks that npm serves the same integrity, tags the source commit, and creates an immutable GitHub release with the tarball and a manifest of its files.</Step>
+</Steps>
+
+Every published version carries **npm provenance**, linking it to the source commit and the workflow run.
+
+## Verifying what you install
+
+In a project that depends on the package:
+
+```sh
+npm audit signatures                                   # registry signatures and provenance
+npm view @senon/webmcp-sdk@<version> dist.integrity    # compare with the GitHub release manifest
+gh release verify @senon/webmcp-sdk@<version> -R PaulSenon/webmcp-sdk
+```
+
+## The package's footprint
+
+- **One runtime dependency:** `@standard-schema/spec`, the Standard Schema interface. `react` is an optional peer dependency.
+- **No install scripts**, and no polyfill is ever imported or installed for you.
+- **What agents see** is limited to what you write: tool metadata, your outputs, and the `message` / `code` / `data` of `ToolError`s. Stacks and causes never leave the page (see [Errors](/docs/errors)).
+
+## This site
+
+This site is static: prerendered HTML and assets built from the repository's `main` branch, with no server code and no third-party scripts.
+
+The maintainer runbook is [`docs/releasing.md`](https://github.com/PaulSenon/webmcp-sdk/blob/main/docs/releasing.md); the design and threat model are in [`docs/release-research/`](https://github.com/PaulSenon/webmcp-sdk/tree/main/docs/release-research).

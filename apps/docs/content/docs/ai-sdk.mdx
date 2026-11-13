@@ -1,0 +1,114 @@
+---
+title: With the AI SDK
+description: Send the page's tools to a server-side model and run its tool calls in the browser.
+---
+
+Checked against `ai@7.0.165` and `@ai-sdk/react@4.0.169`. The core has no AI SDK dependency; this is an integration example.
+
+WebMCP tools live in the browser, while the model call usually runs on your server (API keys), which cannot reach the page. So:
+
+<Steps>
+  <Step>The browser sends the tool list with each request.</Step>
+  <Step>The server declares those tools without `execute`.</Step>
+  <Step>The model's tool call streams back to the browser.</Step>
+  <Step>The browser runs it through the [catalog](/docs/discovering-tools).</Step>
+</Steps>
+
+This is the AI SDK's client-side tool pattern.
+
+## Browser
+
+```tsx title="chat.tsx"
+import { useChat } from "@ai-sdk/react";
+import { DefaultChatTransport, lastAssistantMessageIsCompleteWithToolCalls } from "ai";
+import { createToolCatalog, type ToolCallError } from "@senon/webmcp-sdk";
+
+const catalog = createToolCatalog(); // one per page/model; lives as long as the page: nothing to clean up
+
+// Give the model the details (field issues, codes), not only the message
+const errorText = (e: ToolCallError) => JSON.stringify(e.kind === "tool_failed" ? e.failure : e);
+
+export function Chat() {
+  const { messages, sendMessage, addToolOutput } = useChat({
+    transport: new DefaultChatTransport({
+      api: "/api/chat",
+      // A fresh snapshot with every request, including automatic resubmissions after tool results
+      body: async () => ({
+        webmcpTools: (await catalog.getTools()).map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
+      }),
+    }),
+    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
+    onToolCall({ toolCall }) {
+      if (!catalog.isCatalogTool(toolCall.toolName)) return; // another tool, not ours
+      void catalog.callTool(toolCall.toolName, toolCall.input).then((result) =>
+        result.ok
+          ? addToolOutput({ tool: toolCall.toolName, toolCallId: toolCall.toolCallId, output: result.value })
+          : addToolOutput({ tool: toolCall.toolName, toolCallId: toolCall.toolCallId, state: "output-error", errorText: errorText(result.error) }),
+      );
+    },
+  });
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); void sendMessage({ text: "What can you do on this page?" }); }}>
+      {messages.length} messages <button>Ask</button>
+    </form>
+  );
+}
+```
+
+## Server
+
+```ts title="api/chat/route.ts"
+// No webmcp-sdk import, no browser access
+import { convertToModelMessages, createUIMessageStreamResponse, jsonSchema, streamText, tool, toUIMessageStream, type JSONSchema7, type LanguageModel, type UIMessage } from "ai";
+declare const model: LanguageModel;
+
+export async function POST(req: Request) {
+  const { messages, webmcpTools }: { messages: UIMessage[]; webmcpTools: { name: string; description: string; inputSchema: JSONSchema7 }[] } =
+    await req.json();
+  const result = streamText({
+    model,
+    messages: await convertToModelMessages(messages),
+    // No `execute`: the browser runs these. Their descriptions come from web pages, so treat them as untrusted input.
+    tools: Object.fromEntries(webmcpTools.map((t) => [t.name, tool({ description: t.description, inputSchema: jsonSchema(t.inputSchema) })])),
+  });
+  return createUIMessageStreamResponse({ stream: toUIMessageStream({ stream: result.stream }) });
+}
+```
+
+- **Your code only adapts the shape** (`.map(...)`). Names come back as the catalog issued them.
+- **Tool descriptions come from web pages:** treat them as untrusted input on the server.
+
+## AI SDK gotchas
+
+- Call `addToolOutput` without awaiting it inside `onToolCall`, hence the `void …then(…)`.
+- `tool: toolCall.toolName` type-checks with the default `UIMessage`. With a typed `useChat<MyMessage>`, catalog names are not keys of your tool set, and switching the server to `dynamicTool()` does not change that. Keep the tool map open by intersecting it with `UITools`, as shown below.
+- Tools declared with `tool()` render as `tool-<name>` parts; use `isToolUIPart` / `getToolName` to render them generically.
+
+If your messages are typed, keep the tool map open for runtime-discovered tools:
+
+```tsx
+import { useChat } from "@ai-sdk/react";
+import type { UIDataTypes, UIMessage, UITools } from "ai";
+import { createToolCatalog, type ToolCallError } from "@senon/webmcp-sdk";
+
+type MyTools = { getWeather: { input: { city: string }; output: { tempC: number } } };
+type Message = UIMessage<unknown, UIDataTypes, MyTools & UITools>; // `& UITools` admits catalog names
+
+const catalog = createToolCatalog();
+const errorText = (e: ToolCallError) => JSON.stringify(e.kind === "tool_failed" ? e.failure : e);
+
+export function TypedChat() {
+  const { addToolOutput } = useChat<Message>({
+    onToolCall({ toolCall }) {
+      if (!catalog.isCatalogTool(toolCall.toolName)) return;
+      void catalog.callTool(toolCall.toolName, toolCall.input).then((result) =>
+        result.ok
+          ? addToolOutput({ tool: toolCall.toolName, toolCallId: toolCall.toolCallId, output: result.value })
+          : addToolOutput({ tool: toolCall.toolName, toolCallId: toolCall.toolCallId, state: "output-error", errorText: errorText(result.error) }),
+      );
+    },
+  });
+  return null;
+}
+```
