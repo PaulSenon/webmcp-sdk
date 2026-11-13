@@ -11,7 +11,7 @@ const subdomains = { PRODUCTION_SUBDOMAIN: "prod", PREVIEW_SUBDOMAIN: "prev" };
 test("target: recomputes stage and URL from trusted inputs", () => {
   const prod = run("target", subdomains);
   assert.equal(prod.status, 0);
-  assert.match(prod.stdout, /^stage=production\nurl=https:\/\/webmcp-sdk-docs\.prod\.workers\.dev\/\n$/);
+  assert.match(prod.stdout, /^stage=production\nsubdomain=prod\nurl=https:\/\/webmcp-sdk-docs\.prod\.workers\.dev\/\n$/);
   const pr = run("target", { ...subdomains, PR_NUMBER: "9", BUILD_STAGE: "pr-9", BUILD_URL: "https://webmcp-sdk-docs-pr-9.prev.workers.dev/" });
   assert.equal(pr.status, 0, pr.stdout);
 });
@@ -27,4 +27,7 @@ test("target: rejects outputs forged by the build job", () => {
     assert.match(r.stdout + r.stderr, /differs from/);
   }
   assert.equal(run("target", { ...subdomains, PR_NUMBER: "9;x" }).status, 1);
+  // previews in the production account only with explicit single-account mode
+  assert.equal(run("target", { PRODUCTION_SUBDOMAIN: "prod", PREVIEW_SUBDOMAIN: "prod", PR_NUMBER: "9" }).status, 1);
+  assert.equal(run("target", { PRODUCTION_SUBDOMAIN: "prod", PR_NUMBER: "9", SINGLE_ACCOUNT: "true" }).status, 0);
 });

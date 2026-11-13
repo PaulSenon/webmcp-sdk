@@ -64,3 +64,28 @@ export function workersDevUrl(stage: string, accountSubdomain: string): string {
 export function isIndexable(stage: string): boolean {
   return stageKind(stage) === "production";
 }
+
+/**
+ * workers.dev subdomain of the Cloudflare account a stage deploys to. Production and previews live
+ * in separate accounts (separate subdomains) unless single-account mode is chosen explicitly
+ * (repository variable DOCS_SINGLE_ACCOUNT=true): a forgotten or copy-pasted variable must not
+ * silently put previews in the production account.
+ */
+export function resolveSubdomain(
+  stage: string,
+  vars: { production?: string; preview?: string; singleAccount?: string },
+): string {
+  const production = vars.production || undefined;
+  const preview = vars.preview || undefined;
+  const single = vars.singleAccount === "true";
+  if (!production) throw new Error("DOCS_WORKERS_SUBDOMAIN (production account) is not set");
+  if (preview !== undefined && preview === production && !single) {
+    throw new Error(
+      "DOCS_PREVIEW_WORKERS_SUBDOMAIN equals the production subdomain: previews would deploy into the production account. Use a separate preview account, or set DOCS_SINGLE_ACCOUNT=true deliberately",
+    );
+  }
+  if (stageKind(stage) === "production") return production;
+  if (preview) return preview;
+  if (single) return production;
+  throw new Error("DOCS_PREVIEW_WORKERS_SUBDOMAIN is not set (or set DOCS_SINGLE_ACCOUNT=true to use one account)");
+}
