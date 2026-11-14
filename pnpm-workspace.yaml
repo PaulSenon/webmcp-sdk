@@ -1,5 +1,6 @@
 packages:
   - packages/*
+  - infra/*
 
 # Supply-chain policy. Committed so CI and every contributor get the same rules
 # (these were previously only in the maintainer's global pnpm config).
@@ -12,3 +13,7 @@ strictDepBuilds: true # fail install when a dependency has an unreviewed install
 # (installed as an optional dependency anyway), so it is not needed.
 allowBuilds:
   esbuild: false
+  # workerd (via @alchemy.run/cloudflare, infra/docs): same pattern as esbuild, its postinstall only
+  # checks or re-downloads the platform binary that is already installed as an optional dependency.
+  # `alchemy dev` (docs-build's local check) runs that binary fine without the script.
+  workerd: false

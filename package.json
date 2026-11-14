@@ -14,7 +14,8 @@
     "test:e2e:native": "pnpm --filter @senon/webmcp-sdk run test:e2e:native",
     "test:package": "pnpm --filter @senon/webmcp-sdk run test:package",
     "test:tooling": "node --test 'tooling/release/*.test.mjs'",
-    "test:all": "pnpm --filter @senon/webmcp-sdk run test:all && pnpm test:package && pnpm test:tooling",
+    "test:infra": "pnpm --filter @senon/webmcp-sdk-docs-infra run check",
+    "test:all": "pnpm --filter @senon/webmcp-sdk run test:all && pnpm test:package && pnpm test:tooling && pnpm test:infra",
     "build": "pnpm --filter @senon/webmcp-sdk run build",
     "changeset": "changeset"
   },

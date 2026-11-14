@@ -1,0 +1,592 @@
+# Docs site (apps/docs) on Cloudflare Workers static assets, infrastructure in infra/docs (Alchemy).
+# One Cloudflare account. Design, threat model, one-time setup and rollback: docs/docs-deploy.md.
+#
+# Trust model
+#   build              runs PR code (the site build and its dependencies): no secret, read-only
+#                      token, no cache. Produces the static site as an artifact. Runs for drafts too.
+#   deploy-*,          hold a deploy token (environment secrets). They never execute PR code:
+#   teardown-preview,  infra code and lockfile come from the current main, only the infra
+#   sweep-previews     package's dependencies are installed, stage/Worker/store are recomputed from
+#                      trusted inputs, and `cli.ts preflight` refuses unsafe tokens before any
+#                      alchemy call. State is reached over HTTPS with the store's own bearer token
+#                      (DOCS_STATE_TOKEN): no Secrets Store permission, and the preview environment
+#                      only holds the preview store's token.
+#   comment-preview    pull-requests: write, no Cloudflare secret.
+# Previews (DOCS_PREVIEW_MODE): `staging` (default) deploys PRs to the fixed Worker
+# webmcp-sdk-docs-staging with a token scoped to that Worker only; `dynamic` creates a Worker per
+# PR with an account-wide token and requires a required reviewer on docs-preview.
+# Gate: a commit deploys only once every required check of that exact SHA is green
+# (infra/docs/src/gate.ts), and a PR only while it is the PR's current head, open, not a draft.
+# Never forks or Dependabot (no pull_request_target, no workflow_run). Every Cloudflare job is
+# inert until the repository variable DOCS_DEPLOY_ENABLED is "true".
+name: docs
+
+on:
+  pull_request:
+    # ready_for_review deploys; converted_to_draft tears a dynamic preview down (staging is reused).
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, closed]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 4 * * 1" # Mondays 04:17 UTC: orphan preview sweep (dynamic mode only)
+  workflow_dispatch:
+    inputs:
+      destroy_preview:
+        description: "PR number whose preview to tear down"
+        required: false
+        type: string
+      rollback_run_id:
+        description: "Production rollback: id of an older successful docs run on main whose site to redeploy"
+        required: false
+        type: string
+      sweep_previews:
+        description: "Run the orphan preview sweep now"
+        required: false
+        type: boolean
+        default: false
+      # All empty: rebuild and redeploy production from main.
+
+permissions: {}
+
+env:
+  DO_NOT_TRACK: "1" # Alchemy CLI telemetry (otel.alchemy.run) off
+  ALCHEMY_TELEMETRY_DISABLED: "1"
+  ALCHEMY_PLAIN: "1"
+
+jobs:
+  build:
+    name: docs-build
+    if: >-
+      (github.event_name == 'pull_request' && github.event.action != 'closed' && github.event.action != 'converted_to_draft')
+      || github.event_name == 'push'
+      || (github.event_name == 'workflow_dispatch' && inputs.destroy_preview == '' && inputs.rollback_run_id == '' && !inputs.sweep_previews)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    cache-mode: none # its artifact is what production serves (T3)
+    concurrency:
+      group: docs-build-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      has_site: ${{ steps.site.outputs.has_site }}
+      stage: ${{ steps.stage.outputs.stage }}
+      url: ${{ steps.stage.outputs.url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - run: pnpm install --frozen-lockfile
+      - id: stage
+        name: Stage and public URL (SITE_URL)
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
+          PREVIEW_MODE: ${{ vars.DOCS_PREVIEW_MODE }}
+          SUBDOMAIN_OPTIONAL: "1" # before Cloudflare is configured: build without SITE_URL
+        run: |
+          if [ -z "$SUBDOMAIN" ]; then echo "::notice::DOCS_WORKERS_SUBDOMAIN is not set; building without SITE_URL"; fi
+          node infra/docs/scripts/cli.ts target
+      - id: site
+        name: Site present?
+        run: |
+          if [ -f apps/docs/package.json ]; then echo "has_site=true"; else echo "has_site=false"; fi >> "$GITHUB_OUTPUT"
+      - name: Build the site
+        if: steps.site.outputs.has_site == 'true'
+        env:
+          SITE_URL: ${{ steps.stage.outputs.url }}
+        run: pnpm docs:build
+      - name: Check the site output
+        env:
+          DOCS_SITE_DIR: ${{ steps.site.outputs.has_site == 'true' && 'apps/docs/out' || 'infra/docs/test/fixtures/site' }}
+        run: node infra/docs/scripts/cli.ts check-site
+      # Credential-free stand-in for a plan: Alchemy's plan reads the live account, so it needs a
+      # token. Instead, serve the output with `alchemy dev` (local workerd, same asset router,
+      # this PR's headers and 404 config) and run the post-deploy smoke test against it.
+      - name: Serve locally and smoke test (no credentials)
+        env:
+          DOCS_SITE_DIR: ${{ github.workspace }}/${{ steps.site.outputs.has_site == 'true' && 'apps/docs/out' || 'infra/docs/test/fixtures/site' }}
+        run: pnpm --filter @senon/webmcp-sdk-docs-infra run check:local
+      - name: Summary
+        env:
+          STAGE: ${{ steps.stage.outputs.stage }}
+          REVISION: ${{ steps.stage.outputs.revision }}
+          HAS_SITE: ${{ steps.site.outputs.has_site }}
+          SITE_URL: ${{ steps.stage.outputs.url }}
+        run: |
+          {
+            echo "### Docs build (\`$STAGE\`)"
+            echo ""
+            if [ "$HAS_SITE" = "true" ]; then echo "- site built, URL: ${SITE_URL:-not configured}"; else echo "- apps/docs not present yet: infra checked against its fixture site"; fi
+            echo ""
+            echo "<details><summary>Response headers (_headers) for this stage</summary>"
+            echo ""
+            echo '```'
+            node infra/docs/scripts/cli.ts headers
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - id: upload
+        if: steps.site.outputs.has_site == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: docs-site-${{ steps.stage.outputs.stage }}
+          path: apps/docs/out
+          retention-days: ${{ github.event_name == 'pull_request' && 7 || 90 }} # main builds kept for rollback
+          if-no-files-found: error
+          include-hidden-files: false
+
+  deploy-preview:
+    name: docs-deploy-preview
+    needs: build
+    if: >-
+      vars.DOCS_DEPLOY_ENABLED == 'true'
+      && github.event_name == 'pull_request'
+      && github.event.action != 'closed'
+      && github.event.action != 'converted_to_draft'
+      && !github.event.pull_request.draft
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.pull_request.base.ref == 'main'
+      && github.event.pull_request.user.login != 'dependabot[bot]'
+      && github.actor != 'dependabot[bot]'
+      && needs.build.outputs.has_site == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60 # includes the bounded wait for the required checks (40 min)
+    permissions:
+      contents: read
+      pull-requests: read # PR state just before deploying
+      checks: read # deploy gate
+      actions: read # preflight reads the environment's required reviewers
+    cache-mode: none
+    environment:
+      name: docs-preview
+      url: ${{ steps.target.outputs.url }}
+    concurrency:
+      # staging: one shared Worker, every PR serialised; dynamic: one group per PR.
+      group: ${{ vars.DOCS_PREVIEW_MODE == 'dynamic' && format('docs-preview-{0}', github.event.pull_request.number) || 'docs-staging' }}
+      cancel-in-progress: false # never interrupt a deploy; the newest pending run wins
+    outputs:
+      url: ${{ steps.target.outputs.url }}
+      status: ${{ steps.result.outputs.status }}
+      target: ${{ steps.target.outputs.stage == 'staging' && 'staging' || 'preview' }}
+    steps:
+      # Infra code and lockfile from the current main, never from the PR (and never an older main:
+      # an older Alchemy would downgrade the state store in place).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: main
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - id: target
+        name: Stage and URL from trusted inputs
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
+          PREVIEW_MODE: ${{ vars.DOCS_PREVIEW_MODE }}
+          BUILD_STAGE: ${{ needs.build.outputs.stage }}
+          BUILD_URL: ${{ needs.build.outputs.url }}
+        run: node infra/docs/scripts/cli.ts target
+      - id: before
+        name: Still the PR head, open, not a draft?
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BUILT_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node infra/docs/scripts/cli.ts pr-decision
+      - if: steps.before.outputs.deploy == 'true'
+        name: Gate on every required check of this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: node infra/docs/scripts/cli.ts gate
+      - id: open
+        if: steps.before.outputs.deploy == 'true'
+        name: Still the PR head after the gate?
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BUILT_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node infra/docs/scripts/cli.ts pr-decision
+      - if: steps.open.outputs.deploy == 'true'
+        run: pnpm --filter @senon/webmcp-sdk-docs-infra install --frozen-lockfile
+      - if: steps.open.outputs.deploy == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: ${{ runner.temp }}/site
+      - if: steps.open.outputs.deploy == 'true'
+        name: Check the artifact
+        env:
+          DOCS_SITE_DIR: ${{ runner.temp }}/site
+        run: node infra/docs/scripts/cli.ts check-site
+      - if: steps.open.outputs.deploy == 'true'
+        name: Deploy
+        env:
+          STAGE: ${{ steps.target.outputs.stage }}
+          SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
+          PREVIEW_MODE: ${{ vars.DOCS_PREVIEW_MODE }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ENVIRONMENT: docs-preview
+          DOCS_STATE: http
+          DOCS_STATE_STORE: ${{ steps.target.outputs.store }}
+          DOCS_STATE_TOKEN: ${{ secrets.DOCS_STATE_TOKEN }}
+          DOCS_REVISION: ${{ steps.target.outputs.revision }}
+          DOCS_SITE_DIR: ${{ runner.temp }}/site
+          CLOUDFLARE_WORKERS_SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          case "$STAGE" in staging|pr-[1-9]*) ;; *) echo "::error::unexpected stage $STAGE"; exit 1 ;; esac
+          node infra/docs/scripts/cli.ts preflight
+          pnpm --filter @senon/webmcp-sdk-docs-infra exec alchemy deploy --stage "$STAGE" --yes --no-input
+      - if: steps.open.outputs.deploy == 'true'
+        name: Smoke test
+        env:
+          STAGE: ${{ steps.target.outputs.stage }}
+          REVISION: ${{ steps.target.outputs.revision }}
+          SMOKE_URL: ${{ steps.target.outputs.url }}
+          DOCS_SITE_DIR: ${{ runner.temp }}/site
+        run: node infra/docs/scripts/cli.ts smoke
+      - id: result
+        env:
+          DEPLOYED: ${{ steps.open.outputs.deploy == 'true' }}
+        run: echo "status=$([ "$DEPLOYED" = true ] && echo deployed || echo skipped)" >> "$GITHUB_OUTPUT"
+
+  teardown-preview:
+    name: docs-teardown-preview
+    # Dynamic mode only (staging is a fixed Worker, reused, never torn down). Closed (merged or
+    # not) or converted to draft: same teardown. No base-branch filter: a PR retargeted after its
+    # preview was deployed must still be cleaned up.
+    if: >-
+      vars.DOCS_DEPLOY_ENABLED == 'true'
+      && vars.DOCS_PREVIEW_MODE == 'dynamic'
+      && ((github.event_name == 'pull_request'
+            && (github.event.action == 'closed' || github.event.action == 'converted_to_draft')
+            && github.event.pull_request.head.repo.full_name == github.repository
+            && github.event.pull_request.user.login != 'dependabot[bot]'
+            && github.actor != 'dependabot[bot]')
+          || (github.event_name == 'workflow_dispatch' && inputs.destroy_preview != '' && github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read # preflight reads the environment's required reviewers
+    cache-mode: none
+    environment: docs-preview # dynamic mode requires a required reviewer here (preflight enforces it)
+    concurrency:
+      group: docs-preview-${{ github.event.pull_request.number || inputs.destroy_preview }}
+      cancel-in-progress: false
+    outputs:
+      reason: ${{ steps.reason.outputs.reason }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: main
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - run: pnpm --filter @senon/webmcp-sdk-docs-infra install --frozen-lockfile
+      - id: target
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.destroy_preview }}
+          SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
+          PREVIEW_MODE: ${{ vars.DOCS_PREVIEW_MODE }}
+        run: node infra/docs/scripts/cli.ts target
+      - id: reason
+        env:
+          ACTION: ${{ github.event.action }}
+        run: |
+          case "$ACTION" in closed) r=closed ;; converted_to_draft) r=draft ;; *) r=manual ;; esac
+          echo "reason=$r" >> "$GITHUB_OUTPUT"
+      - name: Destroy the preview
+        env:
+          STAGE: ${{ steps.target.outputs.stage }}
+          SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
+          PREVIEW_MODE: ${{ vars.DOCS_PREVIEW_MODE }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ENVIRONMENT: docs-preview
+          DOCS_STATE: http
+          DOCS_STATE_STORE: ${{ steps.target.outputs.store }}
+          DOCS_STATE_TOKEN: ${{ secrets.DOCS_STATE_TOKEN }}
+          CLOUDFLARE_WORKERS_SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          case "$STAGE" in pr-[1-9]*) ;; *) echo "::error::refusing to destroy $STAGE"; exit 1 ;; esac
+          node infra/docs/scripts/cli.ts preflight
+          pnpm --filter @senon/webmcp-sdk-docs-infra exec alchemy destroy --stage "$STAGE" --yes --no-input
+          echo "Preview \`$STAGE\` destroyed." >> "$GITHUB_STEP_SUMMARY"
+
+  comment-preview:
+    name: docs-comment-preview
+    needs: [deploy-preview, teardown-preview]
+    if: >-
+      always()
+      && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
+      && (needs.deploy-preview.result == 'success' || needs.deploy-preview.result == 'failure'
+          || needs.teardown-preview.result == 'success' || needs.teardown-preview.result == 'failure')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write # the PR comment; this job holds no Cloudflare secret
+    concurrency:
+      group: docs-comment-${{ github.event.pull_request.number || inputs.destroy_preview }}
+      cancel-in-progress: false
+    steps:
+      # The comment logic comes from main's infra (sparse, no dependencies, no credentials).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: main
+          sparse-checkout: infra/docs
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.destroy_preview }}
+          SHA: ${{ needs.deploy-preview.result != '' && needs.deploy-preview.result != 'skipped' && github.event.pull_request.head.sha || '' }}
+          URL: ${{ needs.deploy-preview.outputs.url }}
+          TARGET: ${{ needs.deploy-preview.outputs.target }}
+          DEPLOY_RESULT: ${{ needs.deploy-preview.result }}
+          DEPLOY_STATUS: ${{ needs.deploy-preview.outputs.status }}
+          TEARDOWN_RESULT: ${{ needs.teardown-preview.result }}
+          REASON: ${{ needs.teardown-preview.outputs.reason }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node infra/docs/scripts/cli.ts comment
+
+  sweep-previews:
+    name: docs-sweep-previews
+    # Weekly (and on demand): destroy pr-<n> stages whose PR is closed, a draft, or gone. Catches
+    # what event-driven teardown misses: PRs closed while deploys were off, failed teardowns, PRs
+    # GitHub runs no workflow for (merge conflicts: no merge ref).
+    if: >-
+      vars.DOCS_DEPLOY_ENABLED == 'true'
+      && vars.DOCS_PREVIEW_MODE == 'dynamic'
+      && github.ref == 'refs/heads/main'
+      && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.sweep_previews))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: read # which PRs are closed or drafts
+      actions: read # preflight reads the environment's required reviewers
+    cache-mode: none
+    environment: docs-preview
+    concurrency:
+      group: docs-preview-sweep
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: main
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - run: pnpm --filter @senon/webmcp-sdk-docs-infra install --frozen-lockfile
+      - id: target
+        name: Preview stage and store (dynamic mode)
+        env:
+          PR_NUMBER: "1" # any pr-<n>: only the stage kind and the preview store are used
+          SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
+          PREVIEW_MODE: ${{ vars.DOCS_PREVIEW_MODE }}
+        run: node infra/docs/scripts/cli.ts target
+      - name: Sweep
+        env:
+          STAGE: ${{ steps.target.outputs.stage }}
+          SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
+          PREVIEW_MODE: ${{ vars.DOCS_PREVIEW_MODE }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ENVIRONMENT: docs-preview
+          DOCS_STATE: http
+          DOCS_STATE_STORE: ${{ steps.target.outputs.store }}
+          DOCS_STATE_TOKEN: ${{ secrets.DOCS_STATE_TOKEN }}
+          CLOUDFLARE_WORKERS_SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          node infra/docs/scripts/cli.ts preflight
+          node infra/docs/scripts/cli.ts sweep
+
+  deploy-production:
+    name: docs-deploy-production
+    needs: build
+    # Normal path: after a successful build of main. Rollback path: workflow_dispatch with
+    # rollback_run_id (no build; deploys that run's artifact with the current infra).
+    if: >-
+      !cancelled()
+      && vars.DOCS_DEPLOY_ENABLED == 'true'
+      && github.ref == 'refs/heads/main'
+      && ((needs.build.result == 'success' && needs.build.outputs.has_site == 'true'
+            && (github.event_name == 'push' || github.event_name == 'workflow_dispatch'))
+          || (github.event_name == 'workflow_dispatch' && inputs.rollback_run_id != '' && inputs.destroy_preview == '' && !inputs.sweep_previews))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60 # includes the bounded wait for the required checks (40 min)
+    permissions:
+      contents: read
+      actions: read # rollback: another run's metadata and artifact; preflight: environment reviewers
+      checks: read # deploy gate
+    cache-mode: none
+    environment:
+      name: docs-production # deployment branch policy: main only
+      url: ${{ steps.target.outputs.url }}
+    concurrency:
+      group: docs-production
+      cancel-in-progress: false # never interrupt a production deploy
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: main
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - id: source
+        name: What to deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          ROLLBACK_RUN_ID: ${{ inputs.rollback_run_id }}
+          BUILD_ARTIFACT_ID: ${{ needs.build.outputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          if [ -n "$ROLLBACK_RUN_ID" ]; then
+            case "$ROLLBACK_RUN_ID" in *[!0-9]*) echo "::error::rollback_run_id must be a number"; exit 1 ;; esac
+            run="$(gh api "repos/$REPO/actions/runs/$ROLLBACK_RUN_ID" \
+              --jq '[.path, .event, .head_branch, .conclusion, .head_repository.full_name, .head_sha] | @tsv')"
+            IFS=$'\t' read -r path event branch conclusion repo sha <<< "$run"
+            if [ "$path" != ".github/workflows/docs.yml" ] || [ "$event" != push ] || [ "$branch" != main ] \
+              || [ "$conclusion" != success ] || [ "$repo" != "$REPO" ]; then
+              echo "::error::run $ROLLBACK_RUN_ID is not a successful docs run of a push to main"; exit 1
+            fi
+            artifact="$(gh api "repos/$REPO/actions/runs/$ROLLBACK_RUN_ID/artifacts" \
+              --jq '[.artifacts[] | select(.name == "docs-site-production" and (.expired | not))][0].id // empty')"
+            if [ -z "$artifact" ]; then echo "::error::run $ROLLBACK_RUN_ID has no unexpired docs-site-production artifact"; exit 1; fi
+            echo "::notice::rollback to $sha (run $ROLLBACK_RUN_ID)"
+            { echo "deploy=true"; echo "run_id=$ROLLBACK_RUN_ID"; echo "artifact_id=$artifact"; echo "sha=$sha"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Two pushes can reach this job out of order: only the newest commit on main deploys.
+          head="$(gh api "repos/$REPO/commits/main" --jq .sha)"
+          if [ "$head" = "$SHA" ]; then
+            { echo "deploy=true"; echo "run_id=${GITHUB_RUN_ID}"; echo "artifact_id=$BUILD_ARTIFACT_ID"; echo "sha=$SHA"; } >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::main is at $head, newer than $SHA: skipping (the newer run deploys)"
+          fi
+      - id: target
+        name: Stage and URL from trusted inputs
+        env:
+          SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
+          PREVIEW_MODE: ${{ vars.DOCS_PREVIEW_MODE }}
+          BUILD_STAGE: ${{ needs.build.outputs.stage }}
+          BUILD_URL: ${{ needs.build.outputs.url }}
+        run: |
+          # On rollback there is no build in this run: nothing to compare.
+          if [ -z "$BUILD_STAGE" ]; then unset BUILD_STAGE BUILD_URL; fi
+          node infra/docs/scripts/cli.ts target
+      - if: steps.source.outputs.deploy == 'true'
+        name: Gate on every required check of this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ steps.source.outputs.sha }}
+        run: node infra/docs/scripts/cli.ts gate
+      - id: fresh
+        if: steps.source.outputs.deploy == 'true'
+        name: Still the head of main after the gate?
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          ROLLBACK: ${{ inputs.rollback_run_id != '' }}
+        run: |
+          set -euo pipefail
+          head="$(gh api "repos/$REPO/commits/main" --jq .sha)"
+          if [ "$ROLLBACK" = true ] || [ "$head" = "$SHA" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::main moved to $head while waiting: skipping (the newer run deploys)"
+          fi
+      - if: steps.fresh.outputs.deploy == 'true'
+        run: pnpm --filter @senon/webmcp-sdk-docs-infra install --frozen-lockfile
+      - if: steps.fresh.outputs.deploy == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ steps.source.outputs.artifact_id }}
+          run-id: ${{ steps.source.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/site
+      - if: steps.fresh.outputs.deploy == 'true'
+        name: Check the artifact
+        env:
+          DOCS_SITE_DIR: ${{ runner.temp }}/site
+        run: node infra/docs/scripts/cli.ts check-site
+      - if: steps.fresh.outputs.deploy == 'true'
+        name: Deploy
+        env:
+          STAGE: ${{ steps.target.outputs.stage }}
+          SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ENVIRONMENT: docs-production
+          DOCS_STATE: http
+          DOCS_STATE_STORE: ${{ steps.target.outputs.store }}
+          DOCS_STATE_TOKEN: ${{ secrets.DOCS_STATE_TOKEN }}
+          DOCS_SITE_DIR: ${{ runner.temp }}/site
+          CLOUDFLARE_WORKERS_SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          test "$STAGE" = "production"
+          node infra/docs/scripts/cli.ts preflight
+          pnpm --filter @senon/webmcp-sdk-docs-infra exec alchemy deploy --stage production --yes --no-input
+      - if: steps.fresh.outputs.deploy == 'true'
+        name: Smoke test
+        env:
+          STAGE: ${{ steps.target.outputs.stage }}
+          SMOKE_URL: ${{ steps.target.outputs.url }}
+          DOCS_SITE_DIR: ${{ runner.temp }}/site
+        run: node infra/docs/scripts/cli.ts smoke
+      - if: steps.fresh.outputs.deploy == 'true'
+        name: Summary
+        env:
+          SHA: ${{ steps.source.outputs.sha }}
+          URL: ${{ steps.target.outputs.url }}
+        run: |
+          {
+            echo "### Production: \`$SHA\` → $URL"
+            echo ""
+            echo "Rollback: Cloudflare dashboard → Workers → webmcp-sdk-docs → Deployments → Rollback,"
+            echo "or Run workflow with rollback_run_id = an older successful run (docs/docs-deploy.md §5)."
+          } >> "$GITHUB_STEP_SUMMARY"

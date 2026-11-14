@@ -15,6 +15,7 @@ Type-safe [WebMCP](https://webmachinelearning.github.io/webmcp/) tools for TypeS
 | [`packages/webmcp-sdk`](packages/webmcp-sdk) | the library (`@senon/webmcp-sdk`, entry points `.` and `./react`), its tests, type tests and end-to-end tests |
 | [`docs/`](docs) | design notes, research, implementation log; [`docs/release-research/`](docs/release-research) for the release and supply-chain design |
 | [`docs/releasing.md`](docs/releasing.md) | how a release is made (maintainers) |
+| [`infra/docs`](infra/docs) | infrastructure as code (Alchemy) for the docs site on Cloudflare; runbook: [`docs/docs-deploy.md`](docs/docs-deploy.md) |
 | [`tooling/release/`](tooling/release) | release scripts used by `.github/workflows/release.yml` |
 | [`.changeset/`](.changeset) | pending change notes (Changesets) |
 
