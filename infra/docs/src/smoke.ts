@@ -12,6 +12,8 @@ export interface SmokeOptions {
   /** The directory that was deployed. index.html and 404.html are compared byte for byte. */
   siteDir: string;
   indexable: boolean;
+  /** Expected X-Docs-Revision on non-production stages (`pr-6@abc1234`). */
+  revision?: string;
   /** How long to wait for the new version to be served (propagation). */
   timeoutMs?: number;
   intervalMs?: number;
@@ -77,7 +79,7 @@ export async function runSmoke(options: SmokeOptions): Promise<SmokeResult> {
   }
   checks.push("/ → 200, body = deployed index.html");
   if (!home.headers.get("content-type")?.startsWith("text/html")) failures.push("/ is not served as text/html");
-  checkHeaders("/", home.headers, options.indexable, failures, checks);
+  checkHeaders("/", home.headers, options, failures, checks);
 
   // 2. Unknown paths: status 404 with the site's 404.html, and the same headers.
   const missingPath = `__smoke-missing-${Date.now().toString(36)}`;
@@ -89,7 +91,7 @@ export async function runSmoke(options: SmokeOptions): Promise<SmokeResult> {
   // Cloudflare documents _headers for asset responses; whether it covers 404-page responses is
   // not documented (workerd does apply it). Report, don't fail.
   const missing404Failures: string[] = [];
-  checkHeaders("404", missing.headers, options.indexable, missing404Failures, []);
+  checkHeaders("404", missing.headers, options, missing404Failures, []);
   warnings.push(...missing404Failures);
 
   // 3. Routing config files are never served.
@@ -148,9 +150,15 @@ function firstPageDir(siteDir: string): string | undefined {
     });
 }
 
-function checkHeaders(where: string, headers: Headers, indexable: boolean, failures: string[], checks: string[]) {
+function checkHeaders(
+  where: string,
+  headers: Headers,
+  { indexable, revision }: { indexable: boolean; revision?: string },
+  failures: string[],
+  checks: string[],
+) {
   const before = failures.length;
-  for (const [name, value] of securityHeaders({ indexable })) {
+  for (const [name, value] of securityHeaders({ indexable, ...(revision ? { revision } : {}) })) {
     const actual = headers.get(name);
     if (actual !== value) failures.push(`${where}: ${name} is ${JSON.stringify(actual)}, want ${JSON.stringify(value)}`);
   }

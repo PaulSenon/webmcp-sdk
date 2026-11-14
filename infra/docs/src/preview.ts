@@ -1,6 +1,6 @@
 // Preview lifecycle decisions (pure): deploy or not, the PR comment, and the orphan sweeper.
 
-import { STATE_STORE_WORKER, WORKER_BASE_NAME } from "./stage.ts";
+import { STATE_STORES, WORKER_BASE_NAME } from "./stage.ts";
 
 export interface PullRequestState {
   number: number;
@@ -48,11 +48,13 @@ export interface CommentInput {
   runUrl: string;
   url?: string;
   reason?: string; // closed | draft | manual | sweeper
+  /** staging: the shared staging Worker (last PR deployed wins); preview: this PR's own Worker. */
+  target?: "staging" | "preview";
 }
 
 const SHA = /^[0-9a-f]{40}$/;
 const RUN_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/actions\/runs\/\d+$/;
-const PREVIEW_URL = /^https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev\/$/;
+const PREVIEW_URL = /^https:\/\/webmcp-sdk-docs-(staging|pr-[1-9][0-9]{0,6})\.[a-z0-9-]+\.workers\.dev\/$/;
 
 export function renderComment(input: CommentInput): string {
   if (!SHA.test(input.sha)) throw new Error("invalid commit SHA");
@@ -61,9 +63,12 @@ export function renderComment(input: CommentInput): string {
   const short = input.sha.slice(0, 7);
   const run = `[run](${input.runUrl})`;
   const why = input.reason === "draft" ? "the PR is a draft" : input.reason === "closed" ? "the PR is closed" : input.reason === "sweeper" ? "orphan cleanup" : "manual teardown";
+  const staging = input.target === "staging";
   const line = {
-    deployed: `✅ **Docs preview deployed:** ${input.url ?? "(no URL)"} — commit \`${short}\` — ${run}`,
-    failed: `❌ **Docs preview failed** for commit \`${short}\` — ${run}`,
+    deployed: staging
+      ? `✅ **Staging now serves this PR** at commit \`${short}\`: ${input.url ?? "(no URL)"} — ${run}\n\nStaging is shared: the next PR deployed there replaces this one. The \`X-Docs-Revision\` response header shows what it currently serves.`
+      : `✅ **Docs preview deployed:** ${input.url ?? "(no URL)"} — commit \`${short}\` — ${run}`,
+    failed: `❌ **Docs ${staging ? "staging" : "preview"} deploy failed** for commit \`${short}\` — ${run}`,
     removed: `🧹 **Docs preview removed** (${why}) — last commit \`${short}\` — ${run}`,
     "removal-failed": `⚠️ **Docs preview teardown failed** (${why}) — commit \`${short}\` — ${run}. Retry: Actions → docs → Run workflow, \`destroy_preview\` = this PR number.`,
   }[input.status];
@@ -71,7 +76,9 @@ export function renderComment(input: CommentInput): string {
     COMMENT_MARKER,
     line,
     "",
-    "<sub>Deployed only for open, non-draft PRs from this repository once every required check of the commit is green, with the infra of main. Removed when the PR is closed or converted to draft.</sub>",
+    staging
+      ? "<sub>Deployed to staging only for open, non-draft PRs from this repository once every required check of the commit is green, with the infra of main. Staging is never torn down; it is reused by the next PR.</sub>"
+      : "<sub>Deployed only for open, non-draft PRs from this repository once every required check of the commit is green, with the infra of main. Removed when the PR is closed or converted to draft.</sub>",
     "",
   ].join("\n");
 }
@@ -104,7 +111,7 @@ export function parsePreviewStages(listing: string, stack = WORKER_BASE_NAME): n
     const parts = raw.trim().replace(/\/+$/, "").split("/").filter(Boolean);
     if (parts[0] === stack) parts.shift();
     const stage = parts[0];
-    if (parts.length !== 1 || !stage || stage === STATE_STORE_WORKER) continue;
+    if (parts.length !== 1 || !stage || Object.values<string>(STATE_STORES).includes(stage)) continue;
     const m = /^pr-([1-9][0-9]{0,6})$/.exec(stage);
     if (m?.[1]) numbers.add(Number(m[1]));
   }

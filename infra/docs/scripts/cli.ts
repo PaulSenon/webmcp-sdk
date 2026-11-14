@@ -2,23 +2,24 @@
 // only, never from argv interpolation in YAML. Outputs go to $GITHUB_OUTPUT / $GITHUB_STEP_SUMMARY.
 //
 //   (node infra/docs/scripts/cli.ts <command>)
-//   stage        PR_NUMBER?                                     -> stage
-//   target       PR_NUMBER?, PRODUCTION_SUBDOMAIN, PREVIEW_SUBDOMAIN?, SINGLE_ACCOUNT?, BUILD_STAGE?, BUILD_URL?
-//                                                              -> stage, subdomain, url
-//   check-store  CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, EXPECTED_SUBDOMAIN
+//   target       PR_NUMBER?, PREVIEW_MODE?, SUBDOMAIN, SHA?, BUILD_STAGE?, BUILD_URL?
+//                -> stage, worker, store, url, revision
+//   preflight    STAGE, PREVIEW_MODE?, SUBDOMAIN, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN,
+//                DOCS_STATE_TOKEN, GH_TOKEN, REPO, ENVIRONMENT
 //   gate         GH_TOKEN, REPO, SHA, GATE_TIMEOUT_S?, GATE_INTERVAL_S?
 //   pr-decision  GH_TOKEN, REPO, PR_NUMBER, BUILT_SHA            -> deploy, reason
-//   comment      GH_TOKEN, REPO, PR_NUMBER, SHA?, RUN_URL, URL?, REASON?, DEPLOY_RESULT?, DEPLOY_STATUS?, TEARDOWN_RESULT?
-//   sweep        GH_TOKEN, REPO (+ Cloudflare credentials, DOCS_STATE=cloudflare)
+//   comment      GH_TOKEN, REPO, PR_NUMBER, SHA?, RUN_URL, URL?, TARGET?, REASON?, DEPLOY_RESULT?, DEPLOY_STATUS?, TEARDOWN_RESULT?
+//   sweep        GH_TOKEN, REPO (+ deploy credentials, DOCS_STATE=http)
 //   check-site   DOCS_SITE_DIR
-//   headers      STAGE                                          -> prints the _headers file
-//   smoke        SMOKE_URL, DOCS_SITE_DIR, STAGE
+//   headers      STAGE, REVISION?                               -> prints the _headers file
+//   smoke        SMOKE_URL, DOCS_SITE_DIR, STAGE, REVISION?
 import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
-import { getWorkersSubdomain, stateStorePresent } from "../src/account.ts";
+import { verifyToken, workerAccess } from "../src/account.ts";
 import { ApiError, cloudflare, github } from "../src/api.ts";
 import { evaluateChecks, type CheckRun } from "../src/gate.ts";
 import { renderHeadersFile } from "../src/headers.ts";
+import { isolationDecision, probeStateStore, storeDecision } from "../src/isolation.ts";
 import {
   commentPlan,
   findPreviewComment,
@@ -32,12 +33,18 @@ import {
 import { checkSiteDir } from "../src/site-dir.ts";
 import { runSmoke } from "../src/smoke.ts";
 import {
-  STATE_STORE_WORKER,
   WORKER_BASE_NAME,
+  assertRevision,
+  assertSubdomain,
   isIndexable,
+  parsePreviewMode,
   previewStage,
-  resolveSubdomain,
+  prStage,
+  revisionLabel,
   stageKind,
+  stateStoreFor,
+  stateStoreUrl,
+  workerName,
   workersDevUrl,
 } from "../src/stage.ts";
 
@@ -56,26 +63,23 @@ const summary = (markdown: string) => {
 };
 
 const commands: Record<string, () => Promise<void> | void> = {
-  stage() {
-    // pull_request -> pr-<n>; workflow_dispatch with a PR number -> pr-<n>; otherwise production.
+  // Stage, Worker, state store and URL from trusted inputs (event payload, repository variables,
+  // this checkout of main), never from the build job's outputs, which ran untrusted code. When the
+  // build's values are given, they must match. PR -> staging (default) or pr-<n> (dynamic mode);
+  // no PR -> production (from refs/heads/main only).
+  target() {
     const pr = process.env.PR_NUMBER ?? "";
-    const stage = pr ? previewStage(pr) : "production";
+    const mode = parsePreviewMode(process.env.PREVIEW_MODE);
     if (!pr && process.env.GITHUB_REF && process.env.GITHUB_REF !== "refs/heads/main") {
       throw new Error(`production is deployed from refs/heads/main only, not ${process.env.GITHUB_REF}`);
     }
-    output("stage", stage);
-  },
-  // Stage and URL from trusted inputs (event payload, repository variables, this checkout of main),
-  // never from the build job's outputs, which ran untrusted code. When the build's values are
-  // given, they must match. Also enforces the production/preview account separation.
-  target() {
-    const pr = process.env.PR_NUMBER ?? "";
-    const stage = pr ? previewStage(pr) : "production";
-    const subdomain = resolveSubdomain(stage, {
-      production: process.env.PRODUCTION_SUBDOMAIN,
-      preview: process.env.PREVIEW_SUBDOMAIN,
-      singleAccount: process.env.SINGLE_ACCOUNT,
-    });
+    const stage = pr ? prStage(mode, pr) : "production";
+    // The build job may run before Cloudflare is configured: then it only needs the stage.
+    if (!process.env.SUBDOMAIN && process.env.SUBDOMAIN_OPTIONAL === "1") {
+      output("stage", stage);
+      return;
+    }
+    const subdomain = assertSubdomain(env("SUBDOMAIN"));
     const url = workersDevUrl(stage, subdomain);
     for (const [key, trusted] of [["BUILD_STAGE", stage], ["BUILD_URL", url]] as const) {
       const claimed = process.env[key];
@@ -84,25 +88,46 @@ const commands: Record<string, () => Promise<void> | void> = {
       }
     }
     output("stage", stage);
-    output("subdomain", subdomain);
+    output("worker", workerName(stage));
+    output("store", stateStoreFor(stage));
     output("url", url);
+    if (stage !== "production" && process.env.SHA) output("revision", revisionLabel({ pr, sha: process.env.SHA }));
   },
-  // Before any alchemy call with the deploy token: the token's account must be the one this stage
-  // belongs to (its workers.dev subdomain is the expected one, so production secrets cannot point
-  // at the preview account or the reverse), and the bootstrapped state store must exist, because
-  // `alchemy deploy --yes` would otherwise create one (or replace one of another version) in CI.
-  async "check-store"() {
+  // Before any alchemy call with a deploy token. Refuses: a token that is not an active account
+  // token of this account; a state-store token that is not this stage's store (or a store of
+  // another version); a production/staging Worker the token cannot see (bootstrap missing or token
+  // not scoped to it); a preview-side token that can reach production (dynamic mode, or a staging
+  // token broader than its Worker) unless the environment has a required reviewer.
+  async preflight() {
+    const stage = env("STAGE");
+    const mode = parsePreviewMode(process.env.PREVIEW_MODE);
     const accountId = env("CLOUDFLARE_ACCOUNT_ID");
-    const cf = cloudflare(env("CLOUDFLARE_API_TOKEN"));
-    const expected = env("EXPECTED_SUBDOMAIN");
-    const actual = await getWorkersSubdomain(cf, accountId);
-    if (actual !== expected) {
-      throw new Error(`this token's account serves workers.dev subdomain ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}: wrong account for this environment`);
-    }
-    if (!(await stateStorePresent(cf, accountId))) {
-      throw new Error(`state store ${STATE_STORE_WORKER} not found in this account: run the bootstrap first (docs/docs-deploy.md §4)`);
-    }
-    console.log(`account ok (workers.dev subdomain ${actual}), state store ${STATE_STORE_WORKER} present`);
+    const cfToken = env("CLOUDFLARE_API_TOKEN");
+    const cf = cloudflare(cfToken);
+    const verified = await verifyToken(cf, accountId);
+    if (verified.kind !== "account") throw new Error("CLOUDFLARE_API_TOKEN must be an account-owned token of this account (Manage Account → API Tokens), not a user token");
+
+    const store = stateStoreFor(stage);
+    const { STATE_STORE_VERSION } = await import("alchemy/State");
+    const probe = await probeStateStore(stateStoreUrl(store, assertSubdomain(env("SUBDOMAIN"))), env("DOCS_STATE_TOKEN"));
+    const storeOk = storeDecision(probe, STATE_STORE_VERSION, store);
+    if (!storeOk.ok) throw new Error(storeOk.reason);
+
+    const gh = github(env("GH_TOKEN"));
+    const environment = env("ENVIRONMENT");
+    const protection = await gh.get<{ protection_rules?: { type: string; reviewers?: unknown[] }[] }>(`/repos/${env("REPO")}/environments/${environment}`);
+    const reviewers = (protection.protection_rules ?? []).filter((r) => r.type === "required_reviewers").reduce((n, r) => n + (r.reviewers?.length ?? 0), 0);
+
+    const decision = isolationDecision({
+      stage,
+      mode,
+      target: await workerAccess(cf, accountId, workerName(stage)),
+      production: stage === "production" ? undefined : await workerAccess(cf, accountId, workerName("production")),
+      reviewers,
+    });
+    if (!decision.ok) throw new Error(decision.reason);
+    for (const note of decision.notes) console.log(`::notice::${note}`);
+    console.log(`preflight ok: ${stage} (mode ${mode}), account token active, ${store} v${probe.version}, ${environment} reviewers: ${reviewers}`);
   },
   // Wait (bounded) until every required check run of SHA is green; fail closed on a failure or a
   // timeout. The list lives in src/gate.ts.
@@ -168,6 +193,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       runUrl: env("RUN_URL"),
       ...(process.env.URL ? { url: process.env.URL } : {}),
       ...(process.env.REASON ? { reason: process.env.REASON } : {}),
+      target: process.env.TARGET === "staging" ? "staging" : "preview",
     });
     const existing = findPreviewComment(await gh.list<IssueComment>(`/repos/${repo}/issues/${number}/comments?per_page=100`));
     if (existing) {
@@ -216,8 +242,10 @@ const commands: Record<string, () => Promise<void> | void> = {
     console.log(`site ok: ${report.files} files, ${(report.bytes / 1024 / 1024).toFixed(1)} MiB`);
   },
   headers() {
-    stageKind(env("STAGE"));
-    process.stdout.write(renderHeadersFile({ indexable: isIndexable(env("STAGE")) }));
+    const stage = env("STAGE");
+    stageKind(stage);
+    const revision = process.env.REVISION ? assertRevision(process.env.REVISION) : undefined;
+    process.stdout.write(renderHeadersFile({ indexable: isIndexable(stage), ...(revision ? { revision } : {}) }));
   },
   async smoke() {
     const stage = env("STAGE");
@@ -226,6 +254,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       url,
       siteDir: env("DOCS_SITE_DIR"),
       indexable: isIndexable(stage),
+      ...(process.env.REVISION ? { revision: assertRevision(process.env.REVISION) } : {}),
       timeoutMs: Number(process.env.SMOKE_TIMEOUT_MS ?? 180_000),
       log: (line) => console.log(line),
     });

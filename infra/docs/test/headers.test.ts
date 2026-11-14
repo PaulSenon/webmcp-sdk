@@ -38,3 +38,11 @@ test("_headers file: one global rule plus immutable hashed assets, within Cloudf
   assert.doesNotMatch(file, /X-Robots-Tag/);
   assert.match(renderHeadersFile({ indexable: false }), /X-Robots-Tag: noindex, nofollow/);
 });
+
+test("non-production stages carry the revision they serve; production never does", async () => {
+  const { securityHeaders: h, REVISION_HEADER } = await import("../src/headers.ts");
+  assert.ok(h({ indexable: false, revision: "pr-6@abc1234" }).some(([n, v]) => n === REVISION_HEADER && v === "pr-6@abc1234"));
+  assert.throws(() => h({ indexable: true, revision: "main@abc1234" }), /non-production/);
+  assert.throws(() => h({ indexable: false, revision: "pr-6@abc1234\nX-Evil: 1" }), /invalid revision/);
+  assert.ok(!h({ indexable: false }).some(([n]) => n === REVISION_HEADER));
+});

@@ -50,7 +50,13 @@ export const PERMISSIONS_POLICY = [
 ].join(", ");
 
 /** Headers sent on every response. Order is the order in the generated file. */
-export function securityHeaders({ indexable }: { indexable: boolean }): Array<[string, string]> {
+export const REVISION_HEADER = "X-Docs-Revision";
+
+/**
+ * Headers sent on every response. Order is the order in the generated file. `revision`
+ * (`pr-6@abc1234`) is set on non-production stages so anyone can see what staging serves.
+ */
+export function securityHeaders({ indexable, revision }: { indexable: boolean; revision?: string }): Array<[string, string]> {
   const headers: Array<[string, string]> = [
     ["Content-Security-Policy", CONTENT_SECURITY_POLICY],
     // .dev is HSTS-preloaded already; this matters once a custom domain is attached.
@@ -64,6 +70,11 @@ export function securityHeaders({ indexable }: { indexable: boolean }): Array<[s
     ["Cross-Origin-Resource-Policy", "same-origin"],
   ];
   if (!indexable) headers.push(["X-Robots-Tag", "noindex, nofollow"]);
+  if (revision !== undefined) {
+    if (indexable) throw new Error("the revision header is for non-production stages only");
+    if (!/^(main|pr-[1-9][0-9]{0,6})@[0-9a-f]{7}$/.test(revision)) throw new Error("invalid revision label");
+    headers.push([REVISION_HEADER, revision]);
+  }
   return headers;
 }
 
@@ -100,9 +111,9 @@ function rule(pattern: string, headers: Array<[string, string]>): string {
 }
 
 /** The complete `_headers` file for a stage. */
-export function renderHeadersFile({ indexable }: { indexable: boolean }): string {
+export function renderHeadersFile(options: { indexable: boolean; revision?: string }): string {
   const rules = [
-    rule("/*", securityHeaders({ indexable })),
+    rule("/*", securityHeaders(options)),
     ...IMMUTABLE_PATHS.map((path) => rule(path, [["Cache-Control", IMMUTABLE_CACHE_CONTROL]])),
   ];
   if (rules.length > MAX_RULES) throw new Error("too many _headers rules");

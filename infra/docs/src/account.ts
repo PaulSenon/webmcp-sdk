@@ -1,7 +1,7 @@
 // Cloudflare account checks shared by the CI deploy jobs (`cli.ts check-store`) and the one-time
 // bootstrap (`scripts/bootstrap.ts`). Never prints or returns the token.
 import { ACCOUNT_ID, cfErrors, type CloudflareClient } from "./api.ts";
-import { STATE_STORE_WORKER } from "./stage.ts";
+import { STATE_STORES, type StateStoreName } from "./stage.ts";
 
 export type TokenKind = "account" | "user";
 
@@ -56,10 +56,18 @@ export async function ensureWorkersSubdomain(cf: CloudflareClient, accountId: st
   return { subdomain: body.result.subdomain, created: true };
 }
 
-/** Is the bootstrapped Alchemy state-store Worker present in this account? */
-export async function stateStorePresent(cf: CloudflareClient, accountId: string): Promise<boolean> {
-  const { status, body } = await cf.request("GET", `/accounts/${accountId}/workers/scripts/${STATE_STORE_WORKER}/settings`);
-  if (body?.success) return true;
-  if (status === 404) return false;
-  throw new Error(`cannot read the state store ${STATE_STORE_WORKER}: HTTP ${status} ${cfErrors(body)} (token permissions?)`);
+/** Is a Worker present in this account? 404 = absent; 403 = this token may not see it. */
+export async function workerAccess(cf: CloudflareClient, accountId: string, name: string): Promise<"present" | "absent" | "forbidden"> {
+  const { status, body } = await cf.request("GET", `/accounts/${accountId}/workers/scripts/${name}/settings`);
+  if (body?.success) return "present";
+  if (status === 404 || /10007|not found/i.test(cfErrors(body))) return "absent";
+  if (status === 403 || /10000|authentication error|not authorized/i.test(cfErrors(body))) return "forbidden";
+  throw new Error(`cannot read Worker ${name}: HTTP ${status} ${cfErrors(body)}`);
+}
+
+/** Is a bootstrapped Alchemy state-store Worker present in this account? */
+export async function stateStorePresent(cf: CloudflareClient, accountId: string, store: StateStoreName = STATE_STORES.production): Promise<boolean> {
+  const access = await workerAccess(cf, accountId, store);
+  if (access === "forbidden") throw new Error(`cannot read the state store ${store}: HTTP 403 (token permissions?)`);
+  return access === "present";
 }

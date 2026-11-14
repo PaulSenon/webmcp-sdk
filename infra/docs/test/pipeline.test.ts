@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -15,8 +15,8 @@ import {
   previewDecision,
   renderComment,
 } from "../src/preview.ts";
-import { resolveSubdomain } from "../src/stage.ts";
-import { parseArgs, readToken } from "../scripts/bootstrap.ts";
+import { isolationDecision, probeStateStore, storeDecision, type IsolationInput } from "../src/isolation.ts";
+import { findCachedStoreToken, parseArgs, permissionReport, readToken } from "../scripts/bootstrap.ts";
 
 const SHA = "a".repeat(40);
 const OTHER = "b".repeat(40);
@@ -99,6 +99,14 @@ test("comment: body carries the marker, status, URL, short SHA and run link", ()
   assert.match(renderComment({ status: "failed", sha: SHA, runUrl: RUN }), /failed\*\* for commit `aaaaaaa`/);
 });
 
+test("comment: staging comments say which PR and commit staging serves", () => {
+  const body = renderComment({ status: "deployed", sha: SHA, runUrl: RUN, url: "https://webmcp-sdk-docs-staging.acme.workers.dev/", target: "staging" });
+  assert.match(body, /Staging now serves this PR\*\* at commit `aaaaaaa`: https:\/\/webmcp-sdk-docs-staging\.acme\.workers\.dev\//);
+  assert.match(body, /next PR deployed there replaces this one/);
+  assert.match(body, /never torn down/);
+  assert.throws(() => renderComment({ status: "deployed", sha: SHA, runUrl: RUN, url: "https://webmcp-sdk-docs.acme.workers.dev/" }), /preview URL/);
+});
+
 test("comment: refuses values that could inject markdown or links", () => {
   assert.throws(() => renderComment({ status: "deployed", sha: SHA, runUrl: RUN, url: "https://evil.example/" }), /preview URL/);
   assert.throws(() => renderComment({ status: "deployed", sha: "x)[a](b", runUrl: RUN }), /SHA/);
@@ -141,15 +149,55 @@ test("sweeper: orphan = closed, draft or deleted PR; open ready PRs are kept", (
 
 // --- account isolation --------------------------------------------------------------------------
 
-test("isolation: previews never share the production account unless single-account mode is explicit", () => {
-  assert.equal(resolveSubdomain("production", { production: "prod", preview: "prev" }), "prod");
-  assert.equal(resolveSubdomain("pr-3", { production: "prod", preview: "prev" }), "prev");
-  assert.throws(() => resolveSubdomain("pr-3", { production: "prod", preview: "prod" }), /production account/);
-  assert.throws(() => resolveSubdomain("production", { production: "prod", preview: "prod" }), /production account/);
-  assert.throws(() => resolveSubdomain("pr-3", { production: "prod" }), /DOCS_PREVIEW_WORKERS_SUBDOMAIN/);
-  assert.equal(resolveSubdomain("pr-3", { production: "prod", singleAccount: "true" }), "prod");
-  assert.equal(resolveSubdomain("pr-3", { production: "prod", preview: "prod", singleAccount: "true" }), "prod");
-  assert.throws(() => resolveSubdomain("production", {}), /DOCS_WORKERS_SUBDOMAIN/);
+// --- single-account isolation -------------------------------------------------------------------
+
+const base: IsolationInput = { stage: "staging", mode: "staging", target: "present", production: "forbidden", reviewers: 0 };
+
+test("isolation: a staging token scoped to its Worker deploys without approval", () => {
+  assert.deepEqual(isolationDecision(base), { ok: true, notes: [] });
+});
+
+test("isolation: a staging token that can see production needs a required reviewer", () => {
+  const broad = isolationDecision({ ...base, production: "present" });
+  assert.equal(broad.ok, false);
+  assert.match((broad as { reason: string }).reason, /narrow it, or add a required reviewer/);
+  const approved = isolationDecision({ ...base, production: "present", reviewers: 1 });
+  assert.equal(approved.ok, true);
+});
+
+test("isolation: dynamic mode always needs a required reviewer", () => {
+  const dyn: IsolationInput = { stage: "pr-4", mode: "dynamic", target: "absent", production: "present", reviewers: 0 };
+  assert.match((isolationDecision(dyn) as { reason: string }).reason, /dynamic needs an account-wide Workers token/);
+  assert.equal(isolationDecision({ ...dyn, reviewers: 1 }).ok, true);
+  assert.equal(isolationDecision({ ...dyn, production: "forbidden" }).ok, false); // still dynamic
+});
+
+test("isolation: stage and mode must agree; production and staging Workers must already exist", () => {
+  assert.equal(isolationDecision({ ...base, mode: "dynamic" }).ok, false);
+  assert.equal(isolationDecision({ stage: "pr-4", mode: "staging", target: "absent", production: "forbidden", reviewers: 1 }).ok, false);
+  assert.equal(isolationDecision({ ...base, target: "absent" }).ok, false);
+  assert.equal(isolationDecision({ ...base, target: "forbidden" }).ok, false);
+  assert.equal(isolationDecision({ stage: "production", mode: "staging", target: "present", production: undefined, reviewers: 0 }).ok, true);
+  assert.equal(isolationDecision({ stage: "production", mode: "staging", target: "absent", production: undefined, reviewers: 0 }).ok, false);
+  assert.equal(isolationDecision({ ...base, stage: "live_isaac" }).ok, false);
+});
+
+test("state store: the bearer token must be this store's and the version must match", async () => {
+  const fake = (status: number, version: number) =>
+    (async (url: string | URL | Request) =>
+      String(url).endsWith("/version")
+        ? new Response(JSON.stringify({ version }), { status: 200 })
+        : new Response("[]", { status })) as typeof fetch;
+  const ok = await probeStateStore("https://webmcp-sdk-docs-state.acme.workers.dev", TOKEN, fake(200, 5));
+  assert.deepEqual(ok, { version: 5, authorized: true });
+  assert.equal(storeDecision(ok, 5, "webmcp-sdk-docs-state").ok, true);
+  const wrongToken = await probeStateStore("https://x.acme.workers.dev", TOKEN, fake(401, 5));
+  assert.match((storeDecision(wrongToken, 5, "s") as { reason: string }).reason, /not the token of s/);
+  assert.match((storeDecision({ version: 4, authorized: true }, 5, "s") as { reason: string }).reason, /re-run the bootstrap to upgrade/);
+  const broken = (async () => {
+    throw new Error(`boom ${TOKEN}`);
+  }) as typeof fetch;
+  await assert.rejects(probeStateStore("https://x.acme.workers.dev", TOKEN, broken), (e: Error) => !e.message.includes(TOKEN));
 });
 
 // --- API clients and account checks -------------------------------------------------------------
@@ -221,12 +269,30 @@ test("account: state store presence; permission errors are not mistaken for abse
 // --- bootstrap arguments ------------------------------------------------------------------------
 
 test("bootstrap: the token is only accepted from a file", () => {
-  const base = ["--role", "preview", "--account-id", ACC, "--token-file", "/tmp/t"];
-  assert.deepEqual(parseArgs(base), { role: "preview", accountId: ACC, tokenFile: "/tmp/t", check: false });
+  const base = ["--account-id", ACC, "--token-file", "/tmp/t", "--out-dir", "/tmp/o"];
+  assert.deepEqual(parseArgs(base), { accountId: ACC, tokenFile: "/tmp/t", outDir: "/tmp/o", check: false });
   assert.throws(() => parseArgs([...base, "--token", "x"]), /only accepted through --token-file/);
-  assert.throws(() => parseArgs(["--role", "prod", "--account-id", ACC, "--token-file", "/t"]), /--role/);
-  assert.throws(() => parseArgs(["--role", "preview", "--account-id", "abc", "--token-file", "/t"]), /account-id/);
-  assert.equal(parseArgs([...base, "--subdomain", "s", "--check"]).subdomain, "s");
+  assert.throws(() => parseArgs(["--account-id", "abc", "--token-file", "/t", "--out-dir", "/o"]), /account-id/);
+  assert.throws(() => parseArgs(["--account-id", ACC, "--token-file", "/t"]), /--out-dir/);
+  assert.throws(() => parseArgs([...base, "--subdomain", "Bad_Name"]), /subdomain/);
+  assert.equal(parseArgs([...base, "--subdomain", "acme", "--check"]).subdomain, "acme");
+});
+
+test("bootstrap: reads a store's cached bearer token, and names the real Workers in its report", () => {
+  const home = mkdtempSync(join(tmpdir(), "home-"));
+  try {
+    mkdirSync(join(home, ".alchemy/profiles/default/state-stores"), { recursive: true });
+    writeFileSync(join(home, ".alchemy/profiles/default/state-stores/cloudflare.json"), JSON.stringify({ stores: { "webmcp-sdk-docs-state": { url: "u", authToken: "bearer-1" } } }));
+    assert.equal(findCachedStoreToken(home, "webmcp-sdk-docs-state"), "bearer-1");
+    assert.equal(findCachedStoreToken(home, "webmcp-sdk-docs-preview-state"), undefined);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+  const report = permissionReport("acme");
+  assert.match(report, /github-docs-production {3}Workers · Specified Workers: webmcp-sdk-docs · Editor/);
+  assert.match(report, /github-docs-staging {6}Workers · Specified Workers: webmcp-sdk-docs-staging · Editor/);
+  assert.match(report, /no Secrets Store, no zone/);
+  assert.match(report, /DOCS_STATE_TOKEN {6}--env docs-preview {4}< <out-dir>\/webmcp-sdk-docs-preview-state\.token/);
 });
 
 test("bootstrap: token file holds exactly one token", () => {

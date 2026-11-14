@@ -1,31 +1,34 @@
 # Docs site (apps/docs) on Cloudflare Workers static assets, infrastructure in infra/docs (Alchemy).
-# Design, threat model, one-time setup and rollback: docs/docs-deploy.md.
+# One Cloudflare account. Design, threat model, one-time setup and rollback: docs/docs-deploy.md.
 #
 # Trust model
 #   build              runs PR code (the site build and its dependencies): no secret, read-only
 #                      token, no cache. Produces the static site as an artifact. Runs for drafts too.
-#   deploy-*,          hold a Cloudflare token (environment secret). They never execute PR code:
-#   teardown-preview,  infra code and lockfile come from the current main (never the PR, never an
-#   sweep-previews     older main whose Alchemy would downgrade the state store), only the infra
-#                      package's dependencies are installed, stage and URL are recomputed from
-#                      trusted inputs, the token's account is checked against the stage, and the site
-#                      artifact is data, validated before upload.
+#   deploy-*,          hold a deploy token (environment secrets). They never execute PR code:
+#   teardown-preview,  infra code and lockfile come from the current main, only the infra
+#   sweep-previews     package's dependencies are installed, stage/Worker/store are recomputed from
+#                      trusted inputs, and `cli.ts preflight` refuses unsafe tokens before any
+#                      alchemy call. State is reached over HTTPS with the store's own bearer token
+#                      (DOCS_STATE_TOKEN): no Secrets Store permission, and the preview environment
+#                      only holds the preview store's token.
 #   comment-preview    pull-requests: write, no Cloudflare secret.
+# Previews (DOCS_PREVIEW_MODE): `staging` (default) deploys PRs to the fixed Worker
+# webmcp-sdk-docs-staging with a token scoped to that Worker only; `dynamic` creates a Worker per
+# PR with an account-wide token and requires a required reviewer on docs-preview.
 # Gate: a commit deploys only once every required check of that exact SHA is green
-# (infra/docs/src/gate.ts), and a preview only while it is the PR's current head, open, not a draft.
-# Previews only for same-repository PRs into main, never forks or Dependabot (no pull_request_target,
-# no workflow_run). Every Cloudflare job is inert until the repository variable
-# DOCS_DEPLOY_ENABLED is "true".
+# (infra/docs/src/gate.ts), and a PR only while it is the PR's current head, open, not a draft.
+# Never forks or Dependabot (no pull_request_target, no workflow_run). Every Cloudflare job is
+# inert until the repository variable DOCS_DEPLOY_ENABLED is "true".
 name: docs
 
 on:
   pull_request:
-    # converted_to_draft tears the preview down, ready_for_review deploys it.
+    # ready_for_review deploys; converted_to_draft tears a dynamic preview down (staging is reused).
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, closed]
   push:
     branches: [main]
   schedule:
-    - cron: "17 4 * * 1" # Mondays 04:17 UTC: orphan preview sweep
+    - cron: "17 4 * * 1" # Mondays 04:17 UTC: orphan preview sweep (dynamic mode only)
   workflow_dispatch:
     inputs:
       destroy_preview:
@@ -69,7 +72,7 @@ jobs:
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
       has_site: ${{ steps.site.outputs.has_site }}
       stage: ${{ steps.stage.outputs.stage }}
-      url: ${{ steps.url.outputs.url }}
+      url: ${{ steps.stage.outputs.url }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -81,22 +84,16 @@ jobs:
           package-manager-cache: false
       - run: pnpm install --frozen-lockfile
       - id: stage
+        name: Stage and public URL (SITE_URL)
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: node infra/docs/scripts/cli.ts stage
-      - id: url
-        name: Public URL (SITE_URL)
-        env:
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PRODUCTION_SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
-          PREVIEW_SUBDOMAIN: ${{ vars.DOCS_PREVIEW_WORKERS_SUBDOMAIN }}
-          SINGLE_ACCOUNT: ${{ vars.DOCS_SINGLE_ACCOUNT }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
+          PREVIEW_MODE: ${{ vars.DOCS_PREVIEW_MODE }}
+          SUBDOMAIN_OPTIONAL: "1" # before Cloudflare is configured: build without SITE_URL
         run: |
-          if [ -z "$PRODUCTION_SUBDOMAIN" ]; then
-            echo "::notice::DOCS_WORKERS_SUBDOMAIN is not set; building without SITE_URL"
-          else
-            node infra/docs/scripts/cli.ts target
-          fi
+          if [ -z "$SUBDOMAIN" ]; then echo "::notice::DOCS_WORKERS_SUBDOMAIN is not set; building without SITE_URL"; fi
+          node infra/docs/scripts/cli.ts target
       - id: site
         name: Site present?
         run: |
@@ -104,7 +101,7 @@ jobs:
       - name: Build the site
         if: steps.site.outputs.has_site == 'true'
         env:
-          SITE_URL: ${{ steps.url.outputs.url }}
+          SITE_URL: ${{ steps.stage.outputs.url }}
         run: pnpm docs:build
       - name: Check the site output
         env:
@@ -120,8 +117,9 @@ jobs:
       - name: Summary
         env:
           STAGE: ${{ steps.stage.outputs.stage }}
+          REVISION: ${{ steps.stage.outputs.revision }}
           HAS_SITE: ${{ steps.site.outputs.has_site }}
-          SITE_URL: ${{ steps.url.outputs.url }}
+          SITE_URL: ${{ steps.stage.outputs.url }}
         run: |
           {
             echo "### Docs build (\`$STAGE\`)"
@@ -165,16 +163,19 @@ jobs:
       contents: read
       pull-requests: read # PR state just before deploying
       checks: read # deploy gate
+      actions: read # preflight reads the environment's required reviewers
     cache-mode: none
     environment:
       name: docs-preview
       url: ${{ steps.target.outputs.url }}
     concurrency:
-      group: docs-preview-${{ github.event.pull_request.number }}
+      # staging: one shared Worker, every PR serialised; dynamic: one group per PR.
+      group: ${{ vars.DOCS_PREVIEW_MODE == 'dynamic' && format('docs-preview-{0}', github.event.pull_request.number) || 'docs-staging' }}
       cancel-in-progress: false # never interrupt a deploy; the newest pending run wins
     outputs:
       url: ${{ steps.target.outputs.url }}
       status: ${{ steps.result.outputs.status }}
+      target: ${{ steps.target.outputs.stage == 'staging' && 'staging' || 'preview' }}
     steps:
       # Infra code and lockfile from the current main, never from the PR (and never an older main:
       # an older Alchemy would downgrade the state store in place).
@@ -191,9 +192,9 @@ jobs:
         name: Stage and URL from trusted inputs
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          PRODUCTION_SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
-          PREVIEW_SUBDOMAIN: ${{ vars.DOCS_PREVIEW_WORKERS_SUBDOMAIN }}
-          SINGLE_ACCOUNT: ${{ vars.DOCS_SINGLE_ACCOUNT }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
+          PREVIEW_MODE: ${{ vars.DOCS_PREVIEW_MODE }}
           BUILD_STAGE: ${{ needs.build.outputs.stage }}
           BUILD_URL: ${{ needs.build.outputs.url }}
         run: node infra/docs/scripts/cli.ts target
@@ -237,19 +238,28 @@ jobs:
         name: Deploy
         env:
           STAGE: ${{ steps.target.outputs.stage }}
-          EXPECTED_SUBDOMAIN: ${{ steps.target.outputs.subdomain }}
-          DOCS_STATE: cloudflare
+          SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
+          PREVIEW_MODE: ${{ vars.DOCS_PREVIEW_MODE }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ENVIRONMENT: docs-preview
+          DOCS_STATE: http
+          DOCS_STATE_STORE: ${{ steps.target.outputs.store }}
+          DOCS_STATE_TOKEN: ${{ secrets.DOCS_STATE_TOKEN }}
+          DOCS_REVISION: ${{ steps.target.outputs.revision }}
           DOCS_SITE_DIR: ${{ runner.temp }}/site
+          CLOUDFLARE_WORKERS_SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          case "$STAGE" in pr-[1-9]*) ;; *) echo "::error::unexpected stage $STAGE"; exit 1 ;; esac
-          node infra/docs/scripts/cli.ts check-store
+          case "$STAGE" in staging|pr-[1-9]*) ;; *) echo "::error::unexpected stage $STAGE"; exit 1 ;; esac
+          node infra/docs/scripts/cli.ts preflight
           pnpm --filter @senon/webmcp-sdk-docs-infra exec alchemy deploy --stage "$STAGE" --yes --no-input
       - if: steps.open.outputs.deploy == 'true'
         name: Smoke test
         env:
           STAGE: ${{ steps.target.outputs.stage }}
+          REVISION: ${{ steps.target.outputs.revision }}
           SMOKE_URL: ${{ steps.target.outputs.url }}
           DOCS_SITE_DIR: ${{ runner.temp }}/site
         run: node infra/docs/scripts/cli.ts smoke
@@ -260,10 +270,12 @@ jobs:
 
   teardown-preview:
     name: docs-teardown-preview
-    # Closed (merged or not) or converted to draft: same teardown. No base-branch filter: a PR
-    # retargeted after its preview was deployed must still be cleaned up.
+    # Dynamic mode only (staging is a fixed Worker, reused, never torn down). Closed (merged or
+    # not) or converted to draft: same teardown. No base-branch filter: a PR retargeted after its
+    # preview was deployed must still be cleaned up.
     if: >-
       vars.DOCS_DEPLOY_ENABLED == 'true'
+      && vars.DOCS_PREVIEW_MODE == 'dynamic'
       && ((github.event_name == 'pull_request'
             && (github.event.action == 'closed' || github.event.action == 'converted_to_draft')
             && github.event.pull_request.head.repo.full_name == github.repository
@@ -274,8 +286,9 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+      actions: read # preflight reads the environment's required reviewers
     cache-mode: none
-    environment: docs-preview
+    environment: docs-preview # dynamic mode requires a required reviewer here (preflight enforces it)
     concurrency:
       group: docs-preview-${{ github.event.pull_request.number || inputs.destroy_preview }}
       cancel-in-progress: false
@@ -295,9 +308,8 @@ jobs:
       - id: target
         env:
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.destroy_preview }}
-          PRODUCTION_SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
-          PREVIEW_SUBDOMAIN: ${{ vars.DOCS_PREVIEW_WORKERS_SUBDOMAIN }}
-          SINGLE_ACCOUNT: ${{ vars.DOCS_SINGLE_ACCOUNT }}
+          SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
+          PREVIEW_MODE: ${{ vars.DOCS_PREVIEW_MODE }}
         run: node infra/docs/scripts/cli.ts target
       - id: reason
         env:
@@ -308,13 +320,20 @@ jobs:
       - name: Destroy the preview
         env:
           STAGE: ${{ steps.target.outputs.stage }}
-          EXPECTED_SUBDOMAIN: ${{ steps.target.outputs.subdomain }}
-          DOCS_STATE: cloudflare
+          SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
+          PREVIEW_MODE: ${{ vars.DOCS_PREVIEW_MODE }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ENVIRONMENT: docs-preview
+          DOCS_STATE: http
+          DOCS_STATE_STORE: ${{ steps.target.outputs.store }}
+          DOCS_STATE_TOKEN: ${{ secrets.DOCS_STATE_TOKEN }}
+          CLOUDFLARE_WORKERS_SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           case "$STAGE" in pr-[1-9]*) ;; *) echo "::error::refusing to destroy $STAGE"; exit 1 ;; esac
-          node infra/docs/scripts/cli.ts check-store
+          node infra/docs/scripts/cli.ts preflight
           pnpm --filter @senon/webmcp-sdk-docs-infra exec alchemy destroy --stage "$STAGE" --yes --no-input
           echo "Preview \`$STAGE\` destroyed." >> "$GITHUB_STEP_SUMMARY"
 
@@ -350,6 +369,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.destroy_preview }}
           SHA: ${{ needs.deploy-preview.result != '' && needs.deploy-preview.result != 'skipped' && github.event.pull_request.head.sha || '' }}
           URL: ${{ needs.deploy-preview.outputs.url }}
+          TARGET: ${{ needs.deploy-preview.outputs.target }}
           DEPLOY_RESULT: ${{ needs.deploy-preview.result }}
           DEPLOY_STATUS: ${{ needs.deploy-preview.outputs.status }}
           TEARDOWN_RESULT: ${{ needs.teardown-preview.result }}
@@ -364,6 +384,7 @@ jobs:
     # GitHub runs no workflow for (merge conflicts: no merge ref).
     if: >-
       vars.DOCS_DEPLOY_ENABLED == 'true'
+      && vars.DOCS_PREVIEW_MODE == 'dynamic'
       && github.ref == 'refs/heads/main'
       && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.sweep_previews))
     runs-on: ubuntu-24.04
@@ -371,6 +392,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read # which PRs are closed or drafts
+      actions: read # preflight reads the environment's required reviewers
     cache-mode: none
     environment: docs-preview
     concurrency:
@@ -388,23 +410,28 @@ jobs:
           package-manager-cache: false
       - run: pnpm --filter @senon/webmcp-sdk-docs-infra install --frozen-lockfile
       - id: target
-        name: Preview account (subdomain) for the account check
+        name: Preview stage and store (dynamic mode)
         env:
-          PR_NUMBER: "1" # any preview stage: only the preview account's subdomain is used
-          PRODUCTION_SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
-          PREVIEW_SUBDOMAIN: ${{ vars.DOCS_PREVIEW_WORKERS_SUBDOMAIN }}
-          SINGLE_ACCOUNT: ${{ vars.DOCS_SINGLE_ACCOUNT }}
+          PR_NUMBER: "1" # any pr-<n>: only the stage kind and the preview store are used
+          SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
+          PREVIEW_MODE: ${{ vars.DOCS_PREVIEW_MODE }}
         run: node infra/docs/scripts/cli.ts target
       - name: Sweep
         env:
+          STAGE: ${{ steps.target.outputs.stage }}
+          SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
+          PREVIEW_MODE: ${{ vars.DOCS_PREVIEW_MODE }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          EXPECTED_SUBDOMAIN: ${{ steps.target.outputs.subdomain }}
-          DOCS_STATE: cloudflare
+          ENVIRONMENT: docs-preview
+          DOCS_STATE: http
+          DOCS_STATE_STORE: ${{ steps.target.outputs.store }}
+          DOCS_STATE_TOKEN: ${{ secrets.DOCS_STATE_TOKEN }}
+          CLOUDFLARE_WORKERS_SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          node infra/docs/scripts/cli.ts check-store
+          node infra/docs/scripts/cli.ts preflight
           node infra/docs/scripts/cli.ts sweep
 
   deploy-production:
@@ -423,7 +450,7 @@ jobs:
     timeout-minutes: 60 # includes the bounded wait for the required checks (40 min)
     permissions:
       contents: read
-      actions: read # rollback: read another run's metadata and artifact
+      actions: read # rollback: another run's metadata and artifact; preflight: environment reviewers
       checks: read # deploy gate
     cache-mode: none
     environment:
@@ -479,9 +506,8 @@ jobs:
       - id: target
         name: Stage and URL from trusted inputs
         env:
-          PRODUCTION_SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
-          PREVIEW_SUBDOMAIN: ${{ vars.DOCS_PREVIEW_WORKERS_SUBDOMAIN }}
-          SINGLE_ACCOUNT: ${{ vars.DOCS_SINGLE_ACCOUNT }}
+          SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
+          PREVIEW_MODE: ${{ vars.DOCS_PREVIEW_MODE }}
           BUILD_STAGE: ${{ needs.build.outputs.stage }}
           BUILD_URL: ${{ needs.build.outputs.url }}
         run: |
@@ -530,14 +556,20 @@ jobs:
         name: Deploy
         env:
           STAGE: ${{ steps.target.outputs.stage }}
-          EXPECTED_SUBDOMAIN: ${{ steps.target.outputs.subdomain }}
-          DOCS_STATE: cloudflare
+          SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ENVIRONMENT: docs-production
+          DOCS_STATE: http
+          DOCS_STATE_STORE: ${{ steps.target.outputs.store }}
+          DOCS_STATE_TOKEN: ${{ secrets.DOCS_STATE_TOKEN }}
           DOCS_SITE_DIR: ${{ runner.temp }}/site
+          CLOUDFLARE_WORKERS_SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           test "$STAGE" = "production"
-          node infra/docs/scripts/cli.ts check-store
+          node infra/docs/scripts/cli.ts preflight
           pnpm --filter @senon/webmcp-sdk-docs-infra exec alchemy deploy --stage production --yes --no-input
       - if: steps.fresh.outputs.deploy == 'true'
         name: Smoke test
