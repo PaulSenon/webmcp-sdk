@@ -1,6 +1,6 @@
 # Docs site deployment
 
-Maintainer runbook for the documentation site (`apps/docs`) on Cloudflare, in **one Cloudflare account** (Isaac's existing one, shared with Better Upload). The pipeline is **vendored from the Monorepo Delivery Kit** ([`.delivery-kit-version`](../.delivery-kit-version): `v0.1.0`); this file covers what is specific to WebMCP: verified Cloudflare facts, tokens, residual risks, setup and operations. The generic contract (workflows, artifact layout, stages, PR feedback) is the kit's `docs/contract.md`.
+Maintainer runbook for the documentation site (`apps/docs`) on Cloudflare, in **one Cloudflare account** (Isaac's existing one, shared with Better Upload). The pipeline is **vendored from the Monorepo Delivery Kit** ([`.delivery-kit-version`](../.delivery-kit-version): `v0.1.1`); this file covers what is specific to WebMCP: verified Cloudflare facts, tokens, residual risks, setup and operations. The generic contract (workflows, artifact layout, stages, PR feedback) is the kit's `docs/contract.md`.
 
 - Site build (unprivileged): [`.github/workflows/docs.yml`](../.github/workflows/docs.yml) (kit `site.yml`, rendered for `docs`), jobs `lifecycle` and `docs-build`.
 - Deploys (privileged, main-defined): [`.github/workflows/docs-deploy.yml`](../.github/workflows/docs-deploy.yml) (kit `site-deploy.yml`), jobs `deploy-plan`, `deploy-preview`, `deploy-teardown`, `deploy-comment`, `deploy-production`, `deploy-sweep`.
@@ -128,7 +128,7 @@ Every local change in a vendored file carries a `# local:` / `// local:` comment
 
 | # | Where | Change | Reason |
 | - | - | - | - |
-| L1 | `release.yml`, `tooling/release/*` | **not vendored**: WebMCP's release kept unchanged | its flow (dispatch + `confirm_version`, version-PR change-note check, stage publish via OIDC, owner 2FA on npm, local tarball comparison, idempotent finalize, `release-finalize` reviewer) is the reference the kit converges on in v0.2.0; npm trust is bound to `release.yml` + `npm-release`, unchanged |
+| L1 | `release.yml`, `tooling/release/*` | **not vendored**: WebMCP's release kept unchanged (kit v0.1.1's `vendor.mjs` keeps an existing release and says so; verified byte-identical) | its flow (dispatch + `confirm_version`, version-PR change-note check, stage publish via OIDC, owner 2FA on npm, local tarball comparison, idempotent finalize, `release-finalize` reviewer) is the reference the kit converges on in v0.2.0; npm trust is bound to `release.yml` + `npm-release`, unchanged |
 | L2 | `infra/site/src/local-headers.ts` (new), hooks in `alchemy.run.ts` and `scripts/cli.ts` smoke | project headers from `delivery.headers`, merged into the kit's `_headers` blocks; the smoke checks them | the kit renders only minimal headers (nosniff, referrer, noindex, revision) and has no config for CSP/HSTS/COOP/CORP/Permissions-Policy/immutable `/assets/*`; a duplicated `/*` pattern makes Cloudflare reject the whole file (verified under workerd), hence the merge. Upstream: `site.headers` |
 | L3 | `docs.yml` `docs-build` | no pnpm cache (`package-manager-cache: false`, `cache-mode: none`) | its artifact is what production serves (threat model T3); the kit uses `cache: pnpm` there |
 | L4 | `infra/site/scripts/local-check.ts` | removes only its own stage from `infra/site/.alchemy/` | the kit deletes the whole directory, wiping developers' other local stages |

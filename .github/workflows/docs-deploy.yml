@@ -289,7 +289,7 @@ jobs:
     permissions:
       pull-requests: write # the single preview comment; this job holds no Cloudflare secret
       statuses: write # `docs-preview` commit status with the URL (never a required check)
-    concurrency: # local: zizmor pedantic concurrency-limits (kit v0.1.0 has none on this job)
+    concurrency: # local: zizmor pedantic concurrency-limits (kit v0.1.0–v0.1.1 has none on this job)
       group: docs-comment-${{ needs.plan.outputs.pr || inputs.destroy_pr }}
       cancel-in-progress: false
     steps:
@@ -382,7 +382,7 @@ jobs:
         run: node infra/site/scripts/cli.ts main-check
       - id: go
         env:
-          # local: steps.fresh (kit v0.1.0 references a non-existent steps.before: production would never deploy; actionlint)
+          # local: steps.fresh (kit v0.1.0–v0.1.1 references a non-existent steps.before: production would never deploy; actionlint)
           GO: ${{ steps.src.outputs.rollback == 'true' || steps.fresh.outputs.deploy == 'true' }}
         run: echo "deploy=$GO" >> "$GITHUB_OUTPUT"
       - if: steps.go.outputs.deploy == 'true'
