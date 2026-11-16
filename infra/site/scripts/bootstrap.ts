@@ -154,7 +154,7 @@ export async function main(argv: readonly string[]) {
         "",
         "OWNER — create two ACCOUNT API tokens (Manage Account → API Tokens → Custom token), expiry ≤ 1 year:",
         `  ci-${base}-production   Workers · Specified Workers: ${prod} · Editor        (nothing else)`,
-        `  ci-${base}-preview      Workers Scripts · Edit, account-wide                  (creates/deletes ${base}-pr-<n>)`,
+        `  ci-${base}-preview      Workers · Admin, account-wide (Editor cannot create)   (creates/deletes ${base}-pr-<n>)`,
         "  The preview token can also modify production (Cloudflare cannot scope by name prefix): docs/limits.md L1.",
         "  Then DELETE the temporary bootstrap token.",
         "",

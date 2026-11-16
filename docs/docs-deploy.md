@@ -1,10 +1,10 @@
 # Docs site deployment
 
-Maintainer runbook for the documentation site (`apps/docs`) on Cloudflare, in **one Cloudflare account** (Isaac's existing one, shared with Better Upload). The pipeline is **vendored from the Monorepo Delivery Kit** ([`.delivery-kit-version`](../.delivery-kit-version): `v0.1.3`); this file covers what is specific to WebMCP: verified Cloudflare facts, tokens, residual risks, setup and operations. The generic contract (workflows, artifact layout, stages, PR feedback) is the kit's `docs/contract.md`.
+Maintainer runbook for the documentation site (`apps/docs`) on Cloudflare, in **one Cloudflare account** (Isaac's existing one, shared with Better Upload). The pipeline is **vendored from the Monorepo Delivery Kit** ([`.delivery-kit-version`](../.delivery-kit-version): `v0.1.4`); this file covers what is specific to WebMCP: verified Cloudflare facts, tokens, residual risks, setup and operations. The generic contract (workflows, artifact layout, stages, PR feedback) is the kit's `docs/contract.md`.
 
 - Site build (unprivileged): [`.github/workflows/docs.yml`](../.github/workflows/docs.yml) (kit `site.yml`, rendered for `docs`), jobs `lifecycle` and `docs-build`.
 - Deploys (privileged, main-defined): [`.github/workflows/docs-deploy.yml`](../.github/workflows/docs-deploy.yml) (kit `site-deploy.yml`), jobs `deploy-plan`, `deploy-preview`, `deploy-teardown`, `deploy-comment`, `deploy-production`, `deploy-sweep`.
-- Infrastructure as code: [`infra/site`](../infra/site) (kit, Alchemy v2, private package `@senon/webmcp-sdk-docs-infra`). Project configuration: [`delivery.config.json`](../delivery.config.json), [`delivery.headers`](../delivery.headers), [`tooling/docs-site-build.mjs`](../tooling/docs-site-build.mjs).
+- Infrastructure as code: [`infra/site`](../infra/site) (kit, Alchemy v2, private package `@senon/webmcp-sdk-docs-infra`). Project configuration: [`delivery.config.json`](../delivery.config.json) (including `site.headers`), [`tooling/docs-site-build.mjs`](../tooling/docs-site-build.mjs).
 - **Deploys are off** until the repository variable `DOCS_DEPLOY_ENABLED` is `true` (§6). Until then only `docs` runs, without credentials.
 - **Preview mode:** `DOCS_PREVIEW_MODE=dynamic` (Isaac, 2026-11-14): one Worker per PR. `staging` remains available (§4).
 - The npm release (`release.yml`, `tooling/release/`, [`releasing.md`](releasing.md)) is **not** vendored from the kit (§2.2).
@@ -92,7 +92,7 @@ Minimal sets:
 
 **Routing** ([SSG and 404 pages](https://developers.cloudflare.com/workers/static-assets/routing/static-site-generation/)): `html_handling: drop-trailing-slash` (`/guide` serves `guide.html` or `guide/index.html`, `/guide/` redirects to `/guide`: the site's links, canonical URLs and sitemap have no trailing slash), `not_found_handling: 404-page` (unknown paths get `404.html` with status 404).
 
-**Headers**: the kit's minimal rules plus [`delivery.headers`](../delivery.headers), merged by [`infra/site/src/local-headers.ts`](../infra/site/src/local-headers.ts) (§2.2 L2) into one `_headers` file passed in the Worker's asset config, which overrides any `_headers`/`_redirects` in the build output ([headers](https://developers.cloudflare.com/workers/static-assets/headers/)). Headers belong to the reviewed infra package, not to site content:
+**Headers**: the kit's rules (nosniff, referrer policy, noindex off production, `X-Delivery-Revision`) plus WebMCP's `site.headers` in [`delivery.config.json`](../delivery.config.json), merged by the kit into one block per URL pattern (a repeated pattern makes Cloudflare reject the whole `_headers` file) and checked by the deploy smoke test. The CSP allows `'unsafe-inline'` scripts because the prerendered TanStack Start pages inline their serialized router state and the theme anti-flash script (no per-request nonce on a static site); it was verified with zero violations in Playwright under workerd on the real build. Headers belong to the reviewed configuration, not to site content:
 
 | Header | Value | Why |
 | - | - | - |
@@ -122,23 +122,17 @@ Changing the CSP (for example to embed a third-party demo) is an infra PR, revie
 - **`preflight`** before any Cloudflare call: account-owned token of this account, state-store token and API version, Workers visible to the token, and a preview token able to reach production only if `docs-preview` is main-only or has a required reviewer.
 - **Hygiene:** `permissions: {}`, least privilege per job, SHA pins, no cache in the build whose artifact ships nor in any privileged job, only `infra/site` dependencies from main's frozen lockfile in privileged jobs; zizmor pedantic (one justified `dangerous-triggers` suppression on `workflow_run`), actionlint and the kit's workflow invariants (`tooling/check-workflows.mjs`, W1–W9, run in `checks`).
 
-### 2.2 Kit divergences (local changes, to upstream)
+### 2.2 Kit divergences (to upstream or decide)
 
-Every local change in a vendored file carries a `# local:` / `// local:` comment.
+Kit v0.1.4 absorbed every adaptation the first adoption needed (project headers as `site.headers`, no cache in `docs-build`, local-check scope, the production `steps.fresh` fix, `deploy-comment` concurrency, rollback gate, portable tests). What remains:
 
-| # | Where | Change | Reason |
+| # | Where | Divergence | Reason |
 | - | - | - | - |
-| L1 | `release.yml`, `tooling/release/*` | **not vendored**: WebMCP's release kept unchanged (kit v0.1.1+ `vendor.mjs` keeps an existing release and says so; verified byte-identical) | its flow (dispatch + `confirm_version`, version-PR change-note check, stage publish via OIDC, owner 2FA on npm, local tarball comparison, idempotent finalize, `release-finalize` reviewer) is the reference the kit converges on in v0.2.0; npm trust is bound to `release.yml` + `npm-release`, unchanged |
-| L2 | `infra/site/src/local-headers.ts` (new), hooks in `alchemy.run.ts` and `scripts/cli.ts` smoke | project headers from `delivery.headers`, merged into the kit's `_headers` blocks; the smoke checks them | the kit renders only minimal headers (nosniff, referrer, noindex, revision) and has no config for CSP/HSTS/COOP/CORP/Permissions-Policy/immutable `/assets/*`; a duplicated `/*` pattern makes Cloudflare reject the whole file (verified under workerd), hence the merge. Upstream: `site.headers` |
-| L3 | `docs.yml` `docs-build` | no pnpm cache (`package-manager-cache: false`, `cache-mode: none`) | its artifact is what production serves (threat model T3); the kit uses `cache: pnpm` there |
-| L4 | `infra/site/scripts/local-check.ts` | removes only its own stage from `infra/site/.alchemy/` | the kit deletes the whole directory, wiping developers' other local stages |
-| L5 | `docs-deploy.yml` `deploy-production` | `steps.fresh` instead of `steps.before` | kit bug (actionlint): the production deploy could never run |
-| L6 | `docs-deploy.yml` `deploy-comment` | job-level concurrency | zizmor pedantic `concurrency-limits` |
-| L7 | `infra/site/package.json` | name `@senon/webmcp-sdk-docs-infra` (JSON has no comments) | the template name `@example/site-infra` |
-| L8 | `package.json` `test:infra` | kit tests run with `DELIVERY_CONFIG=tooling/delivery-kit/template.delivery.config.json` (verbatim kit copy); WebMCP's own values in `tooling/docs-delivery.test.ts` | the kit's unit tests assert the template's config values |
-| L9 | `tooling/check-workflows.test.mjs` | vendored but not run | it asserts the template's own files (`site.yml`, `ci.yml` anchors); `check-workflows.mjs` itself runs on WebMCP's workflows |
+| L1 | `release.yml`, `tooling/release/*` | not vendored: WebMCP's release kept byte-identical (`vendor.mjs` ≥ v0.1.1 keeps an existing release) | WebMCP's flow (dispatch + `confirm_version`, version-PR change-note check, stage publish via OIDC, owner 2FA on npm, local tarball comparison, idempotent finalize, `release-finalize` reviewer) is the reference the kit converges on in v0.2.0; npm trust is bound to `release.yml` + `npm-release` |
+| L1b | `tooling/check-delivery-workflows.mjs` (project wrapper around the kit's unmodified `check-workflows.mjs`) | allows exactly one finding: W10 on `release.yml` job `finalize` (an environment job without `cache-mode: none`) | consequence of L1: release.yml stays untouched. Formal gap only (finalize restores no cache). Fix = one line `cache-mode: none` in `release.yml` finalize, **owner's decision** |
+| L7 | `infra/site/package.json` | name `@senon/webmcp-sdk-docs-infra` (JSON, no comment possible) | the template name `@example/site-infra` |
 
-Project-owned (not divergences): `delivery.config.json`, `delivery.headers`, `tooling/docs-site-build.mjs` (+ `tooling/docs-placeholder/` until `apps/docs` exists), `ci.yml`.
+No `local:` patch remains in any vendored file. Project-owned (not divergences): `delivery.config.json`, `tooling/docs-site-build.mjs` (+ `tooling/docs-placeholder/` until `apps/docs` exists), `tooling/docs-delivery.test.ts`, `tooling/check-delivery-workflows.mjs`, `ci.yml`.
 
 ## 3. Tokens: exact permissions
 

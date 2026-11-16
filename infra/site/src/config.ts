@@ -2,6 +2,7 @@
 // infrastructure (alchemy.run.ts, scripts/cli.ts) and the release tooling. In privileged jobs it is
 // always read from the checkout of the default branch, never from a pull request.
 import { readFileSync } from "node:fs";
+import { validateHeaderRules } from "./stage.ts";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,6 +23,8 @@ export interface DeliveryConfig {
     server: boolean;
     /** Entry module inside `server/` (default "index.js"; TanStack Start emits "server.js"). */
     serverEntry?: string;
+    /** Project response headers for static assets, merged into the kit's (e.g. a CSP): pattern -> name -> value. */
+    headers?: Record<string, Record<string, string>>;
     /** Cloudflare asset trailing-slash policy (default "auto-trailing-slash"; WebMCP: "drop-trailing-slash"). */
     htmlHandling?: "auto-trailing-slash" | "force-trailing-slash" | "drop-trailing-slash" | "none";
     /** Paths the smoke test fetches after each deploy (expects 2xx). */
@@ -31,7 +34,7 @@ export interface DeliveryConfig {
     enabled: boolean;
     /**
      * "dynamic" (default, Vercel-like): one Worker per PR, created and destroyed by CI; needs an
-     * account-wide Workers token (docs/limits.md L1). "staging": every PR deploys to the one fixed
+     * account-wide Workers Admin token (docs/limits.md L1). "staging": every PR deploys to the one fixed
      * `<worker>-staging` Worker (last deploy wins) with a token scoped to that Worker only.
      */
     mode: "dynamic" | "staging";
@@ -71,6 +74,11 @@ export function validateConfig(raw: unknown): DeliveryConfig {
   if (s.worker.includes("-pr-") || s.worker.endsWith("-staging") || s.worker.endsWith("-state")) fail("site.worker uses a reserved suffix");
   if (!REL_PATH.test(s.artifact ?? "")) fail("site.artifact must be a relative path without ..");
   if (typeof s.server !== "boolean") fail("site.server must be a boolean");
+  try {
+    validateHeaderRules(s.headers);
+  } catch (e) {
+    fail((e as Error).message);
+  }
   if (s.htmlHandling !== undefined && !["auto-trailing-slash", "force-trailing-slash", "drop-trailing-slash", "none"].includes(s.htmlHandling)) fail("site.htmlHandling must be a Cloudflare htmlHandling value");
   if (s.serverEntry !== undefined && !/^[A-Za-z0-9_-]+\.m?js$/.test(s.serverEntry)) fail("site.serverEntry must be a .js/.mjs file name inside server/");
   if (!Array.isArray(s.smokePaths) || !s.smokePaths.every((p) => /^\/[A-Za-z0-9._/-]*$/.test(p))) fail("site.smokePaths must be absolute URL paths");

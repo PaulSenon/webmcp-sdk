@@ -34,6 +34,9 @@ if (process.argv.includes("--server")) {
   artifact = join(scratch, "art");
 }
 const stage = "ci_local_check";
+const stack = `${(JSON.parse(readFileSync(process.env.DELIVERY_CONFIG ?? join(pkg, "../../delivery.config.json"), "utf8")) as { project: string }).project}-site`;
+/** What `alchemy dev` writes for this stage (state + local runtime cache), nothing else. */
+const ownStageDirs = () => [join(pkg, ".alchemy/state", stack, stage), join(pkg, ".alchemy/local/cache", `${stack}-${stage.replaceAll("_", "-")}`)];
 const revision = `main@${"0".repeat(7)}`;
 const home = mkdtempSync(join(tmpdir(), "alchemy-home-"));
 
@@ -62,8 +65,8 @@ const stop = () => {
   } catch {}
   rmSync(home, { recursive: true, force: true });
   rmSync(scratch, { recursive: true, force: true });
-  // local: remove only this check's own stage; the whole .alchemy/ holds developers' other local stages.
-  rmSync(join(pkg, ".alchemy/state", "webmcp-sdk-site", stage), { recursive: true, force: true });
+  // Only this check's own stage: a developer's other local stages in .alchemy/ are left alone.
+  for (const dir of ownStageDirs()) rmSync(dir, { recursive: true, force: true });
 };
 
 let log = "";

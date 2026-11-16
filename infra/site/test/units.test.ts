@@ -12,9 +12,18 @@ import { renderHeaders, revisionLabel, stageKind, stateStoreFor, workerName, wor
 
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 
-test("config: the template's config is valid; bad values are refused", () => {
-  const c = loadConfig();
-  assert.equal(c.site.worker, "example-site");
+const FIXTURE = {
+  project: "example",
+  site: { name: "site", worker: "example-site", artifact: "apps/site/out", server: false, smokePaths: ["/"] },
+  previews: { enabled: true, mode: "dynamic", requiredChecks: ["checks", "site-build"], gateTimeoutMinutes: 30 },
+  release: { packages: ["packages/hello"], branches: { main: "latest" }, mode: "stage" },
+};
+
+test("config: the repository's config is valid; bad values are refused", () => {
+  // The repository's own config (template or adopter) must validate; the rules are then tested on a
+  // fixed fixture so these tests pass unchanged in any vendored copy (kit L8).
+  loadConfig();
+  const c = validateConfig(FIXTURE);
   assert.throws(() => validateConfig({ ...c, site: { ...c.site, worker: "x-pr-1" } }), /reserved/);
   assert.throws(() => validateConfig({ ...c, site: { ...c.site, artifact: "../etc" } }), /relative/);
   assert.throws(() => validateConfig({ ...c, release: { ...c.release, mode: "yolo" } }), /mode/);
@@ -25,6 +34,9 @@ test("config: the template's config is valid; bad values are refused", () => {
   assert.throws(() => validateConfig({ ...c, previews: { ...c.previews, requiredChecks: ["checks"] } }), /site-build/);
   assert.throws(() => validateConfig({ ...c, previews: { ...c.previews, requiredChecks: ["site-build", "site-preview"] } }), /must not include/);
   assert.equal(previewMode(c, ""), "dynamic");
+  assert.throws(() => validateConfig({ ...c, site: { ...c.site, headers: { "/*": { "X-Robots-Tag": "all" } } } }), /set by the kit/);
+  assert.throws(() => validateConfig({ ...c, site: { ...c.site, headers: { "/*": { CSP: "a\nb" } } } }), /one non-empty line/);
+  assert.throws(() => validateConfig({ ...c, site: { ...c.site, headers: { "no-slash": { A: "b" } } } }), /pattern/);
   assert.equal(previewMode(c, "staging"), "staging");
   assert.throws(() => previewMode(c, "yolo"));
 });
@@ -45,6 +57,19 @@ test("stages: kinds, reserved look-alikes, names, URLs, stores", () => {
   assert.equal(previewNumberFromWorker("example-site", "example-site"), undefined);
   assert.equal(previewNumberFromWorker("example-site", "other-site-pr-42"), undefined);
   assert.equal(previewNumberFromWorker("example-site", "example-site-pr-42-evil"), undefined);
+});
+
+test("headers: project headers merge into the kit's blocks, one block per pattern", () => {
+  const out = renderHeaders("pr-3", revisionLabel({ pr: 3, sha: SHA }), { "/*": { "Content-Security-Policy": "default-src 'self'", "Referrer-Policy": "no-referrer" }, "/assets/*": { "Cache-Control": "immutable" }, "/r/*": { "Cache-Control": "max-age=60" } });
+  const patterns = out.split("\n").filter((l) => l && !l.startsWith(" "));
+  assert.deepEqual(patterns, ["/*", "/r/*", "/assets/*"]); // never a repeated pattern (workerd rejects the whole file)
+  assert.match(out, /Content-Security-Policy: default-src 'self'/);
+  assert.match(out, /Referrer-Policy: no-referrer/);
+  assert.doesNotMatch(out, /strict-origin-when-cross-origin/);
+  assert.match(out, /X-Robots-Tag: noindex/);
+  assert.match(out, /X-Delivery-Revision: pr-3@0123456/);
+  assert.match(out, /\/r\/\*\n {2}Access-Control-Allow-Origin: \*\n {2}Cache-Control: max-age=60/);
+  assert.throws(() => renderHeaders("production", undefined, { "/*": { "x-robots-tag": "all" } }), /set by the kit/);
 });
 
 test("headers: only production is indexable; revision is validated", () => {

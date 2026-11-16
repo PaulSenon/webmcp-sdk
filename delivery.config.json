@@ -6,17 +6,43 @@
     "artifact": ".artifacts/docs",
     "server": false,
     "htmlHandling": "drop-trailing-slash",
-    "smokePaths": ["/", "/docs"]
+    "smokePaths": [
+      "/",
+      "/docs"
+    ],
+    "headers": {
+      "/*": {
+        "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; media-src 'self'; worker-src 'self'; manifest-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests",
+        "Strict-Transport-Security": "max-age=63072000; includeSubDomains",
+        "X-Frame-Options": "DENY",
+        "Permissions-Policy": "accelerometer=(), browsing-topics=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()",
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Resource-Policy": "same-origin"
+      },
+      "/assets/*": {
+        "Cache-Control": "public, max-age=31536000, immutable"
+      }
+    }
   },
   "previews": {
     "enabled": true,
     "mode": "dynamic",
-    "requiredChecks": ["checks", "browser", "workflow-lint", "docs-build"],
+    "requiredChecks": [
+      "checks",
+      "browser",
+      "workflow-lint",
+      "docs-build"
+    ],
     "gateTimeoutMinutes": 40
   },
   "release": {
-    "packages": ["packages/webmcp-sdk"],
-    "branches": { "main": "latest", "next": "next" },
+    "packages": [
+      "packages/webmcp-sdk"
+    ],
+    "branches": {
+      "main": "latest",
+      "next": "next"
+    },
     "mode": "stage"
   }
 }

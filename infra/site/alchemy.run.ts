@@ -22,7 +22,6 @@ import * as Layer from "effect/Layer";
 import type { HttpClient } from "effect/http/HttpClient";
 import { join } from "node:path";
 import { checkArtifact } from "./src/artifact.ts";
-import { mergeHeaders, projectHeaders } from "./src/local-headers.ts"; // local: project headers hook
 import { loadConfig, previewMode, repoRoot, serverEntry } from "./src/config.ts";
 import { assertRevision, isRemoteStage, renderHeaders, stageKind, stateStoreFor, stateStoreUrl, stateStores, workerName } from "./src/stage.ts";
 
@@ -91,8 +90,7 @@ export default Alchemy.Stack(
         directory: join(artifactDir, "assets"),
         htmlHandling: config.site.htmlHandling ?? "auto-trailing-slash",
         notFoundHandling: config.site.server ? "none" : "404-page",
-        // local: + WebMCP project headers (CSP, HSTS, COOP/CORP, immutable /assets/*) from delivery.headers
-        headers: mergeHeaders(renderHeaders(stage, revision), projectHeaders().rules),
+        headers: renderHeaders(stage, revision, config.site.headers),
         redirects: "",
       },
       // Stable workers.dev URL only: per-version preview URLs would keep every old build public.

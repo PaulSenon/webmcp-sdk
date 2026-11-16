@@ -87,17 +87,55 @@ export function assertRevision(label: string): string {
   return label;
 }
 
+export type HeaderRules = Record<string, Record<string, string>>;
+
+/** Header names the kit owns: a project may not set them (it could make a preview indexable). */
+export const KIT_OWNED_HEADERS = ["x-robots-tag", "x-delivery-revision"];
+const HEADER_PATTERN = /^\/[A-Za-z0-9._~*/:@-]*$/;
+const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$/;
+
+/** Validates delivery.config.json site.headers (pattern -> name -> value). */
+export function validateHeaderRules(rules: unknown): HeaderRules {
+  if (rules === undefined) return {};
+  if (!rules || typeof rules !== "object" || Array.isArray(rules)) throw new Error("site.headers must map URL patterns to header objects");
+  for (const [pattern, headers] of Object.entries(rules as Record<string, unknown>)) {
+    if (!HEADER_PATTERN.test(pattern)) throw new Error(`site.headers: invalid URL pattern ${JSON.stringify(pattern)}`);
+    if (!headers || typeof headers !== "object" || Array.isArray(headers)) throw new Error(`site.headers[${pattern}] must be an object`);
+    for (const [name, value] of Object.entries(headers as Record<string, unknown>)) {
+      if (!HEADER_NAME.test(name)) throw new Error(`site.headers[${pattern}]: invalid header name ${JSON.stringify(name)}`);
+      if (KIT_OWNED_HEADERS.includes(name.toLowerCase())) throw new Error(`site.headers[${pattern}]: ${name} is set by the kit`);
+      if (typeof value !== "string" || !value || value.length > 4096 || /[\r\n\u0000]/.test(value)) throw new Error(`site.headers[${pattern}][${name}]: value must be one non-empty line`);
+    }
+  }
+  return rules as HeaderRules;
+}
+
 /**
  * `_headers` for static assets: only production is indexable; every stage says which commit it
- * serves. Owned by the infra (overrides any `_headers` in the build output).
+ * serves; project headers (site.headers) are MERGED into the kit's blocks, one block per URL
+ * pattern — workerd rejects the whole file when a pattern repeats (no header at all, not even
+ * noindex). A project value replaces a kit default of the same name, except kit-owned names.
  */
-export function renderHeaders(stage: string, revision?: string): string {
-  const lines = ["/*", "  X-Content-Type-Options: nosniff", "  Referrer-Policy: strict-origin-when-cross-origin"];
-  if (stageKind(stage) !== "production") lines.push("  X-Robots-Tag: noindex, nofollow");
-  if (revision) lines.push(`  X-Delivery-Revision: ${assertRevision(revision)}`);
+export function renderHeaders(stage: string, revision?: string, project: HeaderRules = {}): string {
+  const blocks = new Map<string, Map<string, [string, string]>>(); // pattern -> lowercased name -> [name, value]
+  const set = (pattern: string, name: string, value: string) => {
+    if (!blocks.has(pattern)) blocks.set(pattern, new Map());
+    blocks.get(pattern)!.set(name.toLowerCase(), [name, value]);
+  };
+  set("/*", "X-Content-Type-Options", "nosniff");
+  set("/*", "Referrer-Policy", "strict-origin-when-cross-origin");
   // shadcn registry: fetched cross-origin by the shadcn CLI and by browsers.
   // Previews change on every push: never cached. Production: 5 minutes.
-  lines.push("/r/*", "  Access-Control-Allow-Origin: *", stageKind(stage) === "production" ? "  Cache-Control: public, max-age=300" : "  Cache-Control: no-cache");
+  set("/r/*", "Access-Control-Allow-Origin", "*");
+  set("/r/*", "Cache-Control", stageKind(stage) === "production" ? "public, max-age=300" : "no-cache");
+  for (const [pattern, headers] of Object.entries(validateHeaderRules(project))) for (const [name, value] of Object.entries(headers)) set(pattern, name, value);
+  if (stageKind(stage) !== "production") set("/*", "X-Robots-Tag", "noindex, nofollow");
+  if (revision) set("/*", "X-Delivery-Revision", assertRevision(revision));
+  const lines: string[] = [];
+  for (const [pattern, headers] of blocks) {
+    lines.push(pattern);
+    for (const [name, value] of headers.values()) lines.push(`  ${name}: ${value}`);
+  }
   return `${lines.join("\n")}\n`;
 }
 

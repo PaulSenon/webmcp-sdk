@@ -9,6 +9,7 @@
 //   W7 no Actions cache in jobs that hold an environment
 //   W8 no ${{ github.event.* }} / inputs.* expression inside `run:` (pass via env)
 //   W9 no pull_request_target at all (teardown goes through workflow_run too)
+//   W10 every job with an environment or id-token: write declares `cache-mode: none`
 //   node tooling/check-workflows.mjs <dir>   -> exit 1 with the list of violations
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -40,6 +41,7 @@ export function checkWorkflow(file, text) {
       if (forbidden.length) err("W6", `job ${id} has id-token: write and checks out or runs repository code`);
     }
     if (job.environment && steps.some((s) => s.with && (s.with.cache || s.with["package-manager-cache"] === true))) err("W7", `job ${id} uses the Actions cache`);
+    if ((job.environment || perms["id-token"] === "write") && job["cache-mode"] !== "none") err("W10", `job ${id} holds an environment or id-token but does not set cache-mode: none`);
     for (const s of steps) {
       const uses = s.uses ?? "";
       if (uses && !uses.startsWith("./") && !/@[0-9a-f]{40}$/.test(uses)) err("W2", `job ${id}: ${uses} is not pinned to a commit SHA`);
