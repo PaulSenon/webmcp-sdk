@@ -68,3 +68,15 @@ test("workflow names match delivery.config.json", () => {
   assert.match(files[SITE], new RegExp(`name: ${n}-build`));
   assert.match(files[DEPLOY], new RegExp(`workflows: \\[${n}\\]`));
 });
+
+// W4 relaxation (Better Upload's cloud-tests): a push-only, environment-backed job in ci.yml is fine;
+// the same job without the PR gate, or with repository secrets and no environment, is not.
+test("W4 allows a main-only environment job gated off PR events, and only that", () => {
+  const wf = (job) => `name: ci\non:\n  pull_request:\n  push:\n    branches: [main]\npermissions: {}\njobs:\n  cloud-tests:\n${job}    runs-on: ubuntu-24.04\n    cache-mode: none\n    permissions: {}\n    steps:\n      - env: { K: "\${{ secrets.R2_KEY }}" }\n        run: echo test\n`;
+  const ok = "    if: github.event_name == 'push'\n    environment: cloud-tests\n";
+  assert.deepEqual(checkWorkflow("ci.yml", wf(ok)), []);
+  assert.ok(checkWorkflow("ci.yml", wf("    environment: cloud-tests\n")).some((e) => e.includes("W4")), "no PR gate");
+  assert.ok(checkWorkflow("ci.yml", wf("    if: github.event_name == 'push'\n")).some((e) => e.includes("W4")), "repo secret, no environment");
+  const pushOnly = wf("    environment: cloud-tests\n").replace("  pull_request:\n", "");
+  assert.deepEqual(checkWorkflow("ci.yml", pushOnly), []);
+});

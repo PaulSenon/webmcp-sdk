@@ -3,7 +3,9 @@
 //   W1 top-level `permissions: {}` (every job declares its own)
 //   W2 every remote action pinned to a full commit SHA
 //   W3 every checkout has persist-credentials: false
-//   W4 workflows triggered by pull_request/push hold no secret, no environment, no id-token
+//   W4 in a workflow a pull_request can run, a job holds no secret and no environment unless its
+//      `if` excludes PR events (push/schedule/dispatch only) AND it uses an environment (which must
+//      be default-branch-only: preflight checks the kit's, docs require it for others); no id-token
 //   W5 privileged triggers (workflow_run, pull_request_target) only check out the default branch
 //   W6 id-token: write only in a job without checkout and without install/run of repository code
 //   W7 no Actions cache in jobs that hold an environment
@@ -32,8 +34,14 @@ export function checkWorkflow(file, text) {
     const jobText = JSON.stringify(job);
     const perms = job.permissions ?? {};
     if (unprivileged) {
-      if (/secrets\.(?!GITHUB_TOKEN)/.test(jobText)) err("W4", `job ${id} reads a secret in a PR-triggered workflow`);
-      if (job.environment) err("W4", `job ${id} uses an environment in a PR-triggered workflow`);
+      // A main-only environment job gated to non-PR events is safe on push (the workflow is the
+      // default branch's) — e.g. Better Upload's cloud-tests. Repository secrets outside an
+      // environment never are: a same-repo PR can edit the workflow and read them.
+      const prRuns = triggers.includes("pull_request");
+      const gatedOffPr = typeof job.if === "string" && (/github\.event_name\s*==\s*'(push|schedule|workflow_dispatch)'/.test(job.if) || /github\.event_name\s*!=\s*'pull_request'/.test(job.if));
+      const allowed = !prRuns || (gatedOffPr && Boolean(job.environment));
+      if (/secrets\.(?!GITHUB_TOKEN)/.test(jobText) && !allowed) err("W4", `job ${id} reads a secret in a workflow a pull_request can run (gate it off PR events and put the secrets in a default-branch-only environment)`);
+      if (job.environment && !allowed) err("W4", `job ${id} uses an environment in a workflow a pull_request can run, without an if excluding PR events`);
       if (perms["id-token"] === "write") err("W4", `job ${id} requests id-token in a PR-triggered workflow`);
     }
     if (perms["id-token"] === "write") {

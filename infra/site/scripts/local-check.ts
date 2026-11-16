@@ -14,19 +14,25 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const pkg = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-let artifact = resolve(process.env.SITE_ARTIFACT_DIR ?? join(pkg, "../../apps/site/out"));
+const repoConfigPath = process.env.DELIVERY_CONFIG ?? join(pkg, "../../delivery.config.json");
+const repoConfig = JSON.parse(readFileSync(repoConfigPath, "utf8")) as { project: string; site: { artifact: string; server: boolean; serverEntry?: string; smokePaths: string[] } };
+// Default: the repository's own build output (site.artifact), not the template's path.
+let artifact = resolve(process.env.SITE_ARTIFACT_DIR ?? join(pkg, "../..", repoConfig.site.artifact));
 const scratch = mkdtempSync(join(tmpdir(), "local-check-"));
 if (process.argv.includes("--server")) {
-  const config = JSON.parse(readFileSync(join(pkg, "../../delivery.config.json"), "utf8"));
+  const config = structuredClone(repoConfig);
   config.site.server = true;
   config.site.serverEntry = process.env.SERVER_ENTRY || "index.js";
   if (process.env.SMOKE_PATHS) config.site.smokePaths = process.env.SMOKE_PATHS.split(",");
   process.env.DELIVERY_CONFIG = join(scratch, "delivery.config.json");
   writeFileSync(process.env.DELIVERY_CONFIG, JSON.stringify(config));
 } else if (process.argv.includes("--ssr-fixture")) {
-  const config = JSON.parse(readFileSync(join(pkg, "../../delivery.config.json"), "utf8"));
+  // The fixture's OWN values (its entry index.js, its route /api/hello), never the project's
+  // serverEntry/smokePaths, which describe the project's server, not the fixture's.
+  const config = structuredClone(repoConfig);
   config.site.server = true;
-  config.site.smokePaths.push("/api/hello");
+  config.site.serverEntry = "index.js";
+  config.site.smokePaths = ["/", "/api/hello"];
   process.env.DELIVERY_CONFIG = join(scratch, "delivery.config.json");
   writeFileSync(process.env.DELIVERY_CONFIG, JSON.stringify(config));
   cpSync(join(artifact, "assets"), join(scratch, "art", "assets"), { recursive: true });
@@ -34,7 +40,7 @@ if (process.argv.includes("--server")) {
   artifact = join(scratch, "art");
 }
 const stage = "ci_local_check";
-const stack = `${(JSON.parse(readFileSync(process.env.DELIVERY_CONFIG ?? join(pkg, "../../delivery.config.json"), "utf8")) as { project: string }).project}-site`;
+const stack = `${repoConfig.project}-site`;
 /** What `alchemy dev` writes for this stage (state + local runtime cache), nothing else. */
 const ownStageDirs = () => [join(pkg, ".alchemy/state", stack, stage), join(pkg, ".alchemy/local/cache", `${stack}-${stage.replaceAll("_", "-")}`)];
 const revision = `main@${"0".repeat(7)}`;

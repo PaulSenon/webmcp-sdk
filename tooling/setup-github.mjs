@@ -11,7 +11,8 @@
 //   direct mode, none in stage mode where npm 2FA approval is the gate); release-finalize
 //   (release branches + required reviewer); env secrets CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID,
 //   <SITE>_STATE_TOKEN; variables <SITE>_WORKERS_SUBDOMAIN (+ <SITE>_PREVIEW_MODE with --preview-mode);
-//   ruleset "delivery-kit" requiring PRs + previews.requiredChecks + dependency-review (--no-ruleset to skip).
+//   ruleset "delivery-kit" requiring PRs + previews.requiredChecks + dependency-review (--no-ruleset to skip);
+//   Dependency graph (vulnerability alerts + automated security fixes) enabled if off: dependency-review needs it.
 // Does NOT set <SITE>_DEPLOY_ENABLED: turning deploys on is the owner's explicit decision.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -84,6 +85,24 @@ const mode = opt("--preview-mode");
 if (mode) {
   if (mode !== "dynamic" && mode !== "staging") throw new Error("--preview-mode dynamic|staging");
   gh(["variable", "set", `${SITE}_PREVIEW_MODE`, "--repo", repo, "--body", mode]);
+}
+
+// Dependency graph: `dependency-review` (a required check) fails with "not supported on this
+// repository" without it, blocking every PR (found by Better Upload). Enabling vulnerability alerts
+// turns it on; automated security fixes are enabled alongside. Checked even in dry run.
+const alertsOn = (() => {
+  if (!apply) return undefined;
+  try {
+    execFileSync("gh", ["api", `repos/${repo}/vulnerability-alerts`], { stdio: "ignore" }); // 204 = on, 404 = off
+    return true;
+  } catch {
+    return false;
+  }
+})();
+if (alertsOn === true) console.log("dependency graph / vulnerability alerts: already enabled");
+else {
+  api("PUT", `repos/${repo}/vulnerability-alerts`);
+  api("PUT", `repos/${repo}/automated-security-fixes`);
 }
 
 // Ruleset: PRs required on the default branch, CI checks required, no force-push/deletion.

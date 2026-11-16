@@ -1,6 +1,6 @@
 # Docs site deployment
 
-Maintainer runbook for the documentation site (`apps/docs`) on Cloudflare, in **one Cloudflare account** (Isaac's existing one, shared with Better Upload). The pipeline is **vendored from the Monorepo Delivery Kit** ([`.delivery-kit-version`](../.delivery-kit-version): `v0.1.4`); this file covers what is specific to WebMCP: verified Cloudflare facts, tokens, residual risks, setup and operations. The generic contract (workflows, artifact layout, stages, PR feedback) is the kit's `docs/contract.md`.
+Maintainer runbook for the documentation site (`apps/docs`) on Cloudflare, in **one Cloudflare account** (Isaac's existing one, shared with Better Upload). The pipeline is **vendored from the Monorepo Delivery Kit** ([`.delivery-kit-version`](../.delivery-kit-version): `v0.1.5`); this file covers what is specific to WebMCP: verified Cloudflare facts, tokens, residual risks, setup and operations. The generic contract (workflows, artifact layout, stages, PR feedback) is the kit's `docs/contract.md`.
 
 - Site build (unprivileged): [`.github/workflows/docs.yml`](../.github/workflows/docs.yml) (kit `site.yml`, rendered for `docs`), jobs `lifecycle` and `docs-build`.
 - Deploys (privileged, main-defined): [`.github/workflows/docs-deploy.yml`](../.github/workflows/docs-deploy.yml) (kit `site-deploy.yml`), jobs `deploy-plan`, `deploy-preview`, `deploy-teardown`, `deploy-comment`, `deploy-production`, `deploy-sweep`.
@@ -124,7 +124,7 @@ Changing the CSP (for example to embed a third-party demo) is an infra PR, revie
 
 ### 2.2 Kit divergences (to upstream or decide)
 
-Kit v0.1.4 absorbed every adaptation the first adoption needed (project headers as `site.headers`, no cache in `docs-build`, local-check scope, the production `steps.fresh` fix, `deploy-comment` concurrency, rollback gate, portable tests). What remains:
+Kit v0.1.4 absorbed (v0.1.5 adds only generic fixes) every adaptation the first adoption needed (project headers as `site.headers`, no cache in `docs-build`, local-check scope, the production `steps.fresh` fix, `deploy-comment` concurrency, rollback gate, portable tests). What remains:
 
 | # | Where | Divergence | Reason |
 | - | - | - | - |
