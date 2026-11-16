@@ -17,8 +17,32 @@ export interface IsolationInput {
   target: WorkerAccess;
   /** What this token sees of the production Worker (only probed for non-production stages). */
   production: WorkerAccess | undefined;
-  /** Required reviewers configured on the job's GitHub environment. */
+  /** The job's GitHub environment protection (read from the API). */
+  protection: EnvironmentProtection;
+}
+
+export interface EnvironmentProtection {
+  /** Number of required reviewers. */
   reviewers: number;
+  /** Deployment branch policy allows `main` and nothing else (no refs/pull/*, no other branch, no tags). */
+  mainOnly: boolean;
+}
+
+/**
+ * Is a preview-side token that can reach production acceptable? Only if its environment cannot be
+ * used by code that did not land on main: either a human approves each run (required reviewer),
+ * or the environment only releases secrets to runs on `main` (the deploy workflow is
+ * `workflow_run`/schedule/dispatch on main; a PR that adds or edits a workflow runs on
+ * refs/pull/<n>/merge and is refused by the environment).
+ */
+export function environmentGuards(p: EnvironmentProtection): boolean {
+  return p.reviewers > 0 || p.mainOnly;
+}
+
+/** Branch policy is exactly one custom branch policy named `main` (pure, from the API responses). */
+export function isMainOnly(policy: { protected_branches?: boolean; custom_branch_policies?: boolean } | null | undefined, rules: readonly { name: string; type?: string }[]): boolean {
+  if (!policy || policy.protected_branches || !policy.custom_branch_policies) return false;
+  return rules.length === 1 && rules[0]?.name === "main" && (rules[0].type ?? "branch") === "branch";
 }
 
 export type IsolationResult = { ok: true; notes: string[] } | { ok: false; reason: string };
@@ -46,16 +70,17 @@ export function isolationDecision(input: IsolationInput): IsolationResult {
   // Can this preview-side token reach production? Then a human must approve every run.
   const reachesProduction = input.mode === "dynamic" || input.production === "present";
   if (reachesProduction) {
-    if (input.reviewers < 1) {
+    if (!environmentGuards(input.protection)) {
       return {
         ok: false,
         reason:
           input.mode === "dynamic"
-            ? "DOCS_PREVIEW_MODE=dynamic needs an account-wide Workers token, which can also modify or delete production: add a required reviewer to the docs-preview environment"
-            : "the staging token can see the production Worker (it is broader than Editor on webmcp-sdk-docs-staging): narrow it, or add a required reviewer to the docs-preview environment",
+            ? "DOCS_PREVIEW_MODE=dynamic needs an account-wide Workers token, which can also modify or delete production: restrict the docs-preview environment to branch main only, or add a required reviewer"
+            : "the staging token can see the production Worker (it is broader than Editor on webmcp-sdk-docs-staging): narrow it, or restrict docs-preview to main only / add a required reviewer",
       };
     }
-    notes.push("this token can reach the production Worker; the run was approved by a required reviewer");
+    const why = [input.protection.mainOnly ? "only releases secrets to main" : "", input.protection.reviewers > 0 ? "requires a reviewer" : ""].filter(Boolean).join(" and ");
+    notes.push(`this token can reach the production Worker; accepted because the environment ${why}`);
   }
   return { ok: true, notes };
 }

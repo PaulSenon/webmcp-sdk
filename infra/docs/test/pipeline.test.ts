@@ -15,7 +15,7 @@ import {
   previewDecision,
   renderComment,
 } from "../src/preview.ts";
-import { isolationDecision, probeStateStore, storeDecision, type IsolationInput } from "../src/isolation.ts";
+import { isMainOnly, isolationDecision, probeStateStore, storeDecision, type IsolationInput } from "../src/isolation.ts";
 import { findCachedStoreToken, parseArgs, permissionReport, readToken } from "../scripts/bootstrap.ts";
 
 const SHA = "a".repeat(40);
@@ -151,7 +151,7 @@ test("sweeper: orphan = closed, draft or deleted PR; open ready PRs are kept", (
 
 // --- single-account isolation -------------------------------------------------------------------
 
-const base: IsolationInput = { stage: "staging", mode: "staging", target: "present", production: "forbidden", reviewers: 0 };
+const base: IsolationInput = { stage: "staging", mode: "staging", target: "present", production: "forbidden", protection: { reviewers: 0, mainOnly: false } };
 
 test("isolation: a staging token scoped to its Worker deploys without approval", () => {
   assert.deepEqual(isolationDecision(base), { ok: true, notes: [] });
@@ -160,25 +160,43 @@ test("isolation: a staging token scoped to its Worker deploys without approval",
 test("isolation: a staging token that can see production needs a required reviewer", () => {
   const broad = isolationDecision({ ...base, production: "present" });
   assert.equal(broad.ok, false);
-  assert.match((broad as { reason: string }).reason, /narrow it, or add a required reviewer/);
-  const approved = isolationDecision({ ...base, production: "present", reviewers: 1 });
+  assert.match((broad as { reason: string }).reason, /narrow it, or restrict docs-preview to main only/);
+  const approved = isolationDecision({ ...base, production: "present", protection: { reviewers: 1, mainOnly: false } });
   assert.equal(approved.ok, true);
 });
 
 test("isolation: dynamic mode always needs a required reviewer", () => {
-  const dyn: IsolationInput = { stage: "pr-4", mode: "dynamic", target: "absent", production: "present", reviewers: 0 };
+  const dyn: IsolationInput = { stage: "pr-4", mode: "dynamic", target: "absent", production: "present", protection: { reviewers: 0, mainOnly: false } };
   assert.match((isolationDecision(dyn) as { reason: string }).reason, /dynamic needs an account-wide Workers token/);
-  assert.equal(isolationDecision({ ...dyn, reviewers: 1 }).ok, true);
+  assert.equal(isolationDecision({ ...dyn, protection: { reviewers: 1, mainOnly: false } }).ok, true);
   assert.equal(isolationDecision({ ...dyn, production: "forbidden" }).ok, false); // still dynamic
+});
+
+test("isolation: dynamic mode is also accepted when docs-preview only serves main", () => {
+  const dyn: IsolationInput = { stage: "pr-4", mode: "dynamic", target: "absent", production: "present", protection: { reviewers: 0, mainOnly: true } };
+  const r = isolationDecision(dyn);
+  assert.equal(r.ok, true);
+  assert.match((r as { notes: string[] }).notes[0] ?? "", /only releases secrets to main/);
+});
+
+test("isolation: main-only means exactly one custom branch policy named main", () => {
+  const custom = { protected_branches: false, custom_branch_policies: true };
+  assert.equal(isMainOnly(custom, [{ name: "main", type: "branch" }]), true);
+  assert.equal(isMainOnly(custom, [{ name: "main", type: "branch" }, { name: "refs/pull/*/merge", type: "branch" }]), false);
+  assert.equal(isMainOnly(custom, [{ name: "main", type: "tag" }]), false);
+  assert.equal(isMainOnly(custom, [{ name: "ma*", type: "branch" }]), false);
+  assert.equal(isMainOnly(custom, []), false);
+  assert.equal(isMainOnly({ protected_branches: true, custom_branch_policies: false }, []), false); // any protected branch
+  assert.equal(isMainOnly(null, []), false); // no policy: every branch
 });
 
 test("isolation: stage and mode must agree; production and staging Workers must already exist", () => {
   assert.equal(isolationDecision({ ...base, mode: "dynamic" }).ok, false);
-  assert.equal(isolationDecision({ stage: "pr-4", mode: "staging", target: "absent", production: "forbidden", reviewers: 1 }).ok, false);
+  assert.equal(isolationDecision({ stage: "pr-4", mode: "staging", target: "absent", production: "forbidden", protection: { reviewers: 1, mainOnly: false } }).ok, false);
   assert.equal(isolationDecision({ ...base, target: "absent" }).ok, false);
   assert.equal(isolationDecision({ ...base, target: "forbidden" }).ok, false);
-  assert.equal(isolationDecision({ stage: "production", mode: "staging", target: "present", production: undefined, reviewers: 0 }).ok, true);
-  assert.equal(isolationDecision({ stage: "production", mode: "staging", target: "absent", production: undefined, reviewers: 0 }).ok, false);
+  assert.equal(isolationDecision({ stage: "production", mode: "staging", target: "present", production: undefined, protection: { reviewers: 0, mainOnly: false } }).ok, true);
+  assert.equal(isolationDecision({ stage: "production", mode: "staging", target: "absent", production: undefined, protection: { reviewers: 0, mainOnly: false } }).ok, false);
   assert.equal(isolationDecision({ ...base, stage: "live_isaac" }).ok, false);
 });
 
