@@ -62,7 +62,8 @@ const stop = () => {
   } catch {}
   rmSync(home, { recursive: true, force: true });
   rmSync(scratch, { recursive: true, force: true });
-  rmSync(join(pkg, ".alchemy"), { recursive: true, force: true });
+  // local: remove only this check's own stage; the whole .alchemy/ holds developers' other local stages.
+  rmSync(join(pkg, ".alchemy/state", "webmcp-sdk-site", stage), { recursive: true, force: true });
 };
 
 let log = "";

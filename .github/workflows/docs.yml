@@ -35,6 +35,7 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+    cache-mode: none # local: see package-manager-cache below
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -43,7 +44,9 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
-          cache: pnpm
+          # local: no cache. This job's artifact is what production serves (WebMCP threat model T3:
+          # nothing restored from the Actions cache into anything that ships).
+          package-manager-cache: false
       - run: pnpm install --frozen-lockfile
       - id: target
         name: Stage and URL (docs-deploy.yml recomputes both from trusted inputs)

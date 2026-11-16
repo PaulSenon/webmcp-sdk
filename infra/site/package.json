@@ -1,8 +1,8 @@
 {
-  "name": "@example/site-infra",
+  "name": "@senon/webmcp-sdk-docs-infra",
   "version": "0.0.0",
   "private": true,
-  "description": "Site infrastructure (Alchemy v2) from the Monorepo Delivery Kit. Not published.",
+  "description": "Docs site infrastructure (Alchemy v2), vendored from the Monorepo Delivery Kit (see .delivery-kit-version). Not published.",
   "type": "module",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",

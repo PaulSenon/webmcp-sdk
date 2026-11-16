@@ -16,6 +16,7 @@ import { loadConfig, previewMode, serverEntry } from "../src/config.ts";
 import { evaluateChecks, type CheckRun, type CommitStatus } from "../src/gate.ts";
 import { afterDeploy, findComment, isOrphan, previewAction, previewNumbers, previewNumbersFromState, renderComment, type CommentStatus, type IssueComment, type PullRequest } from "../src/preview.ts";
 import { prStage, revisionLabel, stateStoreFor, stateStoreUrl, workerName, workersDevUrl } from "../src/stage.ts";
+import { projectHeaders } from "../src/local-headers.ts"; // local: project headers hook
 
 const config = loadConfig();
 const base = config.site.worker;
@@ -208,14 +209,16 @@ const commands: Record<string, () => Promise<void>> = {
         const res = await fetch(new URL(path, url), { headers: { "cache-control": "no-cache" } });
         if (new URL(res.url).origin !== new URL(url).origin) throw new Error(`${path} redirects off-site to ${res.url}`);
         const got = res.headers.get("x-delivery-revision");
+        // local: every project header of delivery.headers' /* rule must be served exactly (static responses).
+        const headerMismatch = config.site.server ? undefined : projectHeaders().global.find(([n, v]) => res.headers.get(n) !== v);
         await res.arrayBuffer();
         // The revision header comes from the asset layer's _headers (static responses).
-        const revisionOk = !revision || config.site.server || got === revision;
+        const revisionOk = (!revision || config.site.server || got === revision) && !headerMismatch; // local: && !headerMismatch
         if (res.status >= 200 && res.status < 300 && revisionOk) {
           last = "";
           break;
         }
-        last = `${path}: HTTP ${res.status}, revision ${got ?? "none"}`;
+        last = `${path}: HTTP ${res.status}, revision ${got ?? "none"}${headerMismatch ? `, ${headerMismatch[0]} is ${JSON.stringify(res.headers.get(headerMismatch[0]))}` : ""}`; // local: header detail
         await sleep(attempt * 3_000);
       }
       if (last) throw new Error(`smoke test failed: ${last}`);

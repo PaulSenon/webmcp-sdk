@@ -1,0 +1,21 @@
+{
+  "project": "example",
+  "site": {
+    "name": "site",
+    "worker": "example-site",
+    "artifact": "apps/site/out",
+    "server": false,
+    "smokePaths": ["/", "/r/registry.json"]
+  },
+  "previews": {
+    "enabled": true,
+    "mode": "dynamic",
+    "requiredChecks": ["checks", "package", "workflow-lint", "site-build"],
+    "gateTimeoutMinutes": 30
+  },
+  "release": {
+    "packages": ["packages/hello"],
+    "branches": { "main": "latest", "next": "next" },
+    "mode": "stage"
+  }
+}

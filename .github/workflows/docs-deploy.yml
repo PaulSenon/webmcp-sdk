@@ -289,6 +289,9 @@ jobs:
     permissions:
       pull-requests: write # the single preview comment; this job holds no Cloudflare secret
       statuses: write # `docs-preview` commit status with the URL (never a required check)
+    concurrency: # local: zizmor pedantic concurrency-limits (kit v0.1.0 has none on this job)
+      group: docs-comment-${{ needs.plan.outputs.pr || inputs.destroy_pr }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -379,7 +382,8 @@ jobs:
         run: node infra/site/scripts/cli.ts main-check
       - id: go
         env:
-          GO: ${{ steps.src.outputs.rollback == 'true' || steps.before.outputs.deploy == 'true' }}
+          # local: steps.fresh (kit v0.1.0 references a non-existent steps.before: production would never deploy; actionlint)
+          GO: ${{ steps.src.outputs.rollback == 'true' || steps.fresh.outputs.deploy == 'true' }}
         run: echo "deploy=$GO" >> "$GITHUB_OUTPUT"
       - if: steps.go.outputs.deploy == 'true'
         run: pnpm --filter "$INFRA_PKG" install --frozen-lockfile

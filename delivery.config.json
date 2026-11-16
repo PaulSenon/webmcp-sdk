@@ -1,0 +1,22 @@
+{
+  "project": "webmcp-sdk",
+  "site": {
+    "name": "docs",
+    "worker": "webmcp-sdk-docs",
+    "artifact": ".artifacts/docs",
+    "server": false,
+    "htmlHandling": "drop-trailing-slash",
+    "smokePaths": ["/", "/docs"]
+  },
+  "previews": {
+    "enabled": true,
+    "mode": "dynamic",
+    "requiredChecks": ["checks", "browser", "workflow-lint", "docs-build"],
+    "gateTimeoutMinutes": 40
+  },
+  "release": {
+    "packages": ["packages/webmcp-sdk"],
+    "branches": { "main": "latest", "next": "next" },
+    "mode": "stage"
+  }
+}
