@@ -1,5 +1,5 @@
-// Origin: webmcp-sdk infra/docs/src/unzip.ts @52311db (PR #7), copied verbatim. Since kit v0.1.0 the
-// KIT is the reference: fixes land here first, then flow to every vendored copy (docs/updating.md).
+// Vendored from monorepo-delivery-kit (template/infra/site/src/unzip.ts), do not diverge, fixes go
+// upstream to the kit. (Origin: webmcp-sdk infra/docs/src/unzip.ts @52311db; the kit is upstream since v0.1.0.)
 // Safe extraction of an untrusted build artifact (a ZIP from the GitHub artifacts API) in the
 // privileged deploy job. Dependency-free (node:zlib). Fail closed on anything unusual:
 //   - entry names: relative, `/`-separated, no `..`/empty/`.` segments, no backslash, no drive

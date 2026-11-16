@@ -1,6 +1,6 @@
 # Docs site deployment
 
-Maintainer runbook for the documentation site (`apps/docs`) on Cloudflare, in **one Cloudflare account** (Isaac's existing one, shared with Better Upload). The pipeline is **vendored from the Monorepo Delivery Kit** ([`.delivery-kit-version`](../.delivery-kit-version): `v0.1.2`); this file covers what is specific to WebMCP: verified Cloudflare facts, tokens, residual risks, setup and operations. The generic contract (workflows, artifact layout, stages, PR feedback) is the kit's `docs/contract.md`.
+Maintainer runbook for the documentation site (`apps/docs`) on Cloudflare, in **one Cloudflare account** (Isaac's existing one, shared with Better Upload). The pipeline is **vendored from the Monorepo Delivery Kit** ([`.delivery-kit-version`](../.delivery-kit-version): `v0.1.3`); this file covers what is specific to WebMCP: verified Cloudflare facts, tokens, residual risks, setup and operations. The generic contract (workflows, artifact layout, stages, PR feedback) is the kit's `docs/contract.md`.
 
 - Site build (unprivileged): [`.github/workflows/docs.yml`](../.github/workflows/docs.yml) (kit `site.yml`, rendered for `docs`), jobs `lifecycle` and `docs-build`.
 - Deploys (privileged, main-defined): [`.github/workflows/docs-deploy.yml`](../.github/workflows/docs-deploy.yml) (kit `site-deploy.yml`), jobs `deploy-plan`, `deploy-preview`, `deploy-teardown`, `deploy-comment`, `deploy-production`, `deploy-sweep`.

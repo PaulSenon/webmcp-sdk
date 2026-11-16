@@ -1,5 +1,5 @@
 // local: WebMCP project headers (CSP, HSTS, COOP/CORP, Permissions-Policy, immutable /assets/*).
-// The kit (v0.1.0–v0.1.2) renders only its own minimal headers and has no configuration hook for project
+// The kit (v0.1.0–v0.1.3) renders only its own minimal headers and has no configuration hook for project
 // headers; this file reads them from <repo>/delivery.headers (Cloudflare `_headers` format) and is
 // imported by alchemy.run.ts (appended to the asset config) and by scripts/cli.ts smoke (checked
 // on every smoke path). Upstream candidate: `site.headers` in delivery.config.json.
