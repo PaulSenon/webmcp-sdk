@@ -1,39 +1,40 @@
-# Docs site (apps/docs): the UNPRIVILEGED half of the pipeline. Builds, checks and smoke-tests the
-# site without any secret, and uploads the static output as an artifact (manifest.json + site/).
-# Deploys live in docs-deploy.yml, which runs from main (workflow_run) and treats this run's
-# artifact and payload as untrusted. Design and setup: docs/docs-deploy.md.
-#
-# This workflow runs PR code (including forks): read-only token, no secret, no environment, no
-# cache. Editing it in a PR cannot reach any deploy credential.
+# Monorepo Delivery Kit — site build (workflow `docs`; renamed per site by tooling/rename-site.mjs).
+# UNPRIVILEGED: runs PR code (including forks), no secret, no environment, no id-token.
+# Its completion triggers docs-deploy.yml (workflow_run), which deploys the artifact built here —
+# or tears the preview down when the PR is closed or converted to draft (only `lifecycle` runs then).
+# No pull_request_target anywhere (kit decision D2).
 name: docs
 
 on:
   pull_request:
-    # closed / converted_to_draft only complete the run so docs-deploy can tear the preview down.
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, closed]
+    types: [opened, synchronize, reopened, ready_for_review, closed, converted_to_draft]
   push:
     branches: [main]
-  workflow_dispatch: # rebuild main; docs-deploy then redeploys production
 
 permissions: {}
 
-env:
-  DO_NOT_TRACK: "1" # Alchemy CLI telemetry (otel.alchemy.run) off
-  ALCHEMY_TELEMETRY_DISABLED: "1"
-  ALCHEMY_PLAIN: "1"
+concurrency:
+  group: docs-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  build:
+  lifecycle:
+    name: lifecycle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - env:
+          ACTION: ${{ github.event.action }}
+        run: echo "event ${GITHUB_EVENT_NAME} ${ACTION:-}; docs-deploy.yml decides from the PR's current state"
+
+  docs-build:
     name: docs-build
-    if: github.event_name != 'pull_request' || (github.event.action != 'closed' && github.event.action != 'converted_to_draft')
+    if: github.event.action != 'closed' && github.event.action != 'converted_to_draft'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
-    cache-mode: none # its artifact is what production serves (T3)
-    concurrency:
-      group: docs-build-${{ github.event.pull_request.number || github.ref }}
-      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -42,93 +43,43 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
-          package-manager-cache: false
+          cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - id: stage
-        name: Stage and public URL (SITE_URL)
+      - id: target
+        name: Stage and URL (docs-deploy.yml recomputes both from trusted inputs)
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          # The PR head, not the merge commit GitHub checks out: what workflow_run reports.
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
           PREVIEW_MODE: ${{ vars.DOCS_PREVIEW_MODE }}
-          SUBDOMAIN_OPTIONAL: "1" # before Cloudflare is configured: build without SITE_URL
-        run: |
-          if [ -z "$SUBDOMAIN" ]; then echo "::notice::DOCS_WORKERS_SUBDOMAIN is not set; building without SITE_URL"; fi
-          node infra/docs/scripts/cli.ts target
-      - id: site
-        name: Site present?
-        run: |
-          if [ -f apps/docs/package.json ]; then echo "has_site=true"; else echo "has_site=false"; fi >> "$GITHUB_OUTPUT"
+        run: node infra/site/scripts/cli.ts build-target
       - name: Build the site
-        if: steps.site.outputs.has_site == 'true'
         env:
-          SITE_URL: ${{ steps.stage.outputs.url }}
-        run: pnpm docs:build
-      - name: Check the site output
+          SITE_URL: ${{ steps.target.outputs.url }}
+        run: pnpm site:build
+      - name: Manifest + artifact check (the same check the deploy runs)
         env:
-          DOCS_SITE_DIR: ${{ steps.site.outputs.has_site == 'true' && 'apps/docs/out' || 'infra/docs/test/fixtures/site' }}
-        run: node infra/docs/scripts/cli.ts check-site
-      # Credential-free stand-in for a plan: Alchemy's plan reads the live account, so it needs a
-      # token. Instead, serve the output with `alchemy dev` (local workerd, same asset router,
-      # this PR's headers and 404 config) and run the post-deploy smoke test against it.
-      - name: Serve locally and smoke test (no credentials)
-        env:
-          DOCS_SITE_DIR: ${{ github.workspace }}/${{ steps.site.outputs.has_site == 'true' && 'apps/docs/out' || 'infra/docs/test/fixtures/site' }}
-        run: pnpm --filter @senon/webmcp-sdk-docs-infra run check:local
-      - name: Summary
-        env:
-          STAGE: ${{ steps.stage.outputs.stage }}
-          REVISION: ${{ steps.stage.outputs.revision }}
-          HAS_SITE: ${{ steps.site.outputs.has_site }}
-          SITE_URL: ${{ steps.stage.outputs.url }}
-        run: |
-          {
-            echo "### Docs build (\`$STAGE\`)"
-            echo ""
-            if [ "$HAS_SITE" = "true" ]; then echo "- site built, URL: ${SITE_URL:-not configured}"; else echo "- apps/docs not present yet: infra checked against its fixture site"; fi
-            echo ""
-            echo "<details><summary>Response headers (_headers) for this stage</summary>"
-            echo ""
-            echo '```'
-            node infra/docs/scripts/cli.ts headers
-            echo '```'
-            echo "</details>"
-          } >> "$GITHUB_STEP_SUMMARY"
-      # The artifact docs-deploy consumes as untrusted data: manifest.json + site/.
-      - name: Assemble the artifact
-        if: steps.site.outputs.has_site == 'true'
-        env:
+          SITE_ARTIFACT_DIR: ${{ steps.target.outputs.dir }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          STAGE: ${{ steps.stage.outputs.stage }}
+          STAGE: ${{ steps.target.outputs.stage }}
           EVENT: ${{ github.event_name }}
           ACTION: ${{ github.event.action }}
         run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/artifact"
-          cp -R apps/docs/out "$RUNNER_TEMP/artifact/site"
-          OUT="$RUNNER_TEMP/artifact/manifest.json" node infra/docs/scripts/cli.ts manifest
-      - if: steps.site.outputs.has_site == 'true'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+          node infra/site/scripts/cli.ts write-manifest
+          node infra/site/scripts/cli.ts check-artifact
+      # Credential-free stand-in for a deploy: serve the artifact with `alchemy dev` (local
+      # workerd, same asset router, this infra's headers/404 config) and run the deploy smoke test.
+      - name: Serve locally and smoke test (no credentials)
+        env:
+          SITE_ARTIFACT_DIR: ${{ github.workspace }}/${{ steps.target.outputs.dir }}
+        run: pnpm --filter ./infra/site run check:local
+      # Artifact name = the site name (contract): docs-deploy.yml downloads exactly this from this run.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: docs-site-${{ steps.stage.outputs.stage }}
-          path: ${{ runner.temp }}/artifact
+          name: docs
+          path: ${{ steps.target.outputs.dir }}
           retention-days: ${{ github.event_name == 'pull_request' && 7 || 90 }} # main builds kept for rollback
           if-no-files-found: error
-          include-hidden-files: false
-
-  lifecycle:
-    name: docs-lifecycle
-    # No-op: a closed or converted-to-draft PR still produces a completed `docs` run, which is what
-    # triggers docs-deploy to reconcile (tear the preview down).
-    if: github.event_name == 'pull_request' && (github.event.action == 'closed' || github.event.action == 'converted_to_draft')
-    runs-on: ubuntu-24.04
-    timeout-minutes: 2
-    permissions: {}
-    concurrency:
-      group: docs-lifecycle-${{ github.event.pull_request.number }}
-      cancel-in-progress: false
-    steps:
-      - env:
-          ACTION: ${{ github.event.action }}
-        run: echo "PR $ACTION; docs-deploy reconciles the preview."
+          include-hidden-files: true # .well-known; check-artifact refuses other dotfiles
