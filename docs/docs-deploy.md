@@ -120,19 +120,18 @@ Changing the CSP (for example to embed a third-party demo) is an infra PR, revie
 - **Deploy gate** (`delivery.config.json` `previews.requiredChecks`): `checks`, `browser`, `workflow-lint`, `docs-build`, every one green on the exact SHA (fail closed on missing / skipped / neutral / timeout, 40 min). Only checks that run on both `pull_request` and `push`: **`dependency-review` stays required by the ruleset but is not in the gate** (it is PR-only). PR #6 adds `docs` (its `ci.yml` job) to the list.
 - **Lifecycle:** drafts build without preview; `ready_for_review` deploys; `converted_to_draft` and `closed` (merged or not) tear down; reopen redeploys; one concurrency group per PR, never cancelled; the PR is re-read before and after the deploy and before the comment. Dependabot: build only unless `DOCS_PREVIEW_DEPENDABOT=true`. Forks: never.
 - **`preflight`** before any Cloudflare call: account-owned token of this account, state-store token and API version, Workers visible to the token, and a preview token able to reach production only if `docs-preview` is main-only or has a required reviewer.
-- **Hygiene:** `permissions: {}`, least privilege per job, SHA pins, no cache in the build whose artifact ships nor in any privileged job, only `infra/site` dependencies from main's frozen lockfile in privileged jobs; zizmor pedantic (one justified `dangerous-triggers` suppression on `workflow_run`), actionlint and the kit's workflow invariants (`tooling/check-workflows.mjs`, W1–W9, run in `checks`).
+- **Hygiene:** `permissions: {}`, least privilege per job, SHA pins, no cache in the build whose artifact ships nor in any privileged job, only `infra/site` dependencies from main's frozen lockfile in privileged jobs; zizmor pedantic (one justified `dangerous-triggers` suppression on `workflow_run`), actionlint and the kit's workflow invariants (`tooling/check-workflows.mjs`, W1–W10, run in `checks`).
 
 ### 2.2 Kit divergences (to upstream or decide)
 
-Kit v0.1.4 absorbed (v0.1.5 adds only generic fixes) every adaptation the first adoption needed (project headers as `site.headers`, no cache in `docs-build`, local-check scope, the production `steps.fresh` fix, `deploy-comment` concurrency, rollback gate, portable tests). What remains:
+Kit v0.1.4 absorbed every adaptation the first adoption needed (project headers as `site.headers`, no cache in `docs-build`, local-check scope, the production `steps.fresh` fix, `deploy-comment` concurrency, rollback gate, portable tests); v0.1.5 adds only generic fixes. What remains:
 
 | # | Where | Divergence | Reason |
 | - | - | - | - |
-| L1 | `release.yml`, `tooling/release/*` | not vendored: WebMCP's release kept byte-identical (`vendor.mjs` ≥ v0.1.1 keeps an existing release) | WebMCP's flow (dispatch + `confirm_version`, version-PR change-note check, stage publish via OIDC, owner 2FA on npm, local tarball comparison, idempotent finalize, `release-finalize` reviewer) is the reference the kit converges on in v0.2.0; npm trust is bound to `release.yml` + `npm-release` |
-| L1b | `tooling/check-delivery-workflows.mjs` (project wrapper around the kit's unmodified `check-workflows.mjs`) | allows exactly one finding: W10 on `release.yml` job `finalize` (an environment job without `cache-mode: none`) | consequence of L1: release.yml stays untouched. Formal gap only (finalize restores no cache). Fix = one line `cache-mode: none` in `release.yml` finalize, **owner's decision** |
+| L1 | `release.yml`, `tooling/release/*` | not vendored: WebMCP's release kept (`vendor.mjs` ≥ v0.1.1 keeps an existing release); one line added, `cache-mode: none` on `finalize` (kit invariant W10), the rest byte-identical | WebMCP's flow (dispatch + `confirm_version`, version-PR change-note check, stage publish via OIDC, owner 2FA on npm, local tarball comparison, idempotent finalize, `release-finalize` reviewer) is the reference the kit converges on in v0.2.0; npm trust is bound to the file name `release.yml` + environment `npm-release`, not to the file's content |
 | L7 | `infra/site/package.json` | name `@senon/webmcp-sdk-docs-infra` (JSON, no comment possible) | the template name `@example/site-infra` |
 
-No `local:` patch remains in any vendored file. Project-owned (not divergences): `delivery.config.json`, `tooling/docs-site-build.mjs` (+ `tooling/docs-placeholder/` until `apps/docs` exists), `tooling/docs-delivery.test.ts`, `tooling/check-delivery-workflows.mjs`, `ci.yml`.
+No `local:` patch remains in any vendored file. Project-owned (not divergences): `delivery.config.json`, `tooling/docs-site-build.mjs` (+ `tooling/docs-placeholder/` until `apps/docs` exists), `tooling/docs-delivery.test.ts`, `ci.yml`.
 
 ## 3. Tokens: exact permissions
 

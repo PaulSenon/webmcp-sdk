@@ -160,6 +160,7 @@ jobs:
     environment: release-finalize # required reviewer: approve AFTER approving the staged version on npm
     permissions:
       contents: write # create the tag and the GitHub release
+    cache-mode: none # no Actions cache in this environment job (kit invariant W10)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
