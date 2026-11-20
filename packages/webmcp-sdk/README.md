@@ -14,7 +14,7 @@ WebMCP lets a web page expose functions ("tools") to AI agents through `document
 The core is framework-agnostic. React bindings are included.
 
 > [!WARNING]
-> **Unpublished prototype.** The framework-independent core and React bindings are implemented and tested. Nothing is published to npm yet; the package name will be `@senon/webmcp-sdk`. WebMCP itself is an experimental W3C Community Group draft (see [Platform status](#platform-status)).
+> **Early release (`0.x`).** The framework-independent core and React bindings are implemented and tested. The package is `@senon/webmcp-sdk` on npm (`npm install @senon/webmcp-sdk`); until 1.0, breaking changes can land in minor versions. WebMCP itself is an experimental W3C Community Group draft (see [Platform status](#platform-status)).
 
 ```ts nocheck
 defineTool({...})   →   implementTool(definition, handler)   →   registerTool(tool, { signal })
@@ -799,7 +799,7 @@ As of 2026-11-11 (details and sources in [`docs/research.md`](https://github.com
 | - | - |
 | API surface (core + React) | typed, documented, type-tested |
 | runtime | core and React implemented; unit tests, and end-to-end tests on the official polyfill and on native WebMCP (Chrome 156, `--enable-features=WebMCP`) |
-| npm | not published yet (`@senon/webmcp-sdk`) |
+| npm | [`@senon/webmcp-sdk`](https://www.npmjs.com/package/@senon/webmcp-sdk) (`0.x`) |
 | license | [MIT](LICENSE) |
 
 Test coverage, polyfill observations and unverified platform behavior: [`docs/implementation-log.md`](https://github.com/PaulSenon/webmcp-sdk/blob/main/docs/implementation-log.md).
