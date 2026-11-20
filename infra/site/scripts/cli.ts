@@ -16,6 +16,7 @@ import { loadConfig, previewMode, serverEntry } from "../src/config.ts";
 import { evaluateChecks, type CheckRun, type CommitStatus } from "../src/gate.ts";
 import { afterDeploy, findComment, isOrphan, previewAction, previewNumbers, previewNumbersFromState, renderComment, type CommentStatus, type IssueComment, type PullRequest } from "../src/preview.ts";
 import { productionUrl } from "../src/domain.ts";
+import { installedStoreVersion } from "../src/store-version.ts";
 import { prStage, revisionLabel, stateStoreFor, stateStoreUrl, workerName, workersDevUrl } from "../src/stage.ts";
 
 const config = loadConfig();
@@ -325,9 +326,12 @@ const commands: Record<string, () => Promise<void>> = {
 
     const store = stateStoreFor(base, stage);
     if (env("SITE_STATE_STORE") !== store) throw new Error(`SITE_STATE_STORE must be ${store} for stage ${stage}`);
-    const { STATE_STORE_VERSION } = (await import("alchemy/State")) as { STATE_STORE_VERSION: number };
+    // The CLOUDFLARE store's version (installed @alchemy.run/cloudflare), not alchemy/State's generic
+    // HTTP contract version (v0.3.5: the first real CI deploy compared v8 against 5).
+    const expected = installedStoreVersion();
+    console.log(`state store: @alchemy.run/cloudflare ${expected.packageVersion} expects state API v${expected.version}`);
     const probe = await probeStateStore(stateStoreUrl(store, env("SUBDOMAIN")), env("SITE_STATE_TOKEN"));
-    const storeOk = storeDecision(probe, STATE_STORE_VERSION, store);
+    const storeOk = storeDecision(probe, expected.version, store);
     if (!storeOk.ok) throw new Error(storeOk.reason);
 
     const environment = env("ENVIRONMENT");
