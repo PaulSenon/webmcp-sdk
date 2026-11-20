@@ -98,10 +98,12 @@ if (mode) {
 const alertsOn = (() => {
   if (!apply) return undefined;
   try {
-    execFileSync("gh", ["api", `repos/${repo}/vulnerability-alerts`], { stdio: "ignore" }); // 204 = on, 404 = off
+    execFileSync("gh", ["api", `repos/${repo}/vulnerability-alerts`], { stdio: ["ignore", "ignore", "pipe"], encoding: "utf8" }); // 204 = on
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    // 404 = off. Any other error (auth, network) is NOT "off": stop instead of guessing.
+    if (/HTTP 404/.test(String(error.stderr ?? ""))) return false;
+    throw new Error(`cannot read vulnerability-alerts of ${repo}: ${String(error.stderr ?? error.message).trim()}`);
   }
 })();
 if (alertsOn === true) console.log("dependency graph / vulnerability alerts: already enabled");

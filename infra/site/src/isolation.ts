@@ -5,7 +5,7 @@
 // One Cloudflare account holds every stage (and other projects). Worker names are not a security
 // boundary: what a token can touch is decided by its scopes. So the workflow probes what the token
 // can actually see and refuses unsafe combinations.
-import { ACCOUNT_ID, cfErrors, redact, type CloudflareClient, type Fetch } from "./api.ts";
+import { ACCOUNT_ID, cfErrors, cfNotFound, redact, type CloudflareClient, type Fetch } from "./api.ts";
 import { stageKind } from "./stage.ts";
 
 export type WorkerAccess = "present" | "absent" | "forbidden";
@@ -80,12 +80,15 @@ export async function verifyToken(cf: CloudflareClient, accountId: string): Prom
   throw new Error("the token does not verify (neither as an account token for this account nor as a user token)");
 }
 
-/** Is a Worker present for this token? 404 = absent; 403 = this token may not see it. */
+/**
+ * Is a Worker present for this token? 404/10007 = absent; 403 = this (valid) token may not see it.
+ * 401 or anything else = error, never "absent" nor "forbidden" (a broken token proves nothing).
+ */
 export async function workerAccess(cf: CloudflareClient, accountId: string, name: string): Promise<WorkerAccess> {
   const { status, body } = await cf.request("GET", `/accounts/${accountId}/workers/scripts/${name}/settings`);
   if (body?.success) return "present";
-  if (status === 404 || /10007|not found/i.test(cfErrors(body))) return "absent";
-  if (status === 403 || /10000|authentication error|not authorized/i.test(cfErrors(body))) return "forbidden";
+  if (cfNotFound(status, body)) return "absent";
+  if (status === 403) return "forbidden";
   throw new Error(`cannot read Worker ${name}: HTTP ${status} ${cfErrors(body)}`);
 }
 

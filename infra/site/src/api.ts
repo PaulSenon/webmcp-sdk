@@ -99,6 +99,16 @@ export function cloudflare(token: string, { fetch: f = fetch, api = "https://api
 
 export const ACCOUNT_ID = /^[0-9a-f]{32}$/;
 
+/** Cloudflare error codes of an envelope (e.g. 10007 = not found, 10000 = authentication error). */
+export const cfCodes = (body: CloudflareEnvelope<unknown> | undefined): number[] => (body?.errors ?? []).map((e) => e.code);
+
+/**
+ * "Absent" only on an explicit not-found: HTTP 404 or Cloudflare code 10007. Anything else that is
+ * not a success (401, 403, 5xx, network) is an ERROR, never read as absent (found on the first real
+ * run: a token without permissions made a subdomain look absent).
+ */
+export const cfNotFound = (status: number, body: CloudflareEnvelope<unknown> | undefined): boolean => status === 404 || cfCodes(body).includes(10007);
+
 export function cfErrors(body: CloudflareEnvelope<unknown> | undefined): string {
   return (body?.errors ?? []).map((e) => `${e.code} ${e.message}`).join("; ") || "no error detail";
 }
