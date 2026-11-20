@@ -3,11 +3,12 @@
 // Idempotent (PUT environments, policies created if missing, secrets/variables overwritten).
 //
 //   node tooling/setup-github.mjs --repo owner/name --reviewer <github login> \
-//     [--account-id <32 hex> --subdomain <workers.dev> --prod-token-file F --preview-token-file F --state-dir D] [--preview-mode M] [--preview-reviewer] [--npm-release-reviewer] [--no-ruleset] [--apply]
+//     [--account-id <32 hex> --subdomain <workers.dev> --prod-token-file F --preview-token-file F --state-dir D] [--preview-mode M] [--preview-reviewer] [--production-reviewer] [--npm-release-reviewer] [--no-ruleset] [--apply]
 //
 // Creates (<site> = delivery.config.json site.name, <SITE> uppercased):
-//   environments <site>-preview + <site>-production (default branch only, no reviewer: optional,
-//   owner's choice via --preview-reviewer); npm-release (release branches; reviewer REQUIRED in
+//   environments <site>-preview + <site>-production (default branch only, no reviewer unless
+//   --preview-reviewer / --production-reviewer, each for its own environment; `reviewers: []` is
+//   always sent otherwise, so re-running without the flag removes a reviewer); npm-release (release branches; reviewer REQUIRED in
 //   direct mode, none in stage mode where npm 2FA approval is the gate); release-finalize
 //   (release branches + required reviewer); env secrets CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID,
 //   <SITE>_STATE_TOKEN; variables <SITE>_WORKERS_SUBDOMAIN (+ <SITE>_PREVIEW_MODE with --preview-mode);
@@ -17,6 +18,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { environmentPlan } from "./github-environments.mjs";
 import { missingChecks, missingChecksError, requiredChecks, workflowChecks } from "./required-checks.mjs";
 
 const argv = process.argv.slice(2);
@@ -49,24 +51,16 @@ const api = (method, path, body) => gh(["api", "-X", method, path, ...(body ? ["
 const defaultBranch = apply ? gh(["api", `repos/${repo}`, "--jq", ".default_branch"]).trim() : "main";
 const reviewerId = apply ? Number(gh(["api", `users/${reviewer}`, "--jq", ".id"]).trim()) : 0;
 
-function environment(name, branches, withReviewer) {
-  api("PUT", `repos/${repo}/environments/${name}`, {
-    deployment_branch_policy: { protected_branches: false, custom_branch_policies: true },
-    ...(withReviewer ? { reviewers: [{ type: "User", id: reviewerId }], prevent_self_review: false } : {}),
-  });
+function environment({ name, branches, body }) {
+  api("PUT", `repos/${repo}/environments/${name}`, body);
   const existing = apply ? JSON.parse(gh(["api", `repos/${repo}/environments/${name}/deployment-branch-policies`]) || "{}").branch_policies ?? [] : [];
   for (const b of branches) if (!existing.some((p) => p.name === b)) api("POST", `repos/${repo}/environments/${name}/deployment-branch-policies`, { name: b, type: "branch" });
   for (const p of existing) if (!branches.includes(p.name)) api("DELETE", `repos/${repo}/environments/${name}/deployment-branch-policies/${p.id}`);
 }
 
-environment(`${site}-preview`, [defaultBranch], argv.includes("--preview-reviewer"));
-environment(`${site}-production`, [defaultBranch], argv.includes("--preview-reviewer"));
-// npm-release reviewer by mode (kit decision D8): stage mode = none (the owner's npm 2FA approval
-// of the stage, then the release-finalize reviewer, are the human gates); direct mode = REQUIRED.
-const npmReviewer = config.release.mode === "direct" || argv.includes("--npm-release-reviewer");
 if (config.release.mode === "direct" && !reviewerId && apply) throw new Error("direct mode requires a reviewer on npm-release");
-environment("npm-release", releaseBranches, npmReviewer);
-environment("release-finalize", releaseBranches, true);
+// Exact bodies in github-environments.mjs (tested). npm-release reviewer by mode (D8).
+for (const env of environmentPlan({ site, defaultBranch, releaseBranches, releaseMode: config.release.mode, reviewerId, flags: argv })) environment(env);
 
 const secret = (name, env, file) => {
   if (!file) return console.log(`skip ${name} (${env}): no file given`);
