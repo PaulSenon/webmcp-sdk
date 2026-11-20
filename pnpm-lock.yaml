@@ -19,17 +19,17 @@ importers:
         version: 1.1.0
     devDependencies:
       '@ai-sdk/openai':
-        specifier: 4.0.100
-        version: 4.0.100(zod@4.6.7)
+        specifier: 4.0.116
+        version: 4.0.116(zod@4.6.7)
       '@ai-sdk/react':
         specifier: ^4.0.169
-        version: 4.0.169(react@19.3.1)(zod@4.6.7)
+        version: 4.0.175(react@19.3.1)(zod@4.6.7)
       '@arethetypeswrong/cli':
         specifier: 0.18.5
         version: 0.18.5
       '@playwright/test':
-        specifier: 1.59.1
-        version: 1.59.1
+        specifier: 1.65.0
+        version: 1.65.0
       '@types/react':
         specifier: ^19.3.0
         version: 19.3.0
@@ -41,13 +41,13 @@ importers:
         version: 1.8.0(valibot@1.5.0(typescript@7.0.2))
       '@vitest/browser-playwright':
         specifier: 5.1.0
-        version: 5.1.0(playwright@1.59.1)(vite@7.3.8(@types/node@26.6.6)(lightningcss@1.33.0)(yaml@2.9.1))(vitest@5.1.0)
+        version: 5.1.0(playwright@1.65.0)(vite@7.3.8(@types/node@26.6.6)(lightningcss@1.33.0)(yaml@2.9.1))(vitest@5.1.0)
       '@w3c/webmcp-polyfill':
         specifier: 0.1.0
         version: 0.1.0
       ai:
         specifier: ^7.0.165
-        version: 7.0.165(zod@4.6.7)
+        version: 7.0.171(zod@4.6.7)
       arktype:
         specifier: ^2.2.9
         version: 2.2.9
@@ -55,8 +55,8 @@ importers:
         specifier: ^21.0.4
         version: 21.0.4
       playwright:
-        specifier: 1.59.1
-        version: 1.59.1
+        specifier: 1.65.0
+        version: 1.65.0
       publint:
         specifier: 0.3.25
         version: 0.3.25
@@ -90,46 +90,36 @@ importers:
 
 packages:
 
-  '@ai-sdk/gateway@4.0.138':
-    resolution: {integrity: sha512-7a/LGqioUyU2CmjRjMwnX4WR5V4vP3+YdPZEAbh7CH9OXf1GcPSsiySsHxNbqiDlDnL+KdqPvWeipIR7u/VFHA==}
+  '@ai-sdk/gateway@4.0.144':
+    resolution: {integrity: sha512-w8zzojJW8wEIh6E0dDMEEPUnZt+d1g1P1F5zbESJB3MKwGih58TWjmmKtaeAZf0ueZkyMD73VPbsqPufqjjWaQ==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@ai-sdk/mcp@2.0.93':
-    resolution: {integrity: sha512-Jo9NZNfpDVYUhrq/FkFo+AVQJpoFo8YHOfkgjvY4VxJ00njb3Pu129S6AYcjdcelOZSJ10ASJM6T06/oGslGTw==}
+  '@ai-sdk/mcp@2.0.98':
+    resolution: {integrity: sha512-KSXh7KMA9KZiDbUSoq7TR292lXm8MKfGJrI5D0UggeiWNM/2H1IXq0qZtfY+y67PEpecEAJM6MCUeIG7fhDKmA==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@ai-sdk/openai@4.0.100':
-    resolution: {integrity: sha512-F6c8SQynmHNDP+xVyLmCwxNwaHcEjdXPal00eeKYbYxzxlWJDz+5mg4PicsBQRuxIJ3BbR1yIzK4/E+6rWwnpw==}
+  '@ai-sdk/openai@4.0.116':
+    resolution: {integrity: sha512-CEON3YsmhtCj2Q6yAhgb/3YRrfHq43kJn2zNDQQlvgOQ9rZhDzaZD0A0NHHYRZpFq713HfE+rqsZDWUWeFMjTA==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@ai-sdk/provider-utils@5.0.66':
-    resolution: {integrity: sha512-wESzs2LhjES2V2+xUoLOMOJiRrzeN17Gx5P2pCby6yVibD2O9+JGTugSmJeV56/3yxd7ZNjqIOS/GZEC+8Zdug==}
+  '@ai-sdk/provider-utils@5.0.80':
+    resolution: {integrity: sha512-WJ/eiRiBUWbuIBX8v2+U4FssBFskNo4z9TnzEwqTtSQ56TF6H2g/sPkOq0SDMz9yY9u5uOT+tEq28CBUTWVNlA==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@ai-sdk/provider-utils@5.0.76':
-    resolution: {integrity: sha512-76QcCmVtSunSAbQBJtgQTTE8e+Yaz4rJJe1MRWnJ3GAQYUvNPHJejKx4jZTbhGGTdSSLaYcMBT62SISNgnGq9w==}
-    engines: {node: '>=22'}
-    peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
-
-  '@ai-sdk/provider@4.0.32':
-    resolution: {integrity: sha512-n6GdH9HgsMyX7CkUn4L42BIY2QdSEvJTqOyigDLU9legdQKVNlOK8vWVvNY9uGLgjygku1wc5U4eLOhtWWKu6g==}
+  '@ai-sdk/provider@4.0.38':
+    resolution: {integrity: sha512-GElz70UUCuDFFyD6m6aQJFgRY0HEABQzB5otzgkrisYaF5mnss7o0upAmbBTSD6KWiM9h7lZm1ls2c7xzHR8CA==}
     engines: {node: '>=22'}
 
-  '@ai-sdk/provider@4.0.37':
-    resolution: {integrity: sha512-4uPgZ3qiX/JaQFr0dQoibUzHImZit9u05ro2BxGUnJwU4fV28BOAbKUa2OjQvqtM1tMac3bTKkaXdyzGovQXqg==}
-    engines: {node: '>=22'}
-
-  '@ai-sdk/react@4.0.169':
-    resolution: {integrity: sha512-RAJImk2l6BCMI4MOVEvNLCVi2o2adJBiXhqCpZ50TOc7YL9sk+RB6U9uYYGpsJ9Ap00S36Uz2GbjPYArWJFmUw==}
+  '@ai-sdk/react@4.0.175':
+    resolution: {integrity: sha512-3LuwJQVnjlOLWtUiyBurbiR/rT8cOIbyZz4kpS9AOKGtyqHifMFDmNRiGEvT+FVSfJl/HvnUqWd2qofHkMO4VA==}
     engines: {node: '>=22'}
     peerDependencies:
       react: ^18 || ~19.0.1 || ~19.1.2 || ^19.2.1
@@ -412,9 +402,9 @@ packages:
     resolution: {integrity: sha512-6QEf6yqFbETdwGITKq57aYoPfX/3K8XFNwsAlx0C1M7o8cb79sv1M3w+tWuWvIcSbNqrLF7OD7YpZMVVz335hQ==}
     engines: {node: '>=20.0.0'}
 
-  '@playwright/test@1.59.1':
-    resolution: {integrity: sha512-PG6q63nQg5c9rIi4/Z5lR5IVF7yU5MqmKaPOe0HSc0O2cX1fPi96sUQu5j7eo4gKCkB2AnNGoWt7y4/Xx3Kcqg==}
-    engines: {node: '>=18'}
+  '@playwright/test@1.65.0':
+    resolution: {integrity: sha512-iGURLGuKDLakSEl7Pgfv8h7f+XLT+V861Wfhz0zlEl5nyFuKUopdkFBPKqTllTUp06aOwPuH8iuUEb3yp3MpbQ==}
+    engines: {node: '>=20'}
     hasBin: true
 
   '@pnpm/deps.graph-sequencer@1100.0.1':
@@ -775,8 +765,8 @@ packages:
   '@workflow/serde@4.1.0':
     resolution: {integrity: sha512-pav4F2BoirECWR7Nf1TKt+2eETcBj7jj4cBefQ8VXQCA6NPkaKeLfj/zMgi+3zYV5ZIBT4GuUiphsj0/b9hPQQ==}
 
-  ai@7.0.165:
-    resolution: {integrity: sha512-cEeORsLF+9+fNzvo4nQo9hxgQoEfupjc9Xmq6OM2NGUwQQQdkHxByBdFoqnNfBE0H+qwhGQaZejvbCFFD84tBA==}
+  ai@7.0.171:
+    resolution: {integrity: sha512-YGyMIMn7XZY1H1EwSGn0QItd8PeVXA6OOzq+bVugnsfCjgFmHjcBIGs8JgmTzblMAd0lFRAL2ng5r0ozq98l6g==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -938,11 +928,6 @@ packages:
 
   flatted@3.4.4:
     resolution: {integrity: sha512-5+ybhBZANEJxaH3X5evAFatUxLfEHSr7n6kYJ+1Qd0mUqr4eu9gIf6GDbWHf8RJijHrjjO8G+la14SlL2SeS1Q==}
-
-  fsevents@2.3.2:
-    resolution: {integrity: sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA==}
-    engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
-    os: [darwin]
 
   fsevents@2.3.3:
     resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
@@ -1147,14 +1132,14 @@ packages:
     resolution: {integrity: sha512-wQ0b/W4Fr01qtpHlqSqspcj3EhBvimsdh0KlHhH8HRZnMsEa0ea2fTULOXOS9ccQr3om+GcGRk4e+isrZWV8qQ==}
     engines: {node: '>=16.20.0'}
 
-  playwright-core@1.59.1:
-    resolution: {integrity: sha512-HBV/RJg81z5BiiZ9yPzIiClYV/QMsDCKUyogwH9p3MCP6IYjUFu/MActgYAvK0oWyV9NlwM3GLBjADyWgydVyg==}
-    engines: {node: '>=18'}
+  playwright-core@1.65.0:
+    resolution: {integrity: sha512-vNSKgH6YqtN7cdT/L334zo0a+YwkrpicyrHJlWWPIm/Q+Nn2SWInil01oT0mbu96U4GgoRtCYQD9CzJQgju+lA==}
+    engines: {node: '>=20'}
     hasBin: true
 
-  playwright@1.59.1:
-    resolution: {integrity: sha512-C8oWjPR3F81yljW9o5OxcWzfh6avkVwDD2VYdwIGqTkl+OGFISgypqzfu7dOe4QNLL2aqcWBmI3PMtLIK233lw==}
-    engines: {node: '>=18'}
+  playwright@1.65.0:
+    resolution: {integrity: sha512-F3AMWcR44qMBt4kq+6Kb6mX7bjGXshktKFOPULd7reED6ZJWevjbNRqysP7q+AATE9kdPEZBibex1BYsvpVoeA==}
+    engines: {node: '>=20'}
     hasBin: true
 
   pngjs@7.0.0:
@@ -1306,10 +1291,6 @@ packages:
 
   undici-types@8.9.0:
     resolution: {integrity: sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg==}
-
-  undici@7.30.2:
-    resolution: {integrity: sha512-mLyPQnHwUxaM/rideoK/+KL8DaAJLRl4aBCfmX444aCSLnIaomqPLtNRe2jdCYcsk5wZzXrDIQC8ZeYNRAYyIA==}
-    engines: {node: '>=20.18.1'}
 
   unicode-emoji-modifier-base@1.0.0:
     resolution: {integrity: sha512-yLSH4py7oFH3oG/9K+XWrz1pSi3dfUrWEnInbxMfArOfc1+33BlGPQtLsOYwvdMy11AwUBetYuaRxSPqgkq+8g==}
@@ -1468,59 +1449,45 @@ packages:
 
 snapshots:
 
-  '@ai-sdk/gateway@4.0.138(zod@4.6.7)':
+  '@ai-sdk/gateway@4.0.144(zod@4.6.7)':
     dependencies:
-      '@ai-sdk/provider': 4.0.37
-      '@ai-sdk/provider-utils': 5.0.76(zod@4.6.7)
+      '@ai-sdk/provider': 4.0.38
+      '@ai-sdk/provider-utils': 5.0.80(zod@4.6.7)
       '@vercel/oidc': 3.2.0
       zod: 4.6.7
 
-  '@ai-sdk/mcp@2.0.93(zod@4.6.7)':
+  '@ai-sdk/mcp@2.0.98(zod@4.6.7)':
     dependencies:
-      '@ai-sdk/provider': 4.0.37
-      '@ai-sdk/provider-utils': 5.0.76(zod@4.6.7)
+      '@ai-sdk/provider': 4.0.38
+      '@ai-sdk/provider-utils': 5.0.80(zod@4.6.7)
       cross-spawn: 7.0.6
       pkce-challenge: 5.0.1
       zod: 4.6.7
 
-  '@ai-sdk/openai@4.0.100(zod@4.6.7)':
+  '@ai-sdk/openai@4.0.116(zod@4.6.7)':
     dependencies:
-      '@ai-sdk/provider': 4.0.32
-      '@ai-sdk/provider-utils': 5.0.66(zod@4.6.7)
+      '@ai-sdk/provider': 4.0.38
+      '@ai-sdk/provider-utils': 5.0.80(zod@4.6.7)
       zod: 4.6.7
 
-  '@ai-sdk/provider-utils@5.0.66(zod@4.6.7)':
+  '@ai-sdk/provider-utils@5.0.80(zod@4.6.7)':
     dependencies:
-      '@ai-sdk/provider': 4.0.32
+      '@ai-sdk/provider': 4.0.38
       '@standard-schema/spec': 1.1.0
       '@workflow/serde': 4.1.0
       eventsource-parser: 3.1.1
-      undici: 7.30.2
       zod: 4.6.7
 
-  '@ai-sdk/provider-utils@5.0.76(zod@4.6.7)':
-    dependencies:
-      '@ai-sdk/provider': 4.0.37
-      '@standard-schema/spec': 1.1.0
-      '@workflow/serde': 4.1.0
-      eventsource-parser: 3.1.1
-      undici: 7.30.2
-      zod: 4.6.7
-
-  '@ai-sdk/provider@4.0.32':
+  '@ai-sdk/provider@4.0.38':
     dependencies:
       json-schema: 0.4.0
 
-  '@ai-sdk/provider@4.0.37':
+  '@ai-sdk/react@4.0.175(react@19.3.1)(zod@4.6.7)':
     dependencies:
-      json-schema: 0.4.0
-
-  '@ai-sdk/react@4.0.169(react@19.3.1)(zod@4.6.7)':
-    dependencies:
-      '@ai-sdk/mcp': 2.0.93(zod@4.6.7)
-      '@ai-sdk/provider': 4.0.37
-      '@ai-sdk/provider-utils': 5.0.76(zod@4.6.7)
-      ai: 7.0.165(zod@4.6.7)
+      '@ai-sdk/mcp': 2.0.98(zod@4.6.7)
+      '@ai-sdk/provider': 4.0.38
+      '@ai-sdk/provider-utils': 5.0.80(zod@4.6.7)
+      ai: 7.0.171(zod@4.6.7)
       react: 19.3.1
       swr: 2.5.1(react@19.3.1)
       throttleit: 2.1.0
@@ -1785,9 +1752,9 @@ snapshots:
       tinyglobby: 0.2.17
       yaml: 2.9.1
 
-  '@playwright/test@1.59.1':
+  '@playwright/test@1.65.0':
     dependencies:
-      playwright: 1.59.1
+      playwright: 1.65.0
 
   '@pnpm/deps.graph-sequencer@1100.0.1': {}
 
@@ -1972,11 +1939,11 @@ snapshots:
 
   '@vercel/oidc@3.2.0': {}
 
-  '@vitest/browser-playwright@5.1.0(playwright@1.59.1)(vite@7.3.8(@types/node@26.6.6)(lightningcss@1.33.0)(yaml@2.9.1))(vitest@5.1.0)':
+  '@vitest/browser-playwright@5.1.0(playwright@1.65.0)(vite@7.3.8(@types/node@26.6.6)(lightningcss@1.33.0)(yaml@2.9.1))(vitest@5.1.0)':
     dependencies:
       '@vitest/browser': 5.1.0(vite@7.3.8(@types/node@26.6.6)(lightningcss@1.33.0)(yaml@2.9.1))(vitest@5.1.0)
       '@vitest/mocker': 5.1.0(vite@7.3.8(@types/node@26.6.6)(lightningcss@1.33.0)(yaml@2.9.1))
-      playwright: 1.59.1
+      playwright: 1.65.0
       tinyrainbow: 3.2.0
       vitest: 5.1.0(@types/node@26.6.6)(@vitest/browser-playwright@5.1.0)(@vitest/ui@5.1.0)(happy-dom@21.0.4)(vite@7.3.8(@types/node@26.6.6)(lightningcss@1.33.0)(yaml@2.9.1))
     transitivePeerDependencies:
@@ -2040,11 +2007,11 @@ snapshots:
 
   '@workflow/serde@4.1.0': {}
 
-  ai@7.0.165(zod@4.6.7):
+  ai@7.0.171(zod@4.6.7):
     dependencies:
-      '@ai-sdk/gateway': 4.0.138(zod@4.6.7)
-      '@ai-sdk/provider': 4.0.37
-      '@ai-sdk/provider-utils': 5.0.76(zod@4.6.7)
+      '@ai-sdk/gateway': 4.0.144(zod@4.6.7)
+      '@ai-sdk/provider': 4.0.38
+      '@ai-sdk/provider-utils': 5.0.80(zod@4.6.7)
       zod: 4.6.7
 
   ansi-escapes@7.3.0:
@@ -2202,9 +2169,6 @@ snapshots:
   fflate@0.8.3: {}
 
   flatted@3.4.4: {}
-
-  fsevents@2.3.2:
-    optional: true
 
   fsevents@2.3.3:
     optional: true
@@ -2365,13 +2329,11 @@ snapshots:
 
   pkce-challenge@5.0.1: {}
 
-  playwright-core@1.59.1: {}
+  playwright-core@1.65.0: {}
 
-  playwright@1.59.1:
+  playwright@1.65.0:
     dependencies:
-      playwright-core: 1.59.1
-    optionalDependencies:
-      fsevents: 2.3.2
+      playwright-core: 1.65.0
 
   pngjs@7.0.0: {}
 
@@ -2550,8 +2512,6 @@ snapshots:
 
   undici-types@8.9.0: {}
 
-  undici@7.30.2: {}
-
   unicode-emoji-modifier-base@1.0.0: {}
 
   use-sync-external-store@1.7.0(react@19.3.1):
@@ -2596,7 +2556,7 @@ snapshots:
       why-is-node-running: 3.2.1
     optionalDependencies:
       '@types/node': 26.6.6
-      '@vitest/browser-playwright': 5.1.0(playwright@1.59.1)(vite@7.3.8(@types/node@26.6.6)(lightningcss@1.33.0)(yaml@2.9.1))(vitest@5.1.0)
+      '@vitest/browser-playwright': 5.1.0(playwright@1.65.0)(vite@7.3.8(@types/node@26.6.6)(lightningcss@1.33.0)(yaml@2.9.1))(vitest@5.1.0)
       '@vitest/ui': 5.1.0(vitest@5.1.0)
       happy-dom: 21.0.4
     transitivePeerDependencies:

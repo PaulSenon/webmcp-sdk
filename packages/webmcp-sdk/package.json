@@ -67,10 +67,10 @@
     "@standard-schema/spec": "^1.1.0"
   },
   "devDependencies": {
-    "@ai-sdk/openai": "4.0.100",
+    "@ai-sdk/openai": "4.0.116",
     "@ai-sdk/react": "^4.0.169",
     "@arethetypeswrong/cli": "0.18.5",
-    "@playwright/test": "1.59.1",
+    "@playwright/test": "1.65.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@valibot/to-json-schema": "^1.8.0",
@@ -79,7 +79,7 @@
     "ai": "^7.0.165",
     "arktype": "^2.2.9",
     "happy-dom": "^21.0.4",
-    "playwright": "1.59.1",
+    "playwright": "1.65.0",
     "publint": "0.3.25",
     "react": "^19.3.1",
     "react-dom": "19.3.1",
