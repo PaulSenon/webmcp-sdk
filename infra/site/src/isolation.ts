@@ -116,7 +116,7 @@ export async function probeStateStore(url: string, token: string, f: Fetch = fet
 export function storeDecision(probe: StoreProbe, expectedVersion: number, store: string): IsolationResult {
   if (!probe.authorized) return { ok: false, reason: `the state token is not the token of ${store} (or the store is missing): wrong secret for this environment, or run the bootstrap` };
   if (probe.version !== expectedVersion) {
-    return { ok: false, reason: `${store} serves state API v${probe.version ?? "unknown"}, this Alchemy expects v${expectedVersion}: re-run the bootstrap to upgrade the store (CI never creates or upgrades it)` };
+    return { ok: false, reason: `${store} serves state API v${probe.version ?? "unknown"}, the installed @alchemy.run/cloudflare expects v${expectedVersion}: re-run the bootstrap (its \`alchemy state bootstrap\` upgrades the store when the version differs; CI never creates or upgrades it)` };
   }
   return { ok: true, notes: [] };
 }
