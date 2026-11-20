@@ -3,13 +3,17 @@
 // infra/docs/scripts/bootstrap.ts. The token is read from a file, never printed or put in argv.
 //
 //   node infra/site/scripts/bootstrap.ts --account-id <32 hex> --token-file <path> --out-dir <private dir> [--subdomain <name>] [--check]
+//   node infra/site/scripts/bootstrap.ts --account-id <id> --token-file <path> --domain-only [--check]     attach site.domain later
+//   node infra/site/scripts/bootstrap.ts --account-id <id> --token-file <path> --detach-domain [--check]   detach it (explicit only)
 //
 //   1. the account's workers.dev subdomain (read; created only if absent and --subdomain given)
 //   2. the two Alchemy state stores (<worker>-state, <worker>-preview-state): `alchemy state
 //      bootstrap` if absent, then their bearer tokens -> <out-dir>/<store>.token (0600)
 //   3. the production Worker, created with a placeholder page ONLY if absent, so that the
 //      production CI token can be scoped to that one Worker
-//   4. prints the two CI tokens the owner creates, and the next command (tooling/setup-github.mjs)
+//   4. if site.domain is set: attaches it to the production Worker after checks (zone account and
+//      name, hostname free of other Workers and of any DNS record) — direct API, never Alchemy (D12)
+//   5. prints the two CI tokens the owner creates, and the next command (tooling/setup-github.mjs)
 // --check only reads.
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -18,6 +22,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ACCOUNT_ID, cfErrors, cloudflare, redact, type CloudflareClient } from "../src/api.ts";
 import { loadConfig } from "../src/config.ts";
+import { detachDecision, domainDecision, type DnsRecord, type DomainAttachment, type DomainProbe, type SiteDomain, type ZoneInfo } from "../src/domain.ts";
 import { assertSubdomain, stateStores, stateStoreUrl, workerName } from "../src/stage.ts";
 
 const pkg = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -72,13 +77,55 @@ function findCachedStoreToken(home: string, store: string): string | undefined {
   return existsSync(home) ? walk(home) : undefined;
 }
 
+// --- custom domain (D12): owner op, direct API, never through Alchemy ----------------------------
+
+/** Read-only probes for one hostname (zone, Worker attachments, DNS records of any type). */
+export async function probeDomain(cf: CloudflareClient, accountId: string, domain: SiteDomain): Promise<DomainProbe> {
+  const zone = await cf.request<ZoneInfo>("GET", `/zones/${domain.zoneId}`);
+  const att = await cf.request<DomainAttachment[]>("GET", `/accounts/${accountId}/workers/domains?hostname=${encodeURIComponent(domain.name)}`);
+  if (!att.body?.success) throw new Error(`cannot list Worker custom domains: HTTP ${att.status} ${cfErrors(att.body)} (bootstrap token needs Workers on the account)`);
+  const dns = await cf.request<DnsRecord[]>("GET", `/zones/${domain.zoneId}/dns_records?name=${encodeURIComponent(domain.name)}&per_page=100`);
+  if (zone.body?.success && !dns.body?.success) throw new Error(`cannot read DNS records of the zone: HTTP ${dns.status} ${cfErrors(dns.body)} (bootstrap token needs Zone > DNS > Read on that zone)`);
+  return { zone: zone.body?.success ? zone.body.result : undefined, attachments: att.body.result ?? [], dnsRecords: dns.body?.success ? dns.body.result ?? [] : [] };
+}
+
+/**
+ * Attach (default) or detach (--detach-domain) the production custom domain. Checks first, writes
+ * once: PUT /accounts/{id}/workers/domains { hostname, service, zone_id } — no
+ * override_existing_dns_record, ever — or DELETE of THIS Worker's attachment only. --check: read only.
+ */
+export async function domainOp(cf: CloudflareClient, accountId: string, worker: string, domain: SiteDomain, opts: { check: boolean; detach: boolean }) {
+  const probe = await probeDomain(cf, accountId, domain);
+  if (opts.detach) {
+    const d = detachDecision({ domain, accountId, worker, probe });
+    if (d.action === "stop") throw new Error(`custom domain: STOP — ${d.reason}`);
+    if (d.action === "absent") return console.log(`custom domain ${domain.name}: not attached to ${worker}; nothing to detach`);
+    if (opts.check) return console.log(`custom domain ${domain.name}: attached to ${worker}; would DETACH it (attachment ${d.id})`);
+    const res = await cf.request("DELETE", `/accounts/${accountId}/workers/domains/${d.id}`);
+    if (!res.body?.success && res.status !== 404) throw new Error(`detach failed: HTTP ${res.status} ${cfErrors(res.body)}`);
+    return console.log(`custom domain ${domain.name}: detached from ${worker} (Cloudflare removes the DNS record it created)`);
+  }
+  const d = domainDecision({ domain, accountId, worker, probe });
+  if (d.action === "stop") throw new Error(`custom domain: STOP — ${d.reason}`);
+  if (d.action === "already") return console.log(`custom domain ${domain.name}: already attached to ${worker} (left as it is)`);
+  if (opts.check) return console.log(`custom domain ${domain.name}: free in zone ${probe.zone?.name}; would ATTACH it to ${worker}`);
+  const res = await cf.request("PUT", `/accounts/${accountId}/workers/domains`, { hostname: domain.name, service: worker, zone_id: domain.zoneId });
+  if (!res.body?.success) throw new Error(`attach failed: HTTP ${res.status} ${cfErrors(res.body)}`);
+  const after = domainDecision({ domain, accountId, worker, probe: await probeDomain(cf, accountId, domain) });
+  if (after.action !== "already") throw new Error(`attach did not converge: ${JSON.stringify(after)}`);
+  console.log(`custom domain ${domain.name}: attached to ${worker}; the certificate may take minutes (the deploy's domain smoke test only warns meanwhile)`);
+}
+
 export async function main(argv: readonly string[]) {
   const accountId = arg(argv, "--account-id") ?? "";
   if (!ACCOUNT_ID.test(accountId)) throw new Error("--account-id must be the 32-hex Cloudflare account ID");
   const tokenFile = arg(argv, "--token-file") ?? "";
   const outDir = arg(argv, "--out-dir") ?? "";
-  if (!tokenFile || !outDir) throw new Error("--token-file and --out-dir are required");
   const check = argv.includes("--check");
+  const detach = argv.includes("--detach-domain");
+  const domainOnly = argv.includes("--domain-only") || detach;
+  if (!tokenFile || (!outDir && !domainOnly)) throw new Error("--token-file is required, and --out-dir unless --domain-only / --detach-domain");
+  if (domainOnly && !config.site.domain) throw new Error("delivery.config.json has no site.domain");
   if ((statSync(tokenFile).mode & 0o077) !== 0) console.log("warning: the token file is readable by other users; chmod 600 it");
   const token = readFileSync(tokenFile, "utf8").trim();
   if (!token || /\s/.test(token)) throw new Error("the token file must contain exactly one token");
@@ -86,6 +133,12 @@ export async function main(argv: readonly string[]) {
   const home = mkdtempSync(join(tmpdir(), "site-bootstrap-home-"));
   const secrets = [token];
   try {
+    const prodWorker = workerName(base, "production");
+    if (domainOnly) {
+      if ((await workerAccess(cf, accountId, prodWorker)) !== "present") throw new Error(`Worker ${prodWorker} does not exist: run the full bootstrap first`);
+      await domainOp(cf, accountId, prodWorker, config.site.domain!, { check, detach });
+      return;
+    }
     const subdomain = await subdomainOf(cf, accountId, arg(argv, "--subdomain"), check);
     console.log(`workers.dev subdomain: ${subdomain}`);
     const alchemy = (args: string[], extra: Record<string, string>) => {
@@ -147,6 +200,12 @@ export async function main(argv: readonly string[]) {
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
+    }
+
+    // Custom domain (D12): only once the production Worker exists, same checks as --domain-only.
+    if (config.site.domain) {
+      if ((await workerAccess(cf, accountId, prod)) === "present") await domainOp(cf, accountId, prod, config.site.domain, { check, detach: false });
+      else console.log(`custom domain ${config.site.domain.name}: skipped (production Worker absent)`);
     }
 
     console.log(

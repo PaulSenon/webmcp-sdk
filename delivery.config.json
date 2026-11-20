@@ -3,6 +3,10 @@
   "site": {
     "name": "docs",
     "worker": "webmcp-sdk-docs",
+    "domain": {
+      "name": "webmcp-sdk.paulsenon.com",
+      "zoneId": "272b1ea420e2116d8a1a2abc6b4297ea"
+    },
     "artifact": ".artifacts/docs",
     "server": false,
     "htmlHandling": "drop-trailing-slash",

@@ -37,6 +37,8 @@ test("config: the repository's config is valid; bad values are refused", () => {
   assert.throws(() => validateConfig({ ...c, site: { ...c.site, headers: { "/*": { "X-Robots-Tag": "all" } } } }), /set by the kit/);
   assert.throws(() => validateConfig({ ...c, site: { ...c.site, headers: { "/*": { CSP: "a\nb" } } } }), /one non-empty line/);
   assert.throws(() => validateConfig({ ...c, site: { ...c.site, headers: { "no-slash": { A: "b" } } } }), /pattern/);
+  assert.equal(validateConfig({ ...c, site: { ...c.site, domain: { name: "docs.example.com", zoneId: "b".repeat(32) } } }).site.domain?.name, "docs.example.com");
+  assert.throws(() => validateConfig({ ...c, site: { ...c.site, domain: { name: "example.com", zoneId: "b".repeat(32) } } }), /apex/);
   assert.equal(previewMode(c, "staging"), "staging");
   assert.throws(() => previewMode(c, "yolo"));
 });

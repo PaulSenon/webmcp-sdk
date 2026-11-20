@@ -30,7 +30,8 @@ const worker = config.site.worker;
 const site = config.site.name;
 const SITE = site.toUpperCase();
 const releaseBranches = Object.keys(config.release.branches);
-export const REQUIRED_CHECKS = [...new Set([...config.previews.requiredChecks, "dependency-review"])];
+// PR-only checks (dependency-review, changeset) are required by the ruleset but never gate deploys.
+export const REQUIRED_CHECKS = [...new Set([...config.previews.requiredChecks, "dependency-review", "changeset"])];
 
 const gh = (args, input, shownInput = "(secret, from stdin)") => {
   const shown = `gh ${args.join(" ")}${input === undefined ? "" : ` <<< ${shownInput}`}`;

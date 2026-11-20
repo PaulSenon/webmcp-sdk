@@ -2,6 +2,7 @@
 // infrastructure (alchemy.run.ts, scripts/cli.ts) and the release tooling. In privileged jobs it is
 // always read from the checkout of the default branch, never from a pull request.
 import { readFileSync } from "node:fs";
+import { validateSiteDomain, type SiteDomain } from "./domain.ts";
 import { validateHeaderRules } from "./stage.ts";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,6 +24,11 @@ export interface DeliveryConfig {
     server: boolean;
     /** Entry module inside `server/` (default "index.js"; TanStack Start emits "server.js"). */
     serverEntry?: string;
+    /**
+     * Optional custom domain for PRODUCTION only (D12): { name, zoneId }. Attached by the owner
+     * (bootstrap.ts --domain-only), never by CI; previews stay on workers.dev.
+     */
+    domain?: SiteDomain;
     /** Project response headers for static assets, merged into the kit's (e.g. a CSP): pattern -> name -> value. */
     headers?: Record<string, Record<string, string>>;
     /** Cloudflare asset trailing-slash policy (default "auto-trailing-slash"; WebMCP: "drop-trailing-slash"). */
@@ -76,6 +82,7 @@ export function validateConfig(raw: unknown): DeliveryConfig {
   if (typeof s.server !== "boolean") fail("site.server must be a boolean");
   try {
     validateHeaderRules(s.headers);
+    validateSiteDomain(s.domain);
   } catch (e) {
     fail((e as Error).message);
   }

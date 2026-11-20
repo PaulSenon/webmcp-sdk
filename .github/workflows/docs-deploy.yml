@@ -376,7 +376,9 @@ jobs:
           case "$SHA" in *[!0-9a-f]*|"") echo "::error::bad SHA"; exit 1 ;; esac
           base="$(node -p 'require("./delivery.config.json").site.worker')"
           { echo "run_id=$RUN_ID"; echo "sha=$SHA"; echo "revision=main@${SHA:0:7}"
-            echo "store=$base-state"; echo "url=https://$base.$SUBDOMAIN.workers.dev/"; } >> "$GITHUB_OUTPUT"
+            echo "store=$base-state"; } >> "$GITHUB_OUTPUT"
+          # url = site.domain when configured (D12: attached by the owner, never by CI), else workers.dev
+          node infra/site/scripts/cli.ts prod-url
       - name: Rollback only — gate again on every required check of the rolled-back SHA
         if: steps.src.outputs.rollback == 'true'
         env:
@@ -435,10 +437,17 @@ jobs:
           node infra/site/scripts/cli.ts preflight
           pnpm --filter "$INFRA_PKG" exec alchemy deploy --stage production --yes --no-input
       - if: steps.go.outputs.deploy == 'true'
-        name: Smoke test
+        name: Smoke test (workers.dev, hard gate)
+        env:
+          SMOKE_URL: ${{ steps.src.outputs.workers_dev_url }}
+          REVISION: ${{ steps.src.outputs.revision }}
+        run: node infra/site/scripts/cli.ts smoke
+      - if: steps.go.outputs.deploy == 'true' && steps.src.outputs.has_domain == 'true'
+        name: Smoke test (custom domain, bounded retries then warning — D12)
         env:
           SMOKE_URL: ${{ steps.src.outputs.url }}
           REVISION: ${{ steps.src.outputs.revision }}
+          SMOKE_SOFT: "1"
         run: node infra/site/scripts/cli.ts smoke
 
   sweep:

@@ -15,6 +15,7 @@ import { isMainOnly, isolationDecision, probeStateStore, storeDecision, verifyTo
 import { loadConfig, previewMode, serverEntry } from "../src/config.ts";
 import { evaluateChecks, type CheckRun, type CommitStatus } from "../src/gate.ts";
 import { afterDeploy, findComment, isOrphan, previewAction, previewNumbers, previewNumbersFromState, renderComment, type CommentStatus, type IssueComment, type PullRequest } from "../src/preview.ts";
+import { productionUrl } from "../src/domain.ts";
 import { prStage, revisionLabel, stateStoreFor, stateStoreUrl, workerName, workersDevUrl } from "../src/stage.ts";
 
 const config = loadConfig();
@@ -46,6 +47,10 @@ async function getPr(client: GitHubClient, n: number): Promise<PullRequest | und
   }
 }
 
+/** The public URL of a stage: production = the custom domain when configured (D12). */
+const stageUrl = (stage: string, subdomain: string) =>
+  stage === "production" ? productionUrl(config.site.domain, workersDevUrl(base, stage, subdomain)) : workersDevUrl(base, stage, subdomain);
+
 function targetOutputs(stage: string, sha: string, pr?: number) {
   const subdomain = env("SUBDOMAIN");
   return {
@@ -53,7 +58,7 @@ function targetOutputs(stage: string, sha: string, pr?: number) {
     sha,
     pr: pr ?? "",
     worker: workerName(base, stage),
-    url: workersDevUrl(base, stage, subdomain),
+    url: stageUrl(stage, subdomain),
     store: stateStoreFor(base, stage),
     revision: revisionLabel(pr ? { pr, sha } : { sha }),
   };
@@ -174,7 +179,13 @@ const commands: Record<string, () => Promise<void>> = {
     const stage = pr ? prStage(previewMode(config), pr) : "production";
     const subdomain = env("SUBDOMAIN", false);
     if (!subdomain) console.log("::notice::<SITE>_WORKERS_SUBDOMAIN is not set: building without SITE_URL");
-    output({ stage, url: subdomain ? workersDevUrl(base, stage, subdomain) : "", dir: config.site.artifact });
+    output({ stage, url: subdomain ? stageUrl(stage, subdomain) : "", dir: config.site.artifact });
+  },
+
+  /** Production URLs for the deploy job: the public one (custom domain or workers.dev) + workers.dev. */
+  async "prod-url"() {
+    const subdomain = env("SUBDOMAIN");
+    output({ url: stageUrl("production", subdomain), workers_dev_url: workersDevUrl(base, "production", subdomain), has_domain: Boolean(config.site.domain) });
   },
 
   async "write-manifest"() {
@@ -198,14 +209,28 @@ const commands: Record<string, () => Promise<void>> = {
     output({ action });
   },
 
+  /**
+   * SMOKE_SOFT=1 (custom domain, D12): bounded retries, then a WARNING instead of a failure — on a
+   * first attachment DNS/certificate provisioning is outside the deploy's control, and the hard
+   * smoke on workers.dev already proved the deployed content.
+   */
   async smoke() {
     const url = env("SMOKE_URL");
     const revision = env("REVISION", false);
+    const soft = process.env.SMOKE_SOFT === "1";
+    const attempts = soft ? 14 : 10; // soft: ~5 min of backoff
     for (const path of config.site.smokePaths) {
       let last = "";
-      for (let attempt = 1; attempt <= 10; attempt++) {
+      for (let attempt = 1; attempt <= attempts; attempt++) {
         // Follows redirects (e.g. /docs -> /docs/ trailing-slash handling) but only on the same origin.
-        const res = await fetch(new URL(path, url), { headers: { "cache-control": "no-cache" } });
+        let res: Response;
+        try {
+          res = await fetch(new URL(path, url), { headers: { "cache-control": "no-cache" } });
+        } catch (error) {
+          last = `${path}: ${(error as Error).message}${(error as { cause?: { code?: string } }).cause?.code ? ` (${(error as { cause: { code: string } }).cause.code})` : ""}`;
+          await sleep(attempt * 3_000);
+          continue;
+        }
         if (new URL(res.url).origin !== new URL(url).origin) throw new Error(`${path} redirects off-site to ${res.url}`);
         const got = res.headers.get("x-delivery-revision");
         await res.arrayBuffer();
@@ -219,6 +244,10 @@ const commands: Record<string, () => Promise<void>> = {
         }
         last = `${path}: HTTP ${res.status}, revision ${got ?? "none"}${projectOk ? "" : ", configured site.headers missing"}`;
         await sleep(attempt * 3_000);
+      }
+      if (last && soft) {
+        console.log(`::warning::custom domain not serving yet (${last}): certificate/DNS provisioning can take minutes; check ${url} — bootstrap.ts --domain-only --check reports the attachment`);
+        return;
       }
       if (last) throw new Error(`smoke test failed: ${last}`);
       console.log(`smoke ok: ${path}`);
