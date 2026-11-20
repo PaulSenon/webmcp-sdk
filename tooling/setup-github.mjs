@@ -17,7 +17,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { missingChecks, requiredChecks, workflowCheckNames } from "./required-checks.mjs";
+import { missingChecks, missingChecksError, requiredChecks, workflowChecks } from "./required-checks.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (f) => (argv.includes(f) ? argv[argv.indexOf(f) + 1] : undefined);
@@ -34,8 +34,9 @@ const releaseBranches = Object.keys(config.release.branches);
 // previews.requiredChecks + previews.prOnlyChecks (default ["dependency-review"]); each must be a job
 // of .github/workflows, else the ruleset would block every PR on a check that never reports.
 export const REQUIRED_CHECKS = requiredChecks(config);
-const missing = missingChecks(REQUIRED_CHECKS, workflowCheckNames(".github/workflows"));
-if (missing.length) throw new Error(`required check(s) with no job in .github/workflows: ${missing.join(", ")} — fix previews.requiredChecks / previews.prOnlyChecks`);
+const produced = workflowChecks(".github/workflows");
+const checksError = missingChecksError(missingChecks(REQUIRED_CHECKS, produced.names), produced.unverifiable);
+if (checksError) throw new Error(checksError);
 
 const gh = (args, input, shownInput = "(secret, from stdin)") => {
   const shown = `gh ${args.join(" ")}${input === undefined ? "" : ` <<< ${shownInput}`}`;

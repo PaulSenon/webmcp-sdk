@@ -21,7 +21,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ACCOUNT_ID, cfErrors, cfNotFound, cloudflare, redact, type CloudflareClient } from "../src/api.ts";
-import { loadConfig } from "../src/config.ts";
+import { checkArtifact } from "../src/artifact.ts";
+import { loadConfig, serverEntry, type DeliveryConfig } from "../src/config.ts";
 import { detachDecision, domainDecision, type DnsRecord, type DomainAttachment, type DomainProbe, type SiteDomain, type ZoneInfo } from "../src/domain.ts";
 import { assertSubdomain, stateStores, stateStoreUrl, workerName } from "../src/stage.ts";
 
@@ -85,6 +86,21 @@ function findCachedStoreToken(home: string, store: string): string | undefined {
     return undefined;
   };
   return existsSync(home) ? walk(home) : undefined;
+}
+
+/**
+ * The first-deploy placeholder, in the SAME layout the deploy validates (checkArtifact): assets/
+ * and, for site.server, the configured entry (site.serverEntry, e.g. TanStack Start's server.js —
+ * v0.3.2 always wrote index.js; found by Better Upload's real bootstrap).
+ */
+export function writePlaceholderArtifact(dir: string, cfg: DeliveryConfig) {
+  mkdirSync(join(dir, "assets"), { recursive: true });
+  writeFileSync(join(dir, "assets", "index.html"), `<!doctype html><meta charset="utf-8"><meta name="robots" content="noindex"><title>${cfg.project}</title><p>First deploy pending.</p>\n`);
+  if (cfg.site.server) {
+    mkdirSync(join(dir, "server"), { recursive: true });
+    writeFileSync(join(dir, "server", serverEntry(cfg)), "export default { fetch: (r, env) => env.ASSETS.fetch(r) };\n");
+  }
+  checkArtifact(dir, { server: cfg.site.server, serverEntry: serverEntry(cfg) }); // fail here, not inside alchemy
 }
 
 // --- custom domain (D12): owner op, direct API, never through Alchemy ----------------------------
@@ -200,12 +216,7 @@ export async function main(argv: readonly string[]) {
     else {
       console.log(`Worker ${prod}: absent, creating it with a placeholder page…`);
       const dir = mkdtempSync(join(tmpdir(), "site-placeholder-"));
-      mkdirSync(join(dir, "assets"));
-      writeFileSync(join(dir, "assets", "index.html"), `<!doctype html><meta charset="utf-8"><meta name="robots" content="noindex"><title>${config.project}</title><p>First deploy pending.</p>\n`);
-      if (config.site.server) {
-        mkdirSync(join(dir, "server"));
-        writeFileSync(join(dir, "server", "index.js"), "export default { fetch: (r, env) => env.ASSETS.fetch(r) };\n");
-      }
+      writePlaceholderArtifact(dir, config);
       try {
         alchemy(["deploy", "--stage", "production", "--yes", "--no-input"], { SITE_STATE: "http", SITE_STATE_STORE: stateStores(base).production, SITE_STATE_TOKEN: bearers[stateStores(base).production] ?? "", SITE_ARTIFACT_DIR: dir });
       } finally {

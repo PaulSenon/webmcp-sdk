@@ -135,3 +135,24 @@ test("alchemy.run.ts never passes `domain` to the Worker (D12: Alchemy must neve
   assert.doesNotMatch(props, /^\s*domain\s*:/m);
   assert.doesNotMatch(props, /\bdomain\s*:\s*(null|undefined|config)/);
 });
+
+// v0.3.3 (Better Upload's real bootstrap): the placeholder must use site.serverEntry.
+import { mkdtempSync as mkTmp, existsSync as exists } from "node:fs";
+import { tmpdir as tmp } from "node:os";
+import { join as pjoin } from "node:path";
+import { checkArtifact } from "../src/artifact.ts";
+import { loadConfig } from "../src/config.ts";
+import { writePlaceholderArtifact } from "../scripts/bootstrap.ts";
+
+test("placeholder artifact passes checkArtifact: static, server (default entry), server (custom entry)", () => {
+  const base = loadConfig();
+  for (const site of [{ ...base.site, server: false }, { ...base.site, server: true, serverEntry: undefined }, { ...base.site, server: true, serverEntry: "server.js" }]) {
+    const cfg = { ...base, site };
+    const dir = mkTmp(pjoin(tmp(), "placeholder-"));
+    writePlaceholderArtifact(dir, cfg);
+    const entry = site.server ? pjoin(dir, "server", site.serverEntry ?? "index.js") : undefined;
+    if (entry) assert.ok(exists(entry), entry);
+    assert.equal(checkArtifact(dir, { server: site.server, serverEntry: site.serverEntry }).hasServer, site.server);
+    if (site.serverEntry === "server.js") assert.ok(!exists(pjoin(dir, "server", "index.js")), "no stray index.js");
+  }
+});
