@@ -1,6 +1,8 @@
 // Serves out/ locally the way the production host is configured to (Cloudflare Workers static
 // assets with html_handling "drop-trailing-slash" and not_found_handling "404-page"):
 //   /docs/x  -> docs/x/index.html (or docs/x.html), /docs/x/ -> 308 to /docs/x, unknown -> 404.html
+// It also sends the site's security headers from delivery.config.json (site.headers: strict CSP,
+// frame-ancestors 'none', …), so the smoke tests fail on any CSP violation (a console error).
 // Dependency-free, for local checks only.
 import { createServer } from "node:http";
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -14,6 +16,11 @@ const types = {
   ".png": "image/png", ".ico": "image/x-icon", ".woff2": "font/woff2",
 };
 const isFile = (p) => existsSync(p) && statSync(p).isFile();
+
+// site.headers patterns are "/*" or "/prefix/*" (see delivery.config.json and docs/docs-deploy.md).
+const siteHeaders = JSON.parse(readFileSync(new URL("../../../delivery.config.json", import.meta.url), "utf8")).site.headers ?? {};
+const headersFor = (pathname) =>
+  Object.assign({}, ...Object.entries(siteHeaders).filter(([pattern]) => pathname.startsWith(pattern.replace(/\*$/, ""))).map(([, h]) => h));
 
 /** Maps a URL path to a file of out/, or a redirect, or undefined (404). Exported for tests. */
 export function resolve(pathname) {
@@ -37,7 +44,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       return;
     }
     const file = hit?.file ?? join(out, "404.html");
-    res.writeHead(hit ? 200 : 404, { "Content-Type": types[extname(file)] ?? "application/octet-stream" });
+    res.writeHead(hit ? 200 : 404, { ...headersFor(pathname), "Content-Type": types[extname(file)] ?? "application/octet-stream" });
     res.end(readFileSync(file));
   }).listen(port, () => console.log(`Serving out/ at http://localhost:${port}`));
 }

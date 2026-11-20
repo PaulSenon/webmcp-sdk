@@ -110,7 +110,7 @@ The output is deterministic and not committed: the reference cannot drift from t
 | `llms.txt`, `llms-full.txt`, `llms.mdx/docs/**/content.md` | the docs as Markdown, for LLMs |
 | `icon.svg` | favicon |
 
-**Host configuration expected** (what [`scripts/preview.mjs`](scripts/preview.mjs) emulates and the smoke tests verify). For Cloudflare Workers static assets:
+**Hosting** is [`infra/site`](../../infra/site) (Cloudflare Workers static assets; runbook [`docs/docs-deploy.md`](../../docs/docs-deploy.md)). `pnpm site:build` (root) runs `pnpm docs:build` and lays `out/` out as the deploy artifact. The host is configured as follows, and [`scripts/preview.mjs`](scripts/preview.mjs) emulates it for the smoke tests, **including the security headers of `delivery.config.json`** (`site.headers`: strict CSP, `frame-ancestors 'none'`, …), so a CSP violation fails `pnpm docs:test`:
 
 - `html_handling: "drop-trailing-slash"`: `/docs/react` serves `docs/react/index.html`, and `/docs/react/` redirects to it. Links on the site never have a trailing slash.
 - `not_found_handling: "404-page"`: unknown URLs get `404.html` with status 404.
@@ -122,7 +122,7 @@ The output is deterministic and not committed: the reference cannot drift from t
 | - | - | - |
 | `SITE_URL` | canonical URLs, Open Graph `og:url`, `sitemap.xml`, `robots.txt` | `http://localhost:4321` (local builds only) |
 
-`SITE_URL` must be a bare `http(s)` origin (`https://docs.example.com`); anything with a path, query or fragment fails the build. **Deploy builds must set it.** The build needs no secrets and no network beyond `pnpm install`.
+`SITE_URL` must be a bare `http(s)` origin (`https://docs.example.com`, a trailing `/` is fine); anything with a path, query or fragment fails the build. CI sets it (`docs.yml`): `https://webmcp-sdk.paulsenon.com/` in production, the PR's workers.dev URL for previews. Previews are kept out of search engines by the host (`X-Robots-Tag: noindex, nofollow` on every non-production stage), not by the site. The build needs no secrets and no network beyond `pnpm install`.
 
 ## Before and after the first release
 

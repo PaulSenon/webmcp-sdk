@@ -23,7 +23,9 @@ test("home page renders and links to the docs", async ({ page }) => {
 
 test("docs pages hydrate and navigate on the client", async ({ page }) => {
   const errors = trackErrors(page);
-  await page.goto("/docs");
+  const response = await page.goto("/docs");
+  // Served with the production CSP (delivery.config.json), so any violation is a console error here.
+  expect(response?.headers()["content-security-policy"]).toContain("frame-ancestors 'none'");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Introduction");
   await expect(page.getByRole("main")).toHaveCount(1);
   // A client-side navigation fetches the loader result prerendered as static JSON, instead of reloading.
