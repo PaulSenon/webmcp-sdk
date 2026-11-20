@@ -1,0 +1,129 @@
+---
+title: Examples
+description: Complete, typechecked examples built only from the documented API.
+---
+
+Every code block on this site is typechecked against the library in CI, including these.
+
+## A shop page in plain TypeScript
+
+Contracts in one module, implementations as factories of their dependencies, one registration tied to the page's lifetime.
+
+```ts title="shop/contracts.ts" file=shop-contracts.ts
+import { z } from "zod";
+import { defineTool } from "@senon/webmcp-sdk";
+
+export const searchProducts = defineTool({
+  name: "search_products",
+  description: "Search the catalog by keyword. Returns at most `limit` products.",
+  input: z.object({ q: z.string().min(1), limit: z.number().int().min(1).max(50).default(10) }),
+  output: z.object({ hits: z.array(z.object({ sku: z.string(), title: z.string() })) }),
+  annotations: { readOnlyHint: true },
+});
+
+export const addToCart = defineTool({
+  name: "add_to_cart",
+  description: "Add a product to the cart by SKU. Returns the new item count.",
+  input: z.object({ sku: z.string(), quantity: z.number().int().min(1).default(1) }),
+  output: z.object({ itemCount: z.number().int() }),
+});
+```
+
+```ts title="shop/tools.ts" file=shop-tools.ts
+import { implementTool, ToolError } from "@senon/webmcp-sdk";
+import { addToCart, searchProducts } from "./shop-contracts.js";
+
+export interface Catalog { search(q: string, limit: number, signal: AbortSignal): Promise<{ sku: string; title: string }[]> }
+export interface Cart { stock(sku: string): Promise<number>; add(sku: string, quantity: number): Promise<number> }
+
+export const searchProductsTool = ({ catalog }: { catalog: Catalog }) =>
+  implementTool(searchProducts, async ({ q, limit }, { signal }) => ({ hits: await catalog.search(q, limit, signal) }));
+
+export const addToCartTool = ({ cart }: { cart: Cart }) =>
+  implementTool(addToCart, async ({ sku, quantity }) => {
+    const left = await cart.stock(sku);
+    if (left < quantity) throw new ToolError(`Only ${left} left. Ask for at most ${left}.`, { code: "OUT_OF_STOCK", data: { left } });
+    return { itemCount: await cart.add(sku, quantity) };
+  });
+```
+
+```ts title="shop/page.ts"
+import { registerTools } from "@senon/webmcp-sdk";
+import { addToCartTool, searchProductsTool, type Cart, type Catalog } from "./shop-tools.js";
+declare const catalog: Catalog;
+declare const cart: Cart;
+
+// One lifetime for the whole page section; abort it when the user leaves the shop.
+export async function mountShopTools(signal: AbortSignal) {
+  const results = await registerTools([searchProductsTool({ catalog }), addToCartTool({ cart })], {
+    signal,
+    onUnexpectedError: (error, { toolName, kind }) => console.error(`[${toolName}] ${kind}`, error),
+  });
+  for (const r of results) if (r.status === "error") console.warn(r.name, r.error.code);
+  return results.some((r) => r.status === "registered");
+}
+```
+
+```ts title="shop/tools.test.ts"
+import { runTool, toJSONSchema } from "@senon/webmcp-sdk";
+import { addToCart, searchProducts } from "./shop-contracts.js";
+import { addToCartTool } from "./shop-tools.js";
+
+const cart = { stock: async () => 1, add: async () => 1 };
+
+const tooMany = await runTool(addToCartTool({ cart }), { sku: "TEE-1", quantity: 3 });
+if (!tooMany.ok && tooMany.failure.kind === "tool_error") console.log(tooMany.failure.message); // "Only 1 left. …"
+
+for (const definition of [searchProducts, addToCart]) {
+  for (const [side, r] of Object.entries(toJSONSchema(definition))) if (r && !r.ok) throw new Error(`${definition.name} ${side}: ${r.message}`);
+}
+```
+
+## A React component that exposes its own state
+
+Definitions at module scope; the hook re-registers only when the set of definitions changes.
+
+```tsx title="todo-list.tsx"
+import { useState } from "react";
+import { z } from "zod";
+import { defineTool, implementTool } from "@senon/webmcp-sdk";
+import { useRegisterTools } from "@senon/webmcp-sdk/react";
+
+const addTodo = defineTool({
+  name: "add_todo",
+  description: "Add an item to the visible todo list. Returns the new item count.",
+  input: z.object({ text: z.string().min(1) }),
+  output: z.object({ count: z.number() }),
+});
+const listTodos = defineTool({
+  name: "list_todos",
+  description: "List the items of the visible todo list.",
+  output: z.object({ items: z.array(z.string()) }),
+  annotations: { readOnlyHint: true },
+});
+
+const addTodoTool = ({ items, setItems }: { items: string[]; setItems: (items: string[]) => void }) =>
+  implementTool(addTodo, ({ text }) => {
+    setItems([...items, text]);
+    return { count: items.length + 1 };
+  });
+const listTodosTool = ({ items }: { items: string[] }) => implementTool(listTodos, () => ({ items }));
+
+export function TodoList() {
+  const [items, setItems] = useState<string[]>([]);
+  const { supported, tools } = useRegisterTools([addTodoTool({ items, setItems }), listTodosTool({ items })]);
+  const failed = tools.filter((t) => t.state === "error");
+
+  return (
+    <section>
+      {supported === false && <p>This browser has no WebMCP; the list works as usual.</p>}
+      {failed.map((t) => <p key={t.name}>{t.name}: {t.error?.code}</p>)}
+      <ul>{items.map((item, i) => <li key={i}>{item}</li>)}</ul>
+    </section>
+  );
+}
+```
+
+## An in-page agent
+
+See [With the AI SDK](/docs/ai-sdk) for a complete browser + server example using a catalog.

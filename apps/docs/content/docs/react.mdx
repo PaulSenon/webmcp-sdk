@@ -1,0 +1,89 @@
+---
+title: React
+description: useRegisterTools, RegisterTools and useToolCatalog own the lifetimes for you.
+---
+
+`@senon/webmcp-sdk/react` owns the lifetimes for you: there is no `register`, `abort` or cleanup to write.
+
+```tsx title="dashboard.tsx"
+import { useState } from "react";
+import { z } from "zod";
+import { defineTool, implementTool } from "@senon/webmcp-sdk";
+import { RegisterTools, useRegisterTools } from "@senon/webmcp-sdk/react";
+
+// Module scope: stable definitions
+const applyFilter = defineTool({
+  name: "apply_filter",
+  description: "Filter the dashboard by status.",
+  input: z.object({ status: z.enum(["open", "closed", "all"]) }),
+  output: z.object({ visible: z.number() }),
+});
+const exportCsv = defineTool({ name: "export_csv", description: "Download the visible rows as CSV." });
+
+// One factory per implementation: dependencies are explicit parameters
+const applyFilterTool = ({ setStatus, rows }: { setStatus: (s: string) => void; rows: { status: string }[] }) =>
+  implementTool(applyFilter, ({ status }) => {
+    setStatus(status);
+    return { visible: status === "all" ? rows.length : rows.filter((r) => r.status === status).length };
+  });
+const exportCsvTool = ({ rows }: { rows: unknown[] }) => implementTool(exportCsv, () => ({ exported: rows.length }));
+
+export function Dashboard({ rows }: { rows: { status: string }[] }) {
+  const [status, setStatus] = useState("all");
+
+  // Registered while mounted. Re-renders refresh handlers without re-registering.
+  const { supported } = useRegisterTools([applyFilterTool({ setStatus, rows })]);
+
+  return (
+    <>
+      {supported && <small>AI tools available</small>}
+      <p>Showing {status}</p>
+      {/* Available only while rendered */}
+      {rows.length > 0 && <RegisterTools tools={[exportCsvTool({ rows })]} />}
+    </>
+  );
+}
+```
+
+## Behaviour
+
+| | behaviour |
+| - | --------- |
+| SSR / first render | nothing happens; `supported: undefined` |
+| mount / unmount | registers / removes the tools |
+| re-render | handlers refreshed; only added or removed definitions are registered or removed |
+| a call starting between a render and its commit | uses the previous handler |
+| StrictMode double mount | register → remove → register; no spurious `duplicate_name` |
+| unmount while a call runs | the call finishes; a handler that must stop with its component needs its own `AbortController` |
+| no WebMCP | `supported: false`, tools `"unsupported"`; nothing throws |
+| errors | never thrown during render; per tool in `tools[i].error` |
+| name already registered by another `useRegisterTools` | `duplicate_name`, retried automatically when that registration ends (conflicts with other code stay errors) |
+
+- **Keep definitions at module scope.** Implementations can be recreated freely.
+- **A definition created during render** is a new tool on every render, so it is re-registered every time (a dev warning is logged).
+
+## Options
+
+`useRegisterTools(tools, options)` and `<RegisterTools tools={…} {...options} />` accept:
+
+- `enabled` (`false` removes the tools);
+- `modelContext` and `exposedTo` (compared by value; changing either re-registers);
+- `onUnexpectedError`.
+
+## Discovering tools in React
+
+`useToolCatalog` creates a catalog for the component's lifetime and keeps it in sync:
+
+```tsx
+import { useToolCatalog } from "@senon/webmcp-sdk/react";
+
+export function ToolList() {
+  const { status, tools } = useToolCatalog({ fromOrigins: ["https://widgets.example"] }); // created and kept in sync for you
+  if (status === "unsupported") return null;
+  return <ul>{tools.map((t) => <li key={t.name}>{t.title ?? t.webmcpName} <small>{t.origin}</small></li>)}</ul>;
+}
+```
+
+`useToolCatalog` also returns `catalog`, the instance to call; pass it down rather than creating another. `fromOrigins` is compared by value, so inline arrays are fine. The hook never disposes: a catalog nobody subscribes to is idle. See [Discovering and calling tools](/docs/discovering-tools).
+
+Full signatures: [React API](/docs/api/react).

@@ -1,0 +1,100 @@
+---
+title: Discovering and calling tools
+description: "Experimental: a catalog lists the tools of a page and its frames, names them and routes calls."
+---
+
+<Callout title="Experimental">
+  The discovery API follows the WebMCP draft's consumer side (`getTools`, `executeTool`, `toolchange`), which is still moving.
+</Callout>
+
+For **in-page agents**, such as a chat widget or a copilot running in the page, that need the tools exposed by the page and its frames. A **catalog** handles discovery, change tracking, naming and routing. You only adapt its list to your model's format.
+
+```ts
+import { createToolCatalog } from "@senon/webmcp-sdk";
+
+const catalog = createToolCatalog({ fromOrigins: ["https://widgets.example"] }); // you own it; no global state
+
+// Before each model request: a fresh snapshot
+const tools = await catalog.getTools(); // [{ name, description, inputSchema, … }]
+
+// When the model calls a tool: pass its name and arguments straight back
+declare const toolCall: { toolName: string; input: unknown };
+if (catalog.isCatalogTool(toolCall.toolName)) {
+  const result = await catalog.callTool(toolCall.toolName, toolCall.input);
+  // result.ok ? result.value : result.error (each error has a `message`; `tool_failed` carries the tool's `failure`)
+}
+```
+
+| `createToolCatalog` option | |
+| -------------------------- | - |
+| `fromOrigins` | other origins to include (native filter; owners must still expose their tools to you) |
+| `modelContext` | a context to use instead of `document.modelContext` |
+| `maxNameLength` | maximum length of issued names, default `64` |
+| `namePrefix` | prefix for every issued name (see [Several catalogs](/docs/discovering-tools#several-catalogs-or-your-own-tools-in-one-model)) |
+
+| method | |
+| ------ | - |
+| `getTools()` | queries now; never rejects (`[]` when unsupported or on error, and the snapshot's `status` says why) |
+| `getSnapshot()` | the latest result, synchronously: `{ status, tools, error?, version }` |
+| `subscribe(listener)` | for code that reacts to changes; returns a function that stops that listener only |
+| `isCatalogTool(name)` | routing: was this name issued by this catalog? |
+| `callTool(name, input, { signal })` | calls the tool; never throws |
+| `update({ fromOrigins })` | changes the origins (compared by value) |
+| `dispose()` | ends the catalog and every listener |
+
+## Names
+
+Each tool gets **one** name, issued by the catalog, which you give to the model and get back unchanged:
+
+- **Unique within the catalog.** Provider-safe: `[A-Za-z0-9_-]`, at most 64 characters (`maxNameLength`). Invalid characters become `_`; the tool-name part is truncated to fit.
+- **Shaped `<source>__<tool name>`**, e.g. `self__search`, `f1__search`. The **source** is the document the tool comes from: one window or frame, at one origin. `self` is your page, and `f1`, `f2`… are frames in the order they were first seen. A frame that navigates to another origin becomes a new source.
+- **Do not parse names:** use `webmcpName`, `origin` and `isSameDocument`. The source tag is on every name, so two frames exposing `search` never collide, whatever order they register in. If two names of one source become identical once shortened or normalized, the catalog adds `_2`, `_3`… internally.
+- **Stable for the catalog's lifetime,** including when a tool is unregistered and registered again. Not across page reloads, and never persisted.
+- **`webmcpName`** keeps the page's original name for display.
+
+## Calls
+
+- **`callTool(name, input)`** calls the tool currently registered under that name. `input` is whatever the model sent (`unknown`; `undefined` is sent as `{}`). `value` is the tool's JSON result, parsed.
+- **String results:** native Chrome (156) returns *string* results unquoted, unlike the draft, so a result that is not valid JSON is returned as the raw string. As a consequence, a string result that looks like JSON (`"2"`, `"true"`) arrives parsed.
+- **Validation** happens on the tool's own page; a webmcp-sdk tool answers `tool_failed` with its `input_invalid` details.
+- **It never throws,** and every failure has a `message` you can hand to the model:
+  - `unknown_tool`: not a name of this catalog;
+  - `unavailable`: the tool is gone. Nothing runs, and the call is never rerouted to another tool;
+  - `invalid_arguments`: the input is not a plain object (arrays, Date and class instances are rejected);
+  - `tool_failed`: the tool returned a failure envelope;
+  - `rejected`: the browser refused the call.
+- **A replaced tool** (same name, new version) is called in its current version.
+- **`isCatalogTool(name)`** tells you the name belongs to this catalog, so you can route among other tools. It stays `true` for tools that later disappeared, which get an explicit `unavailable`. It says nothing about the arguments: discovered tools have no static types.
+
+## Several catalogs, or your own tools, in one model
+
+Names are unique **within one catalog**. If one model also receives tools from another catalog, or your own non-WebMCP tools, give each catalog a `namePrefix`. The catalog then issues **and** recognizes the prefixed names, so routing stays one `isCatalogTool` check per catalog:
+
+```ts
+import { createToolCatalog } from "@senon/webmcp-sdk";
+declare const toolCall: { toolName: string; input: unknown };
+
+const page = createToolCatalog({ namePrefix: "page_" });
+const widgets = createToolCatalog({ fromOrigins: ["https://widgets.example"], namePrefix: "widget_" });
+
+const tools = [...(await page.getTools()), ...(await widgets.getTools())]; // page_self__search, widget_f1__search…
+const owner = [page, widgets].find((c) => c.isCatalogTool(toolCall.toolName));
+const result = await owner?.callTool(toolCall.toolName, toolCall.input);
+```
+
+- **The prefix** must match `[A-Za-z0-9_-]*` and be at most half of `maxNameLength`; otherwise `createToolCatalog` throws.
+- **Distinct prefixes are your choice.** The SDK keeps no registry across catalogs.
+- **Keep your own tools' names outside every prefix.**
+
+## Changes and cleanup
+
+- **`getTools()`** per request is enough for agents.
+- **`subscribe(listener)`** is for code that must react to changes, such as a live list. It returns a function that stops that listener only.
+- **`dispose()`** ends the whole catalog, every listener included. A module-scope catalog that lives as long as the page needs neither.
+- **One catalog per page or model.** In React, create it once (module scope, or [`useToolCatalog`](/docs/react#discovering-tools-in-react) in a parent) and pass it down. Two catalogs means two listeners and two independent sets of names.
+
+## Security
+
+`fromOrigins` only filters what you ask for. A cross-origin tool appears only if its page registered it with `exposedTo` your origin. The browser and its permissions policy remain the only authority.
+
+Next: wire a catalog to a model with [the AI SDK](/docs/ai-sdk).

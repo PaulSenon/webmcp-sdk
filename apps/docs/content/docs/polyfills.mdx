@@ -1,0 +1,30 @@
+---
+title: Polyfills and custom model contexts
+description: Using the official WebMCP polyfill, or passing your own model context.
+---
+
+The SDK never installs or imports a polyfill, which keeps progressive enhancement intact. It uses `document.modelContext` when it exists, or the object you pass as `modelContext`.
+
+## The official polyfill
+
+[`@w3c/webmcp-polyfill`](https://www.npmjs.com/package/@w3c/webmcp-polyfill) (0.1.0) installs `document.modelContext` globally, and is a no-op where a native implementation exists. Install it in your browser entry, before registering:
+
+```ts nocheck
+// main.ts (browser entry; not in server code)
+import "@w3c/webmcp-polyfill/auto"; // or: import { installWebMCP } from "@w3c/webmcp-polyfill"; installWebMCP();
+```
+
+- **React** works the same way: install it before `createRoot(...).render(...)`.
+- **Installing late:** `registerTool` looks for `document.modelContext` when called, the React hooks look again on a later render, and catalogs look again on `getTools()` / `update()`. Installing before your app starts is simpler.
+
+**Polyfill limits** (from its documentation, 0.1.0):
+
+- It must be installed in **each frame**. Polyfilled and native frames do not see each other's tools.
+- It exposes tools to **in-page** consumers only, not to a browser's built-in agent.
+- It currently ignores `outputSchema` and fires no `toolcancel`.
+
+## An explicit model context
+
+`modelContext` (on `registerTool(s)`, `createToolCatalog` and the hooks) takes any object with the WebMCP shape. It is used as-is and never falls back to `document`.
+
+It is mainly useful for test doubles: the polyfills known today (`@w3c/webmcp-polyfill`, `@mcp-b/*`) install themselves globally rather than hand out instances. The official polyfill's types are checked against these options. The expected shapes are [`ModelContextLike`](/docs/api/core#modelcontextlike) and [`ModelContextConsumerLike`](/docs/api/core#modelcontextconsumerlike).

@@ -1,0 +1,30 @@
+{
+  "title": "Documentation",
+  "pages": [
+    "---Getting started---",
+    "index",
+    "installation",
+    "quick-start",
+    "concepts",
+    "---Guides---",
+    "defining-tools",
+    "implementing-tools",
+    "errors",
+    "registering-tools",
+    "react",
+    "discovering-tools",
+    "ai-sdk",
+    "polyfills",
+    "testing",
+    "examples",
+    "---Reference---",
+    "what-agents-receive",
+    "api",
+    "limitations",
+    "platform-status",
+    "---Help---",
+    "faq",
+    "changelog",
+    "security"
+  ]
+}

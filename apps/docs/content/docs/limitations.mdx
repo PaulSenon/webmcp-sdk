@@ -1,0 +1,13 @@
+---
+title: Limitations
+description: What the SDK does not do, and where the platform sets the rules.
+---
+
+- **Failures are in-band.** The platform, and any host that does not understand the envelope, sees a failed call as a *successful* call whose content says `isError: true`.
+- **Types are compile-time only.** Runtime truth comes from your validators, which run on every call.
+- **JSON Schema is only as good as your library's converter.** Refinements and transforms are not expressible, so say them in `description`.
+- **Envelope ambiguity.** A *successful* result shaped exactly like `{ isError: true, error: { kind, message } }`, with a known `kind`, is indistinguishable from a failure on the wire. The SDK does not restrict your schemas; avoid that shape in outputs.
+- **Cancellation is cooperative.** No stop or rollback is ever guaranteed. Removing a tool does not stop calls already running.
+- **Discovery identity is best-effort.** The platform has no registration id. A tool replaced by an identical one, or a same-origin frame navigating to a page with the same tool, keeps its name. Names are unique within one catalog only.
+- **No security layer.** Cross-origin access is entirely the browser's `exposedTo` / `fromOrigins` / permissions-policy model.
+- **Out of scope for now:** declarative (HTML form) tools, workers, bindings other than React, MCP transports.
