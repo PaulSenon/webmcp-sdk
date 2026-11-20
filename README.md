@@ -16,6 +16,7 @@ Type-safe [WebMCP](https://webmachinelearning.github.io/webmcp/) tools for TypeS
 | [`apps/docs`](apps/docs) | the documentation site (Fumadocs, fully static; not published to npm) |
 | [`docs/`](docs) | design notes, research, implementation log; [`docs/release-research/`](docs/release-research) for the release and supply-chain design |
 | [`docs/releasing.md`](docs/releasing.md) | how a release is made (maintainers) |
+| [`infra/site`](infra/site) | docs site infrastructure (Alchemy, vendored from the Monorepo Delivery Kit, see `.delivery-kit-version`); runbook: [`docs/docs-deploy.md`](docs/docs-deploy.md) |
 | [`tooling/release/`](tooling/release) | release scripts used by `.github/workflows/release.yml` |
 | [`.changeset/`](.changeset) | pending change notes (Changesets) |
 

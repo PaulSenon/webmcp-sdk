@@ -12,6 +12,10 @@ updates:
     versioning-strategy: increase-if-necessary # do not narrow the library's public ranges
     open-pull-requests-limit: 5
     groups:
+      # infra/docs: alchemy and @alchemy.run/* are released in lockstep and peer on effect;
+      # bump them together. First so it takes precedence over dev-minor-patch.
+      docs-infra:
+        patterns: ["alchemy", "@alchemy.run/*", "effect", "@effect/*"]
       dev-minor-patch:
         dependency-type: development
         update-types: [minor, patch]

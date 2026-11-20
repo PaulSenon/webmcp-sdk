@@ -1,0 +1,21 @@
+{
+  "name": "@senon/webmcp-sdk-docs-infra",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Docs site infrastructure (Alchemy v2), vendored from the Monorepo Delivery Kit (see .delivery-kit-version). Not published.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test 'test/*.test.ts'",
+    "check": "pnpm typecheck && pnpm test",
+    "check:local": "node scripts/local-check.ts && node scripts/local-check.ts --ssr-fixture"
+  },
+  "devDependencies": {
+    "@alchemy.run/cloudflare": "2.0.0-beta.85",
+    "@effect/platform-node": "4.1.4",
+    "@types/node": "24.19.2",
+    "alchemy": "2.0.0-beta.85",
+    "effect": "4.1.4",
+    "typescript": "7.0.2"
+  }
+}
