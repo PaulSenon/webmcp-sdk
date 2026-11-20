@@ -50,6 +50,11 @@ export interface DeliveryConfig {
      * github-actions[bot]. Only checks that run on BOTH pull_request and push (no PR-only check).
      */
     requiredChecks: string[];
+    /**
+     * PR-only checks the ruleset also requires (never gate deploys: they do not run on push).
+     * Default ["dependency-review"]; the template adds "changeset". Each must exist as a job.
+     */
+    prOnlyChecks?: string[];
     gateTimeoutMinutes: number;
   };
   release: {
@@ -96,6 +101,7 @@ export function validateConfig(raw: unknown): DeliveryConfig {
   if (!p.requiredChecks.includes(`${s.name}-build`)) fail(`previews.requiredChecks must include ${s.name}-build`);
   // The deploy writes the <name>-preview status itself: requiring it would let a deploy satisfy its own gate.
   if (p.requiredChecks.includes(`${s.name}-preview`)) fail(`previews.requiredChecks must not include ${s.name}-preview`);
+  if (p.prOnlyChecks !== undefined && (!Array.isArray(p.prOnlyChecks) || !p.prOnlyChecks.every((n) => typeof n === "string" && n.length > 0))) fail("previews.prOnlyChecks must list check names");
   if (!Number.isInteger(p.gateTimeoutMinutes) || p.gateTimeoutMinutes < 1 || p.gateTimeoutMinutes > 120) fail("previews.gateTimeoutMinutes must be 1..120");
   const r = c.release ?? fail("release is required");
   if (!Array.isArray(r.packages) || !r.packages.length || !r.packages.every((d) => REL_PATH.test(d))) fail("release.packages must list package directories");
