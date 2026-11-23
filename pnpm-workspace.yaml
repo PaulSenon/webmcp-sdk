@@ -1,5 +1,6 @@
 packages:
   - packages/*
+  - apps/*
   - infra/*
 
 # Supply-chain policy. Committed so CI and every contributor get the same rules

@@ -1,0 +1,24 @@
+---
+title: Platform status
+description: Where WebMCP stands in the spec, in browsers and as a polyfill.
+---
+
+As of 2026-11-11 (details and sources in [`docs/research.md`](https://github.com/PaulSenon/webmcp-sdk/blob/main/docs/research.md)):
+
+- **Spec:** [WebMCP Draft CG Report](https://webmachinelearning.github.io/webmcp/) (`main` at `aa1b51c`, 10 Nov 2026). **Experimental**, not on the W3C standards track.
+  - Entry point `document.modelContext` (secure contexts).
+  - `registerTool(tool, { signal, exposedTo })`.
+  - `getTools({ fromOrigins })` / `executeTool()` / `toolchange`.
+- **Chrome:** origin trial (from 149) and `chrome://flags/#enable-webmcp-testing`. No confirmed shipping in other engines.
+- **Polyfill:** [`@w3c/webmcp-polyfill`](https://www.npmjs.com/package/@w3c/webmcp-polyfill) 0.1.0 (published, Apache-2.0). It currently ignores `outputSchema`.
+
+## Project status
+
+| | |
+| - | - |
+| API surface (core + React) | typed, documented, type-tested |
+| runtime | core and React implemented; unit tests, and end-to-end tests on the official polyfill and on native WebMCP (Chrome 156, `--enable-features=WebMCP`) |
+| npm | not published yet (`@senon/webmcp-sdk`) |
+| license | MIT |
+
+Test coverage, polyfill observations and unverified platform behavior: [`docs/implementation-log.md`](https://github.com/PaulSenon/webmcp-sdk/blob/main/docs/implementation-log.md). Design rationale and decisions: [`docs/design.md`](https://github.com/PaulSenon/webmcp-sdk/blob/main/docs/design.md).

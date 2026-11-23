@@ -1,0 +1,95 @@
+---
+title: Registering tools
+description: One tool or a group, with an AbortSignal as the lifetime.
+---
+
+Registration mirrors WebMCP's `registerTool(tool, { signal })`: **the `signal` is the tool's lifetime**, and aborting it removes the tool. On top, the SDK adds definitions, validation, types and agent-readable failures.
+
+## The examples' tools
+
+The examples below (and in [Errors](/docs/errors) and [Testing](/docs/testing)) import this module:
+
+```ts title="tools.ts" file=tools.ts
+import { defineTool, implementTool } from "@senon/webmcp-sdk";
+import { addToCart, searchProducts } from "./definitions.js";
+export interface Cart { add(sku: string, quantity: number): Promise<number> }
+export const searchProductsTool = implementTool(searchProducts, () => ({ hits: [] }));
+export const addToCartTool = ({ cart }: { cart: Cart }) =>
+  implementTool(addToCart, async ({ sku, quantity }) => ({ itemCount: await cart.add(sku, quantity) }));
+export const checkoutTool = implementTool(defineTool({ name: "checkout", description: "Go to checkout." }), () => null);
+```
+
+## One tool
+
+```ts
+import { registerTool } from "@senon/webmcp-sdk";
+import { searchProductsTool } from "./tools.js";
+
+const controller = new AbortController();
+const status = await registerTool(searchProductsTool, { signal: controller.signal }); // "registered" | "unsupported"
+
+controller.abort(); // removes it
+```
+
+## A group: one call, one lifetime, one cleanup
+
+```ts
+import { registerTools } from "@senon/webmcp-sdk";
+import { addToCartTool, checkoutTool, searchProductsTool, type Cart } from "./tools.js";
+declare const cart: Cart;
+
+const shop = new AbortController();
+const results = await registerTools([searchProductsTool, addToCartTool({ cart }), checkoutTool], { signal: shop.signal });
+
+for (const r of results) {
+  if (r.status === "error") console.warn(r.name, r.error.code); // duplicate_name, json_schema_unavailable, registration_failed
+}
+
+shop.abort(); // removes every tool registered by this call
+```
+
+## Lifetimes and failures
+
+- **Who cleans up:** whoever owns the `AbortController`. There is nothing else to keep. To tie tools to an existing lifetime, such as a route, a component or `AbortSignal.any([...])`, pass that signal.
+- **Several lifetimes** mean several calls with different signals.
+- **`registerTool` rejects** with a `WebMCPError` on real failures (`duplicate_name`, `json_schema_unavailable`, `registration_failed`), like the native call.
+- **`registerTools` never rejects for one tool.** It resolves with one result per tool. The tools that succeeded stay registered under the signal, and failed ones need no cleanup. There is no rollback: if you want "all or nothing", check the results and `abort()`.
+- **Abort timing:** both reject with `signal.reason` if the signal is already aborted or aborts while registering.
+- **Duplicate names** are a compile error for literal arrays passed to `registerTools`, and a `duplicate_name` error at runtime otherwise. The SDK never takes over a name registered by other code.
+
+## Running calls
+
+- **Running calls are never cancelled by `abort()`,** exactly as in WebMCP. They finish with the handler they started with, and their result is still delivered.
+- **The handler's `signal`** aborts when the caller cancels, or when the caller's page unloads; the browser then discards any late result. It does not abort when the tool is removed, nor when the page hosting the tool unloads (the caller then gets an `AbortError`, and WebMCP specifies nothing more).
+- **Changing a tool** (a new handler or a new definition) in plain TypeScript: abort it and register the new implementation. Calls for the same name are ordered internally.
+- **Internal coordination:** pending SDK registrations are tracked per model context and name. A replacement waits for an aborted registration's native promise to settle before registering. This does not take over names owned by other code. Coordination is per package copy.
+
+## In your own effects
+
+In Vue, Svelte, Solid or a hand-written React effect, cleanup may run before registration has settled, and the promise then rejects with the abort reason. Ignore that one:
+
+```ts
+import { registerTool } from "@senon/webmcp-sdk";
+import { searchProductsTool } from "./tools.js";
+
+function effect() {
+  const controller = new AbortController();
+  registerTool(searchProductsTool, { signal: controller.signal }).catch((e) => {
+    if (e !== controller.signal.reason) console.error(e); // a real failure
+  });
+  return () => controller.abort(); // cleanup
+}
+```
+
+React users never need this: [the hooks](/docs/react) do it.
+
+## Options
+
+| option | |
+| ------ | - |
+| `signal` | the lifetime; aborting it removes the tool(s) |
+| `exposedTo` | origins allowed to see these tools from other frames (enforced by the browser) |
+| `modelContext` | a context to use instead of `document.modelContext` (see [Polyfills](/docs/polyfills)) |
+| `onUnexpectedError` | logging hook, see [Errors](/docs/errors#unexpected-errors) |
+
+**Progressive enhancement:** without WebMCP, registration resolves `"unsupported"` and nothing throws. To *require* WebMCP, check the status yourself.

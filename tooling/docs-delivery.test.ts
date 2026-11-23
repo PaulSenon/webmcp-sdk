@@ -14,8 +14,8 @@ test("delivery.config.json: WebMCP names and the deploy gate", () => {
   assert.equal(config.site.htmlHandling, "drop-trailing-slash");
   assert.equal(config.site.server, false);
   // Gate: checks that run on BOTH pull_request and push. dependency-review is PR-only: required by
-  // the ruleset, never by the deploy gate. `docs` (ci.yml) is added with apps/docs (PR #6).
-  assert.deepEqual(config.previews.requiredChecks, ["checks", "browser", "workflow-lint", "docs-build"]);
+  // the ruleset, never by the deploy gate. `docs` is ci.yml's docs-site job (checks, build, smoke tests).
+  assert.deepEqual(config.previews.requiredChecks, ["checks", "browser", "workflow-lint", "docs-build", "docs"]);
   assert.ok(!config.previews.requiredChecks.includes("dependency-review"));
   assert.deepEqual(config.release.packages, ["packages/webmcp-sdk"]);
 });

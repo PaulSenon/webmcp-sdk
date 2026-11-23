@@ -1,0 +1,64 @@
+---
+title: FAQ and troubleshooting
+description: Common questions, and what to check when a tool does not show up or fails.
+---
+
+## General
+
+### Is this the `webmcp-sdk` package on npm?
+
+No. This project is **not affiliated** with the unrelated `webmcp-sdk` or `@webmcp-sdk/*` packages. Its package is `@senon/webmcp-sdk`, and it is [not published yet](/docs/installation).
+
+### Do I need React?
+
+No. The core (`@senon/webmcp-sdk`) is framework-agnostic. The React bindings live in `@senon/webmcp-sdk/react`, with `react` as an optional peer dependency. For Vue, Svelte or Solid, call `registerTool` in your own effect (see [In your own effects](/docs/registering-tools#in-your-own-effects)).
+
+### Does it work with SSR?
+
+Yes. Without `document.modelContext`, registration resolves `"unsupported"` and does nothing, and the React hooks do nothing during SSR and the first render (`supported: undefined`). Keep polyfill imports in your browser entry, not in server code.
+
+### Which schema libraries work?
+
+Any Standard Schema library that can also produce JSON Schema: Zod ≥ 4.2 and ArkType ≥ 2.1 directly, Valibot through `@valibot/to-json-schema`, Effect 4 through `Schema.toStandardJSONSchemaV1`, and anything else through `withJsonSchema`. See [Schemas](/docs/defining-tools#schemas-any-standard-schema-library).
+
+## Troubleshooting
+
+### `registerTool` resolves `"unsupported"`
+
+The page has no `document.modelContext`. Enable WebMCP in Chrome (origin trial, or `chrome://flags/#enable-webmcp-testing`), or install the [official polyfill](/docs/polyfills) in your browser entry **before** registering. With the polyfill, install it in **each frame**.
+
+### A tool fails with `json_schema_unavailable`
+
+Its schema validates but cannot be converted to JSON Schema, for example Zod `z.date()` on the advertised side, or an input whose root is not an object. Use a wire type such as `z.iso.datetime()`, or `withJsonSchema`. Add a [`toJSONSchema` test](/docs/testing) so this fails in CI rather than at registration.
+
+### A tool fails with `duplicate_name`
+
+Another registration already owns that name in the same model context. Names must be unique in the document. With `registerTools`, literal arrays with duplicate names are a compile error. In React, a conflict with another `useRegisterTools` is retried automatically when that registration ends; a conflict with other code stays an error.
+
+### My React tools are re-registered on every render
+
+The definition is created during render. Move `defineTool(...)` to module scope; implementations (`implementTool`) can be recreated freely. A dev warning is logged when this happens.
+
+### An effect logs an error when it cleans up
+
+If cleanup runs before registration has settled, the promise rejects with the abort reason. Ignore that specific rejection (`e !== controller.signal.reason`), as shown in [In your own effects](/docs/registering-tools#in-your-own-effects). The React hooks already do this.
+
+### TypeScript rejects my handler's return value
+
+Without an `output` schema, results must be JSON values: `Date`, `bigint` and functions are compile errors, and values typed with an `interface` are rejected by TypeScript's index-signature rule. Declare an `output` schema (recommended) or spread the value (`{ ...value }`). See [Without an output schema](/docs/implementing-tools#without-an-output-schema).
+
+### The agent sees "The tool failed unexpectedly"
+
+Your handler threw something other than a `ToolError`: that is a defect, so details stay private. Use `onUnexpectedError` to log the original error, and throw [`ToolError`](/docs/errors) for failures the agent should understand.
+
+### My output schema is not advertised with the polyfill
+
+The official polyfill (0.1.0) currently ignores `outputSchema`. Validation of your results still runs, in the SDK.
+
+### Catalog results that are strings arrive parsed
+
+Native Chrome (156) returns string results unquoted, so a string that looks like JSON (`"2"`, `"true"`) arrives parsed. See [Calls](/docs/discovering-tools#calls).
+
+### A typed `useChat` rejects catalog tool names
+
+Intersect your tool map with `UITools` so runtime-discovered names are admitted. See [AI SDK gotchas](/docs/ai-sdk#ai-sdk-gotchas).

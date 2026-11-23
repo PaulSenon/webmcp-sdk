@@ -1,0 +1,56 @@
+---
+title: Installation
+description: Requirements, installing the package, and enabling WebMCP in a browser.
+---
+
+<Callout type="warn" title="Not on npm yet">
+  `@senon/webmcp-sdk` has not been released. The install command below is what it will be; until then, build it from source (see [Before the first release](/docs/installation#before-the-first-release)).
+</Callout>
+
+## Requirements
+
+| | |
+| - | - |
+| TypeScript | ≥ 5.4 |
+| A Standard Schema library | with JSON Schema support, e.g. Zod ≥ 4.2, ArkType ≥ 2.1, Valibot with `@valibot/to-json-schema`, Effect 4 (see [Schemas](/docs/defining-tools#schemas-any-standard-schema-library)) |
+| React (optional) | ≥ 18, only for `@senon/webmcp-sdk/react` |
+| Modules | ESM only |
+
+## Install
+
+```npm
+npm install @senon/webmcp-sdk zod
+```
+
+Two entry points:
+
+| import | for |
+| - | - |
+| `@senon/webmcp-sdk` | the framework-agnostic core: define, implement, register, discover |
+| `@senon/webmcp-sdk/react` | React hooks and components (`react` is an optional peer dependency) |
+
+## A browser with WebMCP
+
+The SDK never installs or imports a polyfill: without WebMCP, registration resolves `"unsupported"` and nothing throws. To actually expose tools, you need one of:
+
+- **Chrome** with WebMCP: an origin trial (from Chrome 149), or `chrome://flags/#enable-webmcp-testing` for local testing.
+- **The official polyfill**, [`@w3c/webmcp-polyfill`](https://www.npmjs.com/package/@w3c/webmcp-polyfill), installed in your browser entry. See [Polyfills](/docs/polyfills).
+
+## Before the first release
+
+Build and pack the library from the repository, then install the tarball in your project:
+
+```sh
+git clone https://github.com/PaulSenon/webmcp-sdk.git
+cd webmcp-sdk
+pnpm install
+pnpm build                        # builds packages/webmcp-sdk/dist
+cd packages/webmcp-sdk && pnpm pack   # writes senon-webmcp-sdk-<version>.tgz
+```
+
+```sh
+# in your project
+npm install /path/to/senon-webmcp-sdk-<version>.tgz
+```
+
+The repository needs Node 24 and pnpm 10.33 (see its `README.md`).
