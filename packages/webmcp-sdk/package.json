@@ -1,6 +1,6 @@
 {
   "name": "@senon/webmcp-sdk",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Contract-first, Standard Schema-based TypeScript SDK for WebMCP tools: define, implement, register and discover tools, with React bindings.",
   "keywords": [
     "webmcp",
