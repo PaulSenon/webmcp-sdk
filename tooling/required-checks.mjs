@@ -20,6 +20,35 @@ export function requiredChecks(config) {
   return [...new Set([...config.previews.requiredChecks, ...prOnly])];
 }
 
+/**
+ * The preview gate (kit D13): previews.gateChecks, default ["<site>-build"]. Must include the site
+ * build, be a subset of previews.requiredChecks (the production gate), and every one must be
+ * produced by a job of an UNPRIVILEGED workflow (pull_request trigger): the preview never waits
+ * for a check that does not run on the PR, nor for one produced by a privileged workflow.
+ */
+export function previewGateChecks(config) {
+  return config.previews.gateChecks ?? [`${config.site.name}-build`];
+}
+
+export function gateChecksError(config, dir) {
+  const gate = previewGateChecks(config);
+  if (!Array.isArray(gate) || !gate.every((n) => typeof n === "string" && n.length > 0)) return "previews.gateChecks must list check names";
+  const problems = [];
+  if (!gate.includes(`${config.site.name}-build`)) problems.push(`must include ${config.site.name}-build`);
+  const extra = gate.filter((n) => !config.previews.requiredChecks.includes(n));
+  if (extra.length) problems.push(`must be a subset of previews.requiredChecks (not: ${extra.join(", ")})`);
+  const names = new Set();
+  for (const f of readdirSync(dir).filter((f) => /\.ya?ml$/.test(f))) {
+    const wf = parse(readFileSync(join(dir, f), "utf8")) ?? {};
+    const on = typeof wf.on === "string" ? [wf.on] : Array.isArray(wf.on) ? wf.on : Object.keys(wf.on ?? {});
+    if (!on.includes("pull_request")) continue;
+    for (const [id, job] of Object.entries(wf.jobs ?? {})) jobCheckNames(id, job).names?.forEach((n) => names.add(n));
+  }
+  const missing = gate.filter((n) => !names.has(n));
+  if (missing.length) problems.push(`not produced by a job of a pull_request workflow: ${missing.join(", ")}`);
+  return problems.length ? `previews.gateChecks ${problems.join("; ")}` : undefined;
+}
+
 const isScalar = (v) => ["string", "number", "boolean"].includes(typeof v);
 const matches = (combo, partial) => Object.entries(partial).every(([k, v]) => combo[k] === v);
 

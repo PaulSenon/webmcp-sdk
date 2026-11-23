@@ -37,6 +37,9 @@
       "workflow-lint",
       "docs-build"
     ],
+    "gateChecks": [
+      "docs-build"
+    ],
     "gateTimeoutMinutes": 40
   },
   "release": {

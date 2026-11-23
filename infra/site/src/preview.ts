@@ -1,7 +1,8 @@
-// Preview re-checks, comment and orphan sweep (pure). The plan is deploy-plan.ts.
+// Preview re-checks, comment and orphan sweep (pure). The plan is deploy-plan.ts; the policy
+// (which PR gets a preview) is deploy-plan.ts `eligibility`, shared by every function here.
 // Adapted from webmcp-sdk infra/docs/src/preview.ts.
 
-import { BOTS } from "./deploy-plan.ts";
+import { eligibility, type PolicyContext } from "./deploy-plan.ts";
 import { previewNumberFromWorker } from "./stage.ts";
 
 const SHA = /^[0-9a-f]{40}$/;
@@ -11,41 +12,38 @@ export interface PullRequest {
   state: string; // open | closed
   draft: boolean;
   head: { sha: string; repo: { full_name: string } | null };
-  base: { ref: string };
+  base: { ref: string; repo?: { full_name: string } };
   user?: { login?: string } | null;
 }
 
 export type PreviewAction =
   | { action: "deploy" }
-  | { action: "teardown"; reason: "closed" | "draft" }
+  | { action: "teardown"; reason: "closed" }
   | { action: "skip"; reason: string };
 
 /**
  * Re-check (before deploying and before commenting), from the PR as the API returns it NOW.
- * The plan itself is deploy-plan.ts; this only answers "still deploy this SHA?".
+ * The plan itself is deploy-plan.ts; this only answers "still deploy this SHA?". Drafts deploy.
  */
-export function previewAction(pr: PullRequest, sha: string, ciConclusion: string | null, ctx: { repo: string; botPreviews?: boolean }): PreviewAction {
-  if (pr.head.repo?.full_name !== ctx.repo) return { action: "skip", reason: "fork" };
-  if (pr.user?.login && BOTS.has(pr.user.login) && !ctx.botPreviews) return { action: "skip", reason: "bot" };
-  if (pr.state !== "open") return { action: "teardown", reason: "closed" };
-  if (pr.draft) return { action: "teardown", reason: "draft" };
+export function previewAction(pr: PullRequest, sha: string, ciConclusion: string | null, ctx: PolicyContext): PreviewAction {
+  const verdict = eligibility(pr, ctx);
+  if (!verdict.eligible) return verdict.why === "closed" ? { action: "teardown", reason: "closed" } : { action: "skip", reason: verdict.why };
   if (pr.head.sha !== sha) return { action: "skip", reason: "superseded" };
   if (ciConclusion !== "success") return { action: "skip", reason: `CI concluded ${ciConclusion ?? "without conclusion"}` };
   return { action: "deploy" };
 }
 
 /**
- * After a deploy, the PR may have been closed or drafted while it ran: destroy what was just
- * deployed (its teardown run is queued behind this one in the same concurrency group anyway).
- * Superseded is fine: the newer commit's run is queued behind this one and overwrites it.
+ * After a deploy, the PR may have been closed (or retargeted) while it ran: destroy what was just
+ * deployed. Superseded is fine: the newer commit's run is queued behind this one and overwrites it.
  */
-export function afterDeploy(pr: PullRequest | undefined): "keep" | "destroy" {
-  return pr === undefined || pr.state !== "open" || pr.draft ? "destroy" : "keep";
+export function afterDeploy(pr: PullRequest | undefined, ctx: PolicyContext): "keep" | "destroy" {
+  return eligibility(pr, ctx).eligible ? "keep" : "destroy";
 }
 
-/** A preview Worker is an orphan when its PR is closed, a draft, from a fork, or gone (404). */
-export function isOrphan(pr: PullRequest | undefined, repo: string): boolean {
-  return pr === undefined || pr.state !== "open" || pr.draft || pr.head.repo?.full_name !== repo;
+/** A preview is an orphan exactly when its PR is not eligible (closed, gone, fork, other base, bot not opted in). Drafts are not orphans. */
+export function isOrphan(pr: PullRequest | undefined, ctx: PolicyContext): boolean {
+  return !eligibility(pr, ctx).eligible;
 }
 
 /**
@@ -89,26 +87,59 @@ export function findComment(comments: readonly IssueComment[], project: string):
   return comments.find((c) => c.user?.login === BOT_LOGIN && c.body?.includes(commentMarker(project)));
 }
 
-export type CommentStatus = "deployed" | "failed" | "removed" | "removal-failed";
+export type CommentStatus =
+  | "building" // the site build of this commit started
+  | "deploying" // build green, gate passed, deploy starting
+  | "deployed"
+  | "failed" // build or deploy failed
+  | "removed"
+  | "removal-failed"
+  | "not-deployed-fork"
+  | "not-deployed-bot";
 
-export function renderComment(input: { project: string; status: CommentStatus; sha?: string; url?: string; runUrl: string; reason?: string }): string {
+/** The status and commit the comment currently shows (hidden line), to never go backwards. */
+export function commentState(body: string | null | undefined): { status: string; sha: string } | undefined {
+  const m = /<!-- state:([a-z-]+):([0-9a-f]{40}|-) -->/.exec(body ?? "");
+  return m ? { status: m[1]!, sha: m[2]! } : undefined;
+}
+
+/**
+ * Should this write replace what the comment shows? Progress notices ("building", "deploying")
+ * never overwrite a final state of the SAME commit (a late notice after the deploy finished).
+ */
+const PROGRESS: Record<string, number> = { building: 1, deploying: 2, deployed: 3, failed: 3 };
+
+export function shouldWrite(current: { status: string; sha: string } | undefined, next: CommentStatus, sha: string | undefined): boolean {
+  if (!current) return true;
+  if ((next === "building" || next === "deploying") && current.sha === sha) return PROGRESS[next]! > (PROGRESS[current.status] ?? 0);
+  if ((next === "not-deployed-fork" || next === "not-deployed-bot") && current.status === next) return false;
+  return true;
+}
+
+export function renderComment(input: { project: string; status: CommentStatus; sha?: string; url?: string; runUrl: string; reason?: string; botVar?: string }): string {
   if (input.sha !== undefined && !SHA.test(input.sha)) throw new Error("invalid commit SHA");
   if (!/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/actions\/runs\/\d+$/.test(input.runUrl)) throw new Error("invalid run URL");
   if (input.url !== undefined && !/^https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev\/$/.test(input.url)) throw new Error("invalid preview URL");
+  if (input.botVar !== undefined && !/^[A-Z][A-Z0-9_]*$/.test(input.botVar)) throw new Error("invalid variable name");
   const short = input.sha ? `\`${input.sha.slice(0, 7)}\`` : "(unknown commit)";
   const run = `[run](${input.runUrl})`;
-  const why = { closed: "PR closed", draft: "PR converted to draft", sweep: "orphan cleanup", manual: "manual teardown" }[input.reason ?? "manual"] ?? "teardown";
+  const why = { closed: "PR closed", sweep: "orphan cleanup", manual: "manual teardown" }[input.reason ?? "manual"] ?? "teardown";
   const line = {
+    building: `⏳ **Preview:** waiting for the site build of commit ${short} — ${run}`,
+    deploying: `🚀 **Preview:** deploying commit ${short} — ${run}`,
     deployed: `✅ **Preview:** ${input.url} — commit ${short} — ${run}`,
-    failed: `❌ **Preview deploy failed** for commit ${short} — ${run}. The previous preview, if any, is unchanged.`,
+    failed: `❌ **Preview not updated:** build or deploy of commit ${short} failed — ${run}. The previous preview, if any, is unchanged.`,
     removed: `🧹 **Preview removed** (${why}) — ${run}`,
-    "removal-failed": `⚠️ **Preview teardown failed** (${why}) — ${run}. The weekly sweep retries; or run the deploy workflow manually with \`destroy_pr\`.`,
+    "removal-failed": `⚠️ **Preview removal failed** (${why}) — ${run}. Will retry: the hourly sweep removes it.`,
+    "not-deployed-fork": `🔒 **Preview not deployed:** fork PR. Fork PRs never get a preview (untrusted code, no access to deploy credentials).`,
+    "not-deployed-bot": `🤖 **Preview not deployed:** dependency-bot PR. Opt in with the repository variable \`${input.botVar ?? "<SITE>_PREVIEW_DEPENDABOT"}\` = \`true\`.`,
   }[input.status];
   return [
     commentMarker(input.project),
+    `<!-- state:${input.status}:${input.sha ?? "-"} -->`,
     line,
     "",
-    "<sub>Same-repository, non-draft PRs only, after every required check of the exact commit is green. Deployed by the default branch's workflow from the CI artifact; removed on close, merge or draft.</sub>",
+    "<sub>Every open same-repository PR into the default branch gets a preview, drafts included, once the site build of its exact commit is green (other checks gate the merge, not the preview). Deployed by the default branch's workflow from the CI artifact; removed on close or merge, and by the hourly sweep.</sub>",
     "",
   ].join("\n");
 }

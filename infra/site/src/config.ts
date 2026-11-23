@@ -45,11 +45,19 @@ export interface DeliveryConfig {
      */
     mode: "dynamic" | "staging";
     /**
-     * Every check that must be green on the exact commit before ANY deploy (preview and
-     * production): check-run names (GitHub Actions jobs) or commit-status contexts written by
+     * The merge ruleset's checks AND the PRODUCTION gate (and rollback): every one must be green on
+     * the exact commit: check-run names (GitHub Actions jobs) or commit-status contexts written by
      * github-actions[bot]. Only checks that run on BOTH pull_request and push (no PR-only check).
      */
     requiredChecks: string[];
+    /**
+     * The PREVIEW gate (D13): only what proves the artifact valid and the deploy safe, green on the
+     * exact commit. Default `["<name>-build"]` (build + manifest + artifact check + credential-free
+     * local smoke). Never e2e/integration/lint: the preview runs the default branch's workflow and
+     * infra, PR code never sees a secret, so those checks gate the merge, not the preview — and a
+     * preview is an input of slow QA, not its output. Must include `<name>-build`, ⊆ requiredChecks.
+     */
+    gateChecks?: string[];
     /**
      * PR-only checks the ruleset also requires (never gate deploys: they do not run on push).
      * Default ["dependency-review"]; the template adds "changeset". Each must exist as a job.
@@ -101,6 +109,12 @@ export function validateConfig(raw: unknown): DeliveryConfig {
   if (!p.requiredChecks.includes(`${s.name}-build`)) fail(`previews.requiredChecks must include ${s.name}-build`);
   // The deploy writes the <name>-preview status itself: requiring it would let a deploy satisfy its own gate.
   if (p.requiredChecks.includes(`${s.name}-preview`)) fail(`previews.requiredChecks must not include ${s.name}-preview`);
+  if (p.gateChecks !== undefined) {
+    if (!Array.isArray(p.gateChecks) || !p.gateChecks.every((n) => typeof n === "string" && n.length > 0)) fail("previews.gateChecks must list check names");
+    if (!p.gateChecks.includes(`${s.name}-build`)) fail(`previews.gateChecks must include ${s.name}-build`);
+    const extra = p.gateChecks.filter((n) => !p.requiredChecks.includes(n));
+    if (extra.length) fail(`previews.gateChecks must be a subset of previews.requiredChecks (not: ${extra.join(", ")})`);
+  }
   if (p.prOnlyChecks !== undefined && (!Array.isArray(p.prOnlyChecks) || !p.prOnlyChecks.every((n) => typeof n === "string" && n.length > 0))) fail("previews.prOnlyChecks must list check names");
   if (!Number.isInteger(p.gateTimeoutMinutes) || p.gateTimeoutMinutes < 1 || p.gateTimeoutMinutes > 120) fail("previews.gateTimeoutMinutes must be 1..120");
   const r = c.release ?? fail("release is required");
@@ -118,6 +132,16 @@ export function previewMode(c: DeliveryConfig, override = process.env.PREVIEW_MO
   const v = override || c.previews.mode;
   if (v !== "dynamic" && v !== "staging") throw new Error(`preview mode must be "dynamic" or "staging", not ${JSON.stringify(v)}`);
   return v;
+}
+
+/** The preview gate (D13): previews.gateChecks, default [`<name>-build`]. */
+export const previewGateChecks = (c: DeliveryConfig): string[] => c.previews.gateChecks ?? [`${c.site.name}-build`];
+
+/** Which gate a deploy waits for: previews wait for the build only; production for the ruleset's checks. */
+export function gateChecksFor(c: DeliveryConfig, gate: string): string[] {
+  if (gate === "preview") return previewGateChecks(c);
+  if (gate === "production") return c.previews.requiredChecks;
+  throw new Error(`GATE must be "preview" or "production", not ${JSON.stringify(gate)}`);
 }
 
 export const serverEntry = (c: DeliveryConfig) => c.site.serverEntry ?? "index.js";

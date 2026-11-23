@@ -3,11 +3,11 @@
 // Idempotent (PUT environments, policies created if missing, secrets/variables overwritten).
 //
 //   node tooling/setup-github.mjs --repo owner/name --reviewer <github login> \
-//     [--account-id <32 hex> --subdomain <workers.dev> --prod-token-file F --preview-token-file F --state-dir D] [--preview-mode M] [--preview-reviewer] [--production-reviewer] [--npm-release-reviewer] [--no-ruleset] [--apply]
+//     [--account-id <32 hex> --subdomain <workers.dev> --prod-token-file F --preview-token-file F --state-dir D] [--preview-mode M] [--production-reviewer] [--npm-release-reviewer] [--no-ruleset] [--apply]
 //
 // Creates (<site> = delivery.config.json site.name, <SITE> uppercased):
-//   environments <site>-preview + <site>-production (default branch only, no reviewer unless
-//   --preview-reviewer / --production-reviewer, each for its own environment; `reviewers: []` is
+//   environments <site>-preview + <site>-production (default branch only; NEVER a reviewer on
+//   preview — automatic previews, D13; production only with --production-reviewer; `reviewers: []` is
 //   always sent otherwise, so re-running without the flag removes a reviewer); npm-release (release branches; reviewer REQUIRED in
 //   direct mode, none in stage mode where npm 2FA approval is the gate); release-finalize
 //   (release branches + required reviewer); env secrets CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID,
@@ -19,7 +19,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { environmentPlan } from "./github-environments.mjs";
-import { missingChecks, missingChecksError, requiredChecks, workflowChecks } from "./required-checks.mjs";
+import { gateChecksError, missingChecks, missingChecksError, requiredChecks, workflowChecks } from "./required-checks.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (f) => (argv.includes(f) ? argv[argv.indexOf(f) + 1] : undefined);
@@ -39,6 +39,8 @@ export const REQUIRED_CHECKS = requiredChecks(config);
 const produced = workflowChecks(".github/workflows");
 const checksError = missingChecksError(missingChecks(REQUIRED_CHECKS, produced.names), produced.unverifiable);
 if (checksError) throw new Error(checksError);
+const gateError = gateChecksError(config, ".github/workflows"); // preview gate (D13)
+if (gateError) throw new Error(gateError);
 
 const gh = (args, input, shownInput = "(secret, from stdin)") => {
   const shown = `gh ${args.join(" ")}${input === undefined ? "" : ` <<< ${shownInput}`}`;

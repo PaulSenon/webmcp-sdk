@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { checkArtifact } from "../src/artifact.ts";
-import { checkManifest } from "../src/deploy-plan.ts";
-import { loadConfig, previewMode, validateConfig } from "../src/config.ts";
+import { checkManifest, eligibility } from "../src/deploy-plan.ts";
+import { gateChecksFor, loadConfig, previewGateChecks, previewMode, validateConfig } from "../src/config.ts";
 import { evaluateChecks } from "../src/gate.ts";
-import { findComment, renderComment, commentMarker, previewNumbersFromState } from "../src/preview.ts";
+import { afterDeploy, commentState, findComment, isOrphan, previewAction, renderComment, commentMarker, previewNumbersFromState, shouldWrite, type CommentStatus } from "../src/preview.ts";
 import { renderHeaders, revisionLabel, stageKind, stateStoreFor, workerName, workersDevUrl, previewNumberFromWorker } from "../src/stage.ts";
 
 const SHA = "0123456789abcdef0123456789abcdef01234567";
@@ -104,6 +104,67 @@ test("gate: newest run per name, github-actions only, fail closed", () => {
   assert.equal(evaluateChecks([], ["lint"], [st(1, "lint", "success"), st(2, "lint", "error")]).state, "fail");
   assert.equal(evaluateChecks([], ["lint"], [st(1, "lint", "pending")]).state, "wait");
   assert.equal(evaluateChecks([run(1, "lint", "failure")], ["lint"], [st(1, "lint", "success")]).state, "fail");
+});
+
+test("gate: previews wait for the build only, production for the ruleset's checks (D13)", () => {
+  const c = validateConfig(FIXTURE);
+  assert.deepEqual(previewGateChecks({ ...c, previews: { ...c.previews, gateChecks: undefined } }), ["site-build"]);
+  assert.deepEqual(gateChecksFor(c, "production"), c.previews.requiredChecks);
+  assert.deepEqual(gateChecksFor(c, "preview"), previewGateChecks(c));
+  assert.throws(() => gateChecksFor(c, ""), /GATE/);
+  assert.throws(() => validateConfig({ ...c, previews: { ...c.previews, gateChecks: ["checks"] } }), /gateChecks must include site-build/);
+  assert.throws(() => validateConfig({ ...c, previews: { ...c.previews, gateChecks: ["site-build", "e2e"] } }), /subset of previews.requiredChecks \(not: e2e\)/);
+  assert.throws(() => validateConfig({ ...c, previews: { ...c.previews, gateChecks: "site-build" as never } }), /list check names/);
+  // the repository's own config: the preview gate is a subset of the production gate
+  const own = loadConfig();
+  assert.ok(previewGateChecks(own).every((n) => own.previews.requiredChecks.includes(n)));
+  assert.ok(previewGateChecks(own).includes(`${own.site.name}-build`));
+});
+
+test("policy: one eligibility for plan, re-checks and sweep; drafts included (D13)", () => {
+  const ctx = { repo: "acme/site", defaultBranch: "main", botPreviews: false };
+  const pr = (o: { state?: string; draft?: boolean; head?: string; base?: string; login?: string } = {}) => ({
+    number: 1, state: o.state ?? "open", draft: !!o.draft, head: { sha: SHA, repo: { full_name: o.head ?? "acme/site" } }, base: { ref: o.base ?? "main", repo: { full_name: "acme/site" } }, user: { login: o.login ?? "alice" },
+  });
+  const cases: [ReturnType<typeof pr> | undefined, string][] = [
+    [pr(), "eligible"], [pr({ draft: true }), "eligible"], [pr({ state: "closed" }), "closed"], [undefined, "gone"],
+    [pr({ head: "mallory/site" }), "fork"], [pr({ base: "next" }), "base"], [pr({ login: "dependabot[bot]" }), "bot"], [pr({ login: "renovate[bot]" }), "bot"],
+  ];
+  for (const [p, want] of cases) {
+    const v = eligibility(p, ctx);
+    assert.equal(v.eligible ? "eligible" : v.why, want, JSON.stringify(p));
+    assert.equal(isOrphan(p, ctx), want !== "eligible");
+    assert.equal(afterDeploy(p, ctx), want === "eligible" ? "keep" : "destroy");
+    if (p) assert.equal(previewAction(p, SHA, "success", ctx).action, want === "eligible" ? "deploy" : want === "closed" ? "teardown" : "skip");
+  }
+  assert.equal(eligibility(pr({ login: "dependabot[bot]" }), { ...ctx, botPreviews: true }).eligible, true);
+  assert.equal(previewAction(pr({ draft: true }), "f".repeat(40), "success", ctx).action, "skip"); // superseded
+});
+
+test("comment: progress never overwrites a final state of the same commit; exceptions said once", () => {
+  const other = "e".repeat(40);
+  const cur = (status: string, sha = SHA) => ({ status, sha });
+  assert.equal(shouldWrite(undefined, "building", SHA), true);
+  assert.equal(shouldWrite(cur("building"), "deploying", SHA), true);
+  assert.equal(shouldWrite(cur("deployed"), "building", SHA), false);
+  assert.equal(shouldWrite(cur("deployed"), "deploying", SHA), false);
+  assert.equal(shouldWrite(cur("failed"), "deploying", SHA), false);
+  assert.equal(shouldWrite(cur("deploying"), "deploying", SHA), false);
+  assert.equal(shouldWrite(cur("deployed", other), "building", SHA), true); // a new commit
+  assert.equal(shouldWrite(cur("deployed"), "deployed", SHA), true); // re-deploy / rollback
+  assert.equal(shouldWrite(cur("removed"), "building", SHA), true); // reopened
+  assert.equal(shouldWrite(cur("not-deployed-fork", "-"), "not-deployed-fork", undefined), false);
+  const run = "https://github.com/o/r/actions/runs/1";
+  const all: CommentStatus[] = ["building", "deploying", "deployed", "failed", "removed", "removal-failed", "not-deployed-fork", "not-deployed-bot"];
+  for (const status of all) {
+    const body = renderComment({ project: "example", status, sha: status.startsWith("not-") ? undefined : SHA, url: status === "deployed" ? "https://example-site-pr-3.acme.workers.dev/" : undefined, runUrl: run, reason: "closed", botVar: "SITE_PREVIEW_DEPENDABOT" });
+    assert.equal(commentState(body)?.status, status);
+    assert.ok(body.startsWith(commentMarker("example")));
+  }
+  assert.match(renderComment({ project: "example", status: "not-deployed-fork", runUrl: run }), /fork PR/);
+  assert.match(renderComment({ project: "example", status: "not-deployed-bot", runUrl: run, botVar: "DOCS_PREVIEW_DEPENDABOT" }), /DOCS_PREVIEW_DEPENDABOT/);
+  assert.match(renderComment({ project: "example", status: "removal-failed", runUrl: run, reason: "sweep" }), /Will retry/);
+  assert.throws(() => renderComment({ project: "example", status: "not-deployed-bot", runUrl: run, botVar: "x`y" }));
 });
 
 test("comment: one marked bot comment; inputs validated", () => {

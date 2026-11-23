@@ -16,7 +16,7 @@ test("production: Worker must exist for the scoped token; environment must be gu
 
 test("staging: scoped token that can also see production is noted; mode must match", () => {
   const base: IsolationInput = { stage: "staging", mode: "staging", target: "present", production: "forbidden", protection: mainOnly };
-  assert.deepEqual(isolationDecision(base), { ok: true, notes: [] });
+  assert.deepEqual(isolationDecision(base), { ok: true, notes: [], warnings: [] });
   const broad = isolationDecision({ ...base, production: "present" });
   assert.equal(broad.ok, true);
   assert.match((broad as { notes: string[] }).notes[0]!, /reach the production Worker/);
@@ -24,13 +24,19 @@ test("staging: scoped token that can also see production is noted; mode must mat
   assert.equal(isolationDecision({ ...base, target: "forbidden" }).ok, false);
 });
 
-test("dynamic previews: account-wide token accepted only behind a guarded environment", () => {
+test("dynamic previews: account-wide token accepted only behind a default-branch-only environment (D13)", () => {
   const dyn: IsolationInput = { stage: "pr-7", mode: "dynamic", target: "absent", production: "present", protection: mainOnly };
   const r = isolationDecision(dyn);
   assert.equal(r.ok, true);
   assert.match((r as { notes: string[] }).notes.join(), /default branch/);
   assert.equal(isolationDecision({ ...dyn, protection: open }).ok, false);
-  assert.equal(isolationDecision({ ...dyn, protection: { reviewers: 1, mainOnly: false } }).ok, true);
+  // a reviewer is not the barrier of an automatic preview: refused without main-only…
+  assert.match((isolationDecision({ ...dyn, protection: { reviewers: 1, mainOnly: false } }) as { reason: string }).reason, /default branch only/);
+  // …and policy drift (warned, never refused: cleanup must not be blocked) with it
+  const drift = isolationDecision({ ...dyn, protection: { reviewers: 1, mainOnly: true } });
+  assert.equal(drift.ok, true);
+  assert.match((drift as { warnings: string[] }).warnings.join(), /policy drift \(D13\)/);
+  assert.deepEqual((r as { warnings: string[] }).warnings, []);
   assert.equal(isolationDecision({ ...dyn, mode: "staging" }).ok, false);
   assert.equal(isolationDecision({ ...dyn, stage: "alice" }).ok, false);
 });

@@ -63,12 +63,13 @@ Minimal sets:
 ## 2. Architecture
 
 ```
- docs.yml  (pull_request ×6 types, push main) ─ UNPRIVILEGED, runs PR code, no secret
+ docs.yml  (pull_request: opened/synchronize/reopened/closed, push main) ─ UNPRIVILEGED, runs PR code, no secret
    docs-build   install ─ build-target (stage, SITE_URL) ─ pnpm site:build (Fumadocs → .artifacts/docs/assets)
                 ─ write-manifest {sha, pr, stage, event, action} ─ check-artifact ─ local workerd smoke
                 ─ artifact `docs`
-   lifecycle    always (no-op on closed / converted_to_draft): the run completes, docs-deploy reconciles
-        │ workflow_run: completed  (docs-deploy.yml always runs main's definition)
+   lifecycle    always (no-op on closed): the run completes, docs-deploy reconciles
+        │ workflow_run: requested (comment "building") + completed  (docs-deploy.yml always runs main's definition)
+        │ schedule: hourly reconciliation sweep, independent of any CI run
         ▼
  docs-deploy.yml ─ PRIVILEGED, main-defined; environments docs-preview / docs-production (main only)
    deploy-plan        run read back by id, PR resolved + verified from the API, plan, GATE (no secret)
@@ -77,7 +78,7 @@ Minimal sets:
    deploy-teardown    idempotent destroy (reopen keeps the preview)
    deploy-comment     one PR comment `<!-- delivery-kit:webmcp-sdk:preview -->` + status `docs-preview`
    deploy-production  still head of main? artifact → preflight → deploy → smoke  | rollback_run_id
-   deploy-sweep       weekly / dispatch: orphan previews (Workers ∪ Alchemy state stages)
+   deploy-sweep       hourly / dispatch: orphan previews (Workers ∪ Alchemy state stages), retried until removed
 
  One Cloudflare account (Isaac's)
    Worker webmcp-sdk-docs                production    https://webmcp-sdk-docs.<sub>.workers.dev
@@ -116,11 +117,36 @@ Changing the CSP (for example to embed a third-party demo) is an infra PR, revie
 ### 2.1 Pipeline (kit contract, WebMCP values)
 
 - **Why two workflows:** a `pull_request` run uses the workflow file from the PR, so deploy jobs there could be edited by a PR. `workflow_run`, `schedule` and `workflow_dispatch` always run the default branch's file, and both environments only serve `main`.
-- **Untrusted inputs:** only the run id comes from the event; the run, the PR (resolved by head SHA + same repository, re-checked open / ready / head == SHA) and main's head are read from the API. The artifact is a ZIP extracted by the kit's hardened `unzip.ts` (no symlinks, no absolute or `..` paths, bounded count and size, CRC), its `manifest.json` must equal the recomputed sha / pr / stage, and it is only uploaded, never executed.
-- **Deploy gate** (`delivery.config.json` `previews.requiredChecks`): `checks`, `browser`, `workflow-lint`, `docs-build`, every one green on the exact SHA (fail closed on missing / skipped / neutral / timeout, 40 min). Only checks that run on both `pull_request` and `push`: **`dependency-review` stays required by the ruleset but is not in the gate** (it is PR-only). PR #6 adds `docs` (its `ci.yml` job) to the list.
-- **Lifecycle:** drafts build without preview; `ready_for_review` deploys; `converted_to_draft` and `closed` (merged or not) tear down; reopen redeploys; one concurrency group per PR, never cancelled; the PR is re-read before and after the deploy and before the comment. Dependabot: build only unless `DOCS_PREVIEW_DEPENDABOT=true`. Forks: never.
-- **`preflight`** before any Cloudflare call: account-owned token of this account, state-store token and API version, Workers visible to the token, and a preview token able to reach production only if `docs-preview` is main-only or has a required reviewer.
-- **Hygiene:** `permissions: {}`, least privilege per job, SHA pins, no cache in the build whose artifact ships nor in any privileged job, only `infra/site` dependencies from main's frozen lockfile in privileged jobs; zizmor pedantic (one justified `dangerous-triggers` suppression on `workflow_run`), actionlint and the kit's workflow invariants (`tooling/check-workflows.mjs`, W1–W10, run in `checks`).
+- **Untrusted inputs:** only the run id comes from the event; the run, the PR (resolved by head SHA + same repository, re-checked open / head == SHA) and main's head are read from the API. The artifact is a ZIP extracted by the kit's hardened `unzip.ts` (no symlinks, no absolute or `..` paths, bounded count and size, CRC), its `manifest.json` must equal the recomputed sha / pr / stage, and it is only uploaded, never executed.
+- **Preview gate** (`previews.gateChecks`, kit D13, a policy shared with Better Upload): **`docs-build` only**, green on the exact SHA. It fails closed on missing / skipped / neutral / timeout (40 min).
+  - **Why this job:** it builds the site, checks the manifest and the artifact, and smoke-tests it locally without credentials. That is what proves the artifact is valid and safe to upload.
+  - **Not waited on:** `checks`, `browser`, `workflow-lint`, `docs` and e2e. The deploy runs main's workflow and infra code, never the PR's, and PR code never sees a secret. Those checks protect the merge, not the preview, and a preview is an input to QA, not its result.
+- **Production gate** (`previews.requiredChecks`, unchanged): `checks`, `browser`, `workflow-lint` and `docs-build`, green on main's exact SHA. PR #6 adds `docs`.
+  - **`dependency-review`** stays required by the ruleset but is not in the gate, because it is PR-only.
+  - npm releases are independent of both gates.
+- **Lifecycle** (automatic, no human approval, kit D13):
+  - every open same-repository PR gets a preview, **drafts included**;
+  - `closed` (merged or not) tears down, and a reopen redeploys;
+  - one concurrency group per PR, never cancelled;
+  - the PR is re-read before and after the deploy and before the comment.
+- **Exceptions, stated in the PR comment:**
+  - forks never get a preview (untrusted code, no secret);
+  - Dependabot/Renovate PRs are built only, unless `DOCS_PREVIEW_DEPENDABOT=true`.
+- **Cleanup, independent of CI:**
+  - the `closed` run is the fast path;
+  - an **hourly sweep** (`23 * * * *`) removes every `webmcp-sdk-docs-pr-<n>` Worker and `pr-<n>` stage whose PR is no longer eligible, re-checking the PR just before each removal;
+  - the sweep only matches the exact `webmcp-sdk-docs-pr-<n>` pattern, never production, the state stores or another project's Workers;
+  - a failed removal raises an `::error::`, turns the job red and posts a "removal failed, will retry" comment; the next hour retries.
+- **PR comment:** one comment, updated in place.
+  - Deploy: building → deploying → deployed (URL + SHA), or failed (run link).
+  - Cleanup: removed, or removal failed.
+  - Exceptions: not deployed (fork / bot).
+- **`preflight`** runs before any Cloudflare call. It checks:
+  - the token is account-owned and belongs to this account;
+  - the state-store token and API version;
+  - the Workers visible to the token;
+  - a preview token may reach production only if `docs-preview` is main-only, which is required. A reviewer there is reported as policy drift and never blocks cleanup.
+- **Hygiene:** `permissions: {}`, least privilege per job, SHA pins, no cache in the build whose artifact ships nor in any privileged job, only `infra/site` dependencies from main's frozen lockfile in privileged jobs; zizmor pedantic (one justified `dangerous-triggers` suppression on `workflow_run`), actionlint and the kit's workflow invariants (`tooling/check-workflows.mjs`, W1–W11, run in `checks`).
 
 ### 2.2 Kit divergences (to upstream or decide)
 
@@ -169,7 +195,7 @@ The two CI tokens are created *after* the bootstrap (the Workers must exist for 
 | Workers (All Workers) | **Admin** (creates and deletes `webmcp-sdk-docs-pr-<n>`) |
 | Secrets Store, zones | none |
 
-❓ Fallback if a per-Worker Editor deploy fails with 403 on the assets upload session (§1): replace that token's scope with Workers → All Workers → **Editor**. `preflight` then sees the staging token reaching production and **refuses to deploy staging unless `docs-preview` has a required reviewer**.
+❓ Fallback if a per-Worker Editor deploy fails with 403 on the assets upload session (§1): replace that token's scope with Workers → All Workers → **Editor**. `preflight` then sees the staging token reaching production and **refuses to deploy staging unless `docs-preview` is main-only**.
 
 **GitHub** (per environment): secrets `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `DOCS_STATE_TOKEN` (the store bearer token written by the bootstrap). Repository variables: `DOCS_WORKERS_SUBDOMAIN`, `DOCS_PREVIEW_MODE`, `DOCS_DEPLOY_ENABLED`.
 
@@ -177,9 +203,9 @@ The two CI tokens are created *after* the bootstrap (the Workers must exist for 
 
 | | `staging` (code default) | `dynamic` (**chosen**) |
 | - | - | - |
-| What PRs get | the shared Worker `webmcp-sdk-docs-staging`; last PR deployed wins | one Worker per PR, removed on close/draft, weekly sweep |
+| What PRs get | the shared Worker `webmcp-sdk-docs-staging`; last PR deployed wins | one Worker per PR (drafts included), removed on close, hourly sweep |
 | Preview token | Editor on `webmcp-sdk-docs-staging` only | Admin on **all** Workers of the account |
-| Approval / guard | none needed (unless the token turns out broader, see fallback) | `docs-preview` must be **main-only** (branch policy) **or** have a required reviewer; `preflight` refuses otherwise. Currently both: reviewer PaulSenon, and main-only after §6.0 |
+| Approval / guard | none needed (unless the token turns out broader, see fallback) | `docs-preview` must be **main-only** (branch policy); `preflight` refuses otherwise. No reviewer (automatic previews, decided by Isaac on 2026-11-22) |
 | Production Worker reachable by the preview token? | **no** | **yes**: it can overwrite or delete `webmcp-sdk-docs`, the state-store Workers and **every other Worker of the account, including Better Upload's** (§4.1) |
 | Production state reachable? | no (separate store and bearer token) | no (same), but the token could delete the production state-store Worker |
 
@@ -198,7 +224,7 @@ Residual risks:
 | Dependabot | build only (no preview unless `DOCS_PREVIEW_DEPENDABOT=true`) | |
 | temporary bootstrap token, while it exists | everything on Workers; create/edit/delete/bind **any secret of the account's Secrets Store** | (expires after 1 day; delete it right after the bootstrap) |
 
-Why dynamic mode is acceptable now: the account-wide token lives only in `docs-preview`, which (after §6.0) releases secrets to runs on `main` only, and only `docs-deploy.yml` (main's definition) uses it; PR code never runs in those jobs. The required reviewer is an optional extra (Isaac currently keeps it): it turns each run into a supervised one. Neither reduces what the token can do once a run has it: a compromise of main's infra code or of its locked dependencies would reach every Worker of the account.
+Why dynamic mode is acceptable now: the account-wide token lives only in `docs-preview`, which (after §6.0) releases secrets to runs on `main` only, and only `docs-deploy.yml` (main's definition) uses it; PR code never runs in those jobs. Isaac dropped the required reviewer on 2026-11-22 (automatic previews, a common kit policy). A click would not have reduced what the token can do once a run has it: a compromise of main's infra code or of its locked dependencies would reach every Worker of the account.
 
 ### 4.1 Shared account with Better Upload
 
@@ -229,7 +255,7 @@ Isaac does only what needs his login, his 2FA or his decision; an agent runs the
 ### 6.0 Merge order and GitHub settings
 
 1. Merge **#7**. `docs-deploy.yml` is on `main` from then on; deploys stay off.
-2. Right after the merge: `docs-preview` → deployment branches: keep **`main`**, delete **`refs/pull/*/merge`** (`gh api -X DELETE repos/PaulSenon/webmcp-sdk/environments/docs-preview/deployment-branch-policies/66401983`); admin bypass stays off; reviewer optional (PaulSenon today). `docs-production` is already `main` only.
+2. Right after the merge: `docs-preview` → deployment branches: keep **`main`**, delete **`refs/pull/*/merge`** (`gh api -X DELETE repos/PaulSenon/webmcp-sdk/environments/docs-preview/deployment-branch-policies/66401983`); admin bypass stays off; no reviewer (removed 2026-11-23, automatic previews). `docs-production` is already `main` only.
 3. Rebase **#6** onto `main` (regenerate the lockfile). It adds its `docs` CI job; add `docs` to `previews.requiredChecks` in `delivery.config.json` in that PR, and the root `docs:build` script; `tooling/docs-site-build.mjs` then builds the real site.
 4. After #6 is merged: ruleset `main` gains required checks **`docs`** and **`docs-build`**. Never `docs-preview` (commit status) or a `deploy-*` job.
 
@@ -262,7 +288,7 @@ rm -rf "$PRIVATE" "$TEMP" "$PROD" "$PREVIEW"
 | Roll back to a given commit | Actions → **docs-deploy** → *Run workflow* on `main`, `rollback_run_id` = id of a successful **docs** run of that commit on main. CLI: `gh workflow run docs-deploy.yml --ref main -f rollback_run_id=<id>` |
 | Redeploy production from main | Actions → **docs** → *Run workflow* on `main` (rebuild); `docs-deploy` follows |
 | Reset staging to `main` | re-run the latest docs run of any open PR, or wait for the next PR push (staging is never torn down) |
-| Dynamic mode: a preview was not removed | weekly sweeper, or **docs-deploy** → *Run workflow* with `destroy_pr` = PR number (or `sweep`) |
+| Dynamic mode: a preview was not removed | the hourly sweep retries it (red job + PR comment until it succeeds), or **docs-deploy** → *Run workflow* with `destroy_pr` = PR number (or `sweep`) |
 | A PR got no preview | read the `deploy-plan` summary: it states the reason (fork, draft, Dependabot, superseded, build failed, no artifact, checks) |
 | A deploy fails at *Gate* | a required check of that commit failed or is missing after 40 min: fix or re-run it, then re-run the deploy job |
 | `preflight` fails | the message names the cause: user token instead of account token, wrong `DOCS_STATE_TOKEN` for the environment, store version behind Alchemy (re-run the bootstrap with a new temporary token), Worker missing or not in the token's scope, preview-side token reaching production while `docs-preview` is neither main-only nor reviewer-protected |

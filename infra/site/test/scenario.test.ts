@@ -1,19 +1,20 @@
 // Lifecycle scenario of the fixture monorepo, without credentials: a fake GitHub (PR states, runs)
 // and a fake Cloudflare (Workers by name) driven by the SAME pure decisions site-deploy.yml calls,
 // in the same order: plan (pickPr over several lookups + planFromRun) -> re-check (previewAction)
-// -> deploy -> after-deploy. Covers draft/ready, out-of-order completions, red/cancelled builds,
-// close/draft during a deploy, reopen, merge, forks, bots (opt-in), foreign workflows with the same
-// name, ambiguous PRs, staging mode, orphans, production freshness.
+// -> deploy -> after-deploy. Covers drafts (deployed, D13), out-of-order completions, red/cancelled
+// builds, close during a deploy, reopen, merge, forks and bots (said in the comment), foreign
+// workflows with the same name, ambiguous PRs, staging mode, orphans, production freshness.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { pickPr, planFromRun, type PrInfo, type RunInfo } from "../src/deploy-plan.ts";
-import { afterDeploy, isOrphan, previewAction, previewNumbers } from "../src/preview.ts";
+import { afterDeploy, isOrphan, previewAction, previewNumbers, previewNumbersFromState } from "../src/preview.ts";
 import { workerName } from "../src/stage.ts";
 
 const REPO = "acme/site";
 const BASE = "example-site";
 const PATH = ".github/workflows/site.yml";
 const sha = (n: number) => n.toString(16).padStart(40, "0");
+const ctx = (botPreviews: boolean) => ({ repo: REPO, defaultBranch: "main", botPreviews });
 
 class World {
   prs = new Map<number, PrInfo>();
@@ -41,16 +42,18 @@ class World {
       head_sha: s,
       head_branch: n === undefined ? "main" : `feature-${n}`,
       path: PATH,
-      head_repository: { full_name: pr?.head.repo?.full_name ?? REPO },
+      head_repository: { full_name: pr?.head.repo?.full_name ?? REPO, owner: { login: (pr?.head.repo?.full_name ?? REPO).split("/")[0] } },
       pull_requests: pr && pr.head.repo?.full_name === REPO ? [{ number: n! }] : [],
       ...extra,
     };
   }
 
   /** site-deploy.yml for one completed run; `during` runs while Alchemy deploys. */
-  handle(run: RunInfo, during?: () => void): string {
-    // cli.ts plan: payload hint + branch lookup + commit lookup (all PRs whose head is this SHA)
-    const candidates = run.head_repository?.full_name === REPO && run.event === "pull_request"
+  /** Comment notices the plan asked for (deploy-comment job), in order. */
+  notices: string[] = [];
+  handle(run: RunInfo, during?: () => void, trigger: "requested" | "completed" = "completed"): string {
+    // cli.ts plan: payload hint + commit lookup (same repo) + branch lookup (also forks, to say so)
+    const candidates = run.event === "pull_request"
       ? [...(run.pull_requests ?? []).map((p) => this.prs.get(p.number)).filter((p): p is PrInfo => !!p), ...[...this.prs.values()].filter((p) => p.head.ref === run.head_branch || p.head.sha === run.head_sha)]
       : [];
     let pr: PrInfo | undefined;
@@ -59,7 +62,8 @@ class World {
     } catch (e) {
       return `fail: ${(e as Error).message}`;
     }
-    const plan = planFromRun({ run, repo: REPO, defaultBranch: "main", workflowPath: PATH, previews: true, pr, mode: this.mode, botPreviews: this.botPreviews, mainHead: run.event === "push" ? this.main : undefined });
+    const plan = planFromRun({ run, trigger, repo: REPO, defaultBranch: "main", workflowPath: PATH, previews: true, pr, mode: this.mode, botPreviews: this.botPreviews, mainHead: run.event === "push" ? this.main : undefined });
+    if ("notice" in plan && plan.notice) this.notices.push(`#${"pr" in plan ? plan.pr : "?"} ${plan.notice}`);
     if (plan.action === "skip") return `skip: ${plan.reason}`;
     if (plan.action === "deploy-production") {
       this.workers.set(BASE, run.head_sha);
@@ -69,10 +73,10 @@ class World {
       this.workers.delete(workerName(BASE, plan.stage));
       return `teardown: ${plan.reason}`;
     }
-    if (previewAction(this.pr(plan.pr), run.head_sha, "success", { repo: REPO, botPreviews: this.botPreviews }).action !== "deploy") return "skip: re-check";
+    if (previewAction(this.pr(plan.pr), run.head_sha, "success", ctx(this.botPreviews)).action !== "deploy") return "skip: re-check";
     this.workers.set(workerName(BASE, plan.stage), run.head_sha);
     during?.();
-    if (afterDeploy(this.prs.get(plan.pr) as never) === "destroy") {
+    if (afterDeploy(this.prs.get(plan.pr) as never, ctx(this.botPreviews)) === "destroy") {
       this.workers.delete(workerName(BASE, plan.stage));
       return "destroyed-after-deploy";
     }
@@ -81,7 +85,7 @@ class World {
 
   sweep() {
     for (const n of previewNumbers(BASE, [...this.workers.keys()])) {
-      if (isOrphan(this.prs.get(n) as never, REPO)) this.workers.delete(workerName(BASE, `pr-${n}`));
+      if (isOrphan(this.prs.get(n) as never, ctx(this.botPreviews))) this.workers.delete(workerName(BASE, `pr-${n}`));
     }
   }
   preview(n: number) {
@@ -89,12 +93,15 @@ class World {
   }
 }
 
-test("draft PRs get a build but no preview; ready_for_review deploys", () => {
+test("drafts get a preview like any open PR (D13); ready_for_review changes nothing", () => {
   const w = new World();
   w.open(1, sha(1), { draft: true });
-  assert.equal(w.handle(w.run(1, sha(1))), "teardown: PR draft"); // idempotent no-op
-  w.pr(1).draft = false;
+  assert.equal(w.handle(w.run(1, sha(1)), undefined, "requested"), "skip: build started");
   assert.equal(w.handle(w.run(1, sha(1))), "deployed");
+  assert.deepEqual(w.notices, ["#1 building", "#1 deploying"]);
+  w.pr(1).draft = false;
+  assert.equal(w.preview(1), sha(1));
+  w.sweep();
   assert.equal(w.preview(1), sha(1));
 });
 
@@ -106,7 +113,7 @@ test("out-of-order completions: the newest head wins, never an older commit", ()
   const run2 = w.run(2, sha(2));
   w.pr(2).head.sha = sha(3);
   assert.equal(w.handle(w.run(2, sha(3))), "deployed");
-  assert.match(w.handle(run2), /^skip: no same-repository PR has this commit/);
+  assert.match(w.handle(run2), /^skip: no PR has this commit/);
   assert.equal(w.preview(2), sha(3));
 });
 
@@ -120,14 +127,39 @@ test("a red or cancelled build never deploys; the preview keeps the last green c
   assert.equal(w.preview(3), sha(1));
 });
 
-test("convert to draft tears down even if that run was cancelled; a late run does not resurrect it", () => {
+test("convert to draft keeps the preview; a draft is never an orphan", () => {
   const w = new World();
   w.open(4, sha(1));
   w.handle(w.run(4, sha(1)));
   w.pr(4).draft = true;
-  assert.equal(w.handle(w.run(4, sha(1), "cancelled")), "teardown: PR draft");
-  assert.equal(w.handle(w.run(4, sha(1))), "teardown: PR draft");
-  assert.equal(w.preview(4), undefined);
+  w.sweep();
+  assert.equal(w.preview(4), sha(1));
+  w.pr(4).head.sha = sha(2);
+  assert.equal(w.handle(w.run(4, sha(2))), "deployed");
+  assert.equal(w.preview(4), sha(2));
+});
+
+test("closing tears down whatever the closed run concluded (cleanup never depends on the build)", () => {
+  const w = new World();
+  w.open(14, sha(1));
+  w.handle(w.run(14, sha(1)));
+  w.pr(14).state = "closed";
+  assert.equal(w.handle(w.run(14, sha(1), "failure")), "teardown: PR closed");
+  w.open(15, sha(2));
+  w.handle(w.run(15, sha(2)));
+  w.pr(15).state = "closed";
+  assert.equal(w.handle(w.run(15, sha(2)), undefined, "requested"), "skip: PR closed"); // only on completion
+  // the closed run never arrived (Actions outage, disabled workflow): the hourly sweep removes it
+  w.sweep();
+  assert.equal(w.preview(15), undefined);
+});
+
+test("a red build says so in the comment; cancelled stays silent (a newer run follows)", () => {
+  const w = new World();
+  w.open(16, sha(1));
+  w.handle(w.run(16, sha(1), "failure"));
+  w.handle(w.run(16, sha(1), "cancelled"));
+  assert.deepEqual(w.notices, ["#16 build-failed"]);
 });
 
 test("closed while the deploy runs: destroyed right after", () => {
@@ -154,17 +186,33 @@ test("reopen redeploys; merge (empty payload) tears down; production only at the
   assert.equal(w.workers.get(BASE), sha(7));
 });
 
-test("forks never deploy; Dependabot builds only unless opted in", () => {
+test("forks never deploy and the comment says so once; Dependabot only when opted in", () => {
   const w = new World();
   w.open(8, sha(1), { fork: true });
+  assert.match(w.handle(w.run(8, sha(1)), undefined, "requested"), /fork/);
   assert.match(w.handle(w.run(8, sha(1))), /fork/);
   const forged = w.run(8, sha(1), "success", { head_repository: { full_name: REPO }, pull_requests: [{ number: 8 }] });
-  assert.match(w.handle(forged), /^skip: no same-repository PR/);
+  assert.match(w.handle(forged), /^skip: no PR has this commit/);
   w.open(9, sha(2), { bot: true });
+  assert.match(w.handle(w.run(9, sha(2)), undefined, "requested"), /build only/);
   assert.match(w.handle(w.run(9, sha(2))), /build only/);
+  assert.deepEqual(w.notices, ["#8 not-deployed-fork", "#9 not-deployed-bot"]);
   w.botPreviews = true;
   assert.equal(w.handle(w.run(9, sha(2))), "deployed");
   assert.equal(w.workers.size, 1);
+  w.botPreviews = false; // opt-in withdrawn: the sweep removes the bot preview
+  w.sweep();
+  assert.equal(w.workers.size, 0);
+});
+
+test("a PR retargeted away from the default branch loses its preview (plan skips, sweep removes)", () => {
+  const w = new World();
+  w.open(17, sha(1));
+  w.handle(w.run(17, sha(1)));
+  w.pr(17).base.ref = "next";
+  assert.match(w.handle(w.run(17, sha(1))), /targets next/);
+  w.sweep();
+  assert.equal(w.preview(17), undefined);
 });
 
 test("foreign workflows, other branches, ambiguous PRs never deploy", () => {
@@ -201,4 +249,16 @@ test("sweep removes orphans and keeps live previews and other Workers", () => {
   w.workers.set(BASE, sha(0));
   w.sweep();
   assert.deepEqual([...w.workers.keys()].sort(), ["example-site", "example-site-pr-41", "unrelated-worker-pr-1"]);
+});
+
+test("sweep scope: only <worker>-pr-<n> Workers and pr-<n> stages, never anything else", () => {
+  const names = [
+    BASE, `${BASE}-staging`, `${BASE}-state`, `${BASE}-preview-state`, `${BASE}-pr-state`, `${BASE}-pr-0`, `${BASE}-pr-01`,
+    `${BASE}-pr-1-x`, `${BASE}-pr-`, `${BASE}-pr-12345678`, `other-${BASE}-pr-3`, `${BASE}x-pr-4`, "unrelated-worker-pr-1", `${BASE}-PR-5`, ` ${BASE}-pr-6`,
+  ];
+  assert.deepEqual(previewNumbers(BASE, names), []);
+  assert.deepEqual(previewNumbers(BASE, [...names, `${BASE}-pr-7`, `${BASE}-pr-1234567`]), [7, 1234567]);
+  const stack = "example-site";
+  const listing = ["production/", "staging/", "prod/", "pr-0/", "pr-01/", "pr-8/x/", "other/pr-9/", `${stack}/production/`, "pr-10", `${stack}/pr-11/`].join("\n");
+  assert.deepEqual(previewNumbersFromState(listing, stack), [10, 11]);
 });
