@@ -19,13 +19,28 @@ import { productionUrl } from "../src/domain.ts";
 import { installedStoreVersion } from "../src/store-version.ts";
 import { prStage, revisionLabel, stateStoreFor, stateStoreUrl, workerName, workersDevUrl } from "../src/stage.ts";
 
-const config = loadConfig();
-const base = config.site.worker;
+// Per-command env table (v0.4.1, WebMCP run 45280320094: after-deploy lacked DEFAULT_BRANCH).
+// Every read goes through env(); a name the table does not declare for the running command throws,
+// so the table is complete; required names must be MAPPED by the step (checked at startup, before
+// any side effect, and statically by check-workflows W12).
+type EnvSpec = { required: string[]; optional?: string[] };
+const COMMAND_ENV = JSON.parse(readFileSync(new URL("./command-env.json", import.meta.url), "utf8")) as Record<string, EnvSpec>;
+const commandName = process.argv[2] ?? "";
+const spec: EnvSpec = COMMAND_ENV[commandName] ?? { required: [] };
 const env = (name: string, required = true): string => {
+  if (!spec.required.includes(name) && !(spec.optional ?? []).includes(name)) throw new Error(`cli.ts ${commandName} reads ${name}, which scripts/command-env.json does not declare for it`);
+  if (required && !spec.required.includes(name)) throw new Error(`cli.ts ${commandName}: ${name} is read as required but declared optional`);
   const v = process.env[name] ?? "";
   if (required && !v) throw new Error(`${name} is required`);
   return v;
 };
+const unmapped = spec.required.filter((n) => !(n in process.env));
+if (COMMAND_ENV[commandName] && unmapped.length) {
+  console.error(`::error::cli.ts ${commandName}: the step does not map ${unmapped.join(", ")} (scripts/command-env.json)`);
+  process.exit(1);
+}
+const config = loadConfig();
+const base = config.site.worker;
 function output(values: Record<string, string | number | boolean>) {
   const lines = Object.entries(values).map(([k, v]) => {
     const s = String(v);
@@ -37,9 +52,11 @@ function output(values: Record<string, string | number | boolean>) {
 }
 const repo = () => env("REPO");
 const defaultBranch = () => env("DEFAULT_BRANCH");
-const gh = (): GitHubClient => github(env("GH_TOKEN"));
+/** GITHUB_API_URL: runner-provided (GHES); a local fake in tests. */
+const API = process.env.GITHUB_API_URL || "https://api.github.com";
+const gh = (): GitHubClient => github(env("GH_TOKEN"), { api: API });
 /** The preview policy context (D13): one source for plan, re-checks and sweep. */
-const policy = (): PolicyContext => ({ repo: repo(), defaultBranch: defaultBranch(), botPreviews: process.env.BOT_PREVIEWS === "true" });
+const policy = (): PolicyContext => ({ repo: repo(), defaultBranch: defaultBranch(), botPreviews: env("BOT_PREVIEWS", false) === "true" });
 const botVar = `${config.site.name.toUpperCase()}_PREVIEW_DEPENDABOT`;
 function summary(markdown: string) {
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${markdown}\n`);
@@ -110,8 +127,8 @@ const commands: Record<string, () => Promise<void>> = {
       workflowPath: `.github/workflows/${config.site.name}.yml`,
       previews: config.previews.enabled,
       pr,
-      mode: previewMode(config),
-      botPreviews: process.env.BOT_PREVIEWS === "true",
+      mode: previewMode(config, env("PREVIEW_MODE", false)),
+      botPreviews: env("BOT_PREVIEWS", false) === "true",
       mainHead,
     });
     if (plan.action === "deploy-preview" || plan.action === "deploy-production") {
@@ -137,7 +154,7 @@ const commands: Record<string, () => Promise<void>> = {
     const artifact = list.find((a) => a.name === config.site.name && !a.expired);
     if (!artifact) throw new Error(`run ${runId} has no unexpired artifact ${config.site.name}`);
     if (artifact.size_in_bytes > 256 * 1024 * 1024) throw new Error("artifact larger than 256 MiB");
-    const res = await fetch(`https://api.github.com/repos/${repo()}/actions/artifacts/${artifact.id}/zip`, { headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "user-agent": "monorepo-delivery-kit" } });
+    const res = await fetch(`${API}/repos/${repo()}/actions/artifacts/${artifact.id}/zip`, { headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "user-agent": "monorepo-delivery-kit" } });
     if (!res.ok) throw new Error(`artifact download failed: HTTP ${res.status}`);
     const dest = env("DEST");
     const files = safeUnzip(Buffer.from(await res.arrayBuffer()), dest);
@@ -150,7 +167,7 @@ const commands: Record<string, () => Promise<void>> = {
 
   /** Stage outputs for a PR number (manual destroy, sweep). Dynamic mode only. */
   async "pr-target"() {
-    if (previewMode(config) !== "dynamic") throw new Error("per-PR stages exist only in dynamic preview mode");
+    if (previewMode(config, env("PREVIEW_MODE", false)) !== "dynamic") throw new Error("per-PR stages exist only in dynamic preview mode");
     const stage = prStage("dynamic", env("PR_NUMBER"));
     output({ stage, worker: workerName(base, stage), store: stateStoreFor(base, stage) });
   },
@@ -196,7 +213,7 @@ const commands: Record<string, () => Promise<void>> = {
   /** In the unprivileged build: stage, URL to bake in, artifact dir. Not trusted by the deploy. */
   async "build-target"() {
     const pr = env("PR_NUMBER", false);
-    const stage = pr ? prStage(previewMode(config), pr) : "production";
+    const stage = pr ? prStage(previewMode(config, env("PREVIEW_MODE", false)), pr) : "production";
     const subdomain = env("SUBDOMAIN", false);
     if (!subdomain) console.log("::notice::<SITE>_WORKERS_SUBDOMAIN is not set: building without SITE_URL");
     output({ stage, url: subdomain ? stageUrl(stage, subdomain) : "", dir: config.site.artifact });
@@ -212,7 +229,7 @@ const commands: Record<string, () => Promise<void>> = {
     const pr = env("PR_NUMBER", false);
     const sha = env("SHA");
     if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("SHA must be a full commit SHA");
-    const manifest = { sha, pr: pr ? Number(pr) : null, stage: env("STAGE"), event: env("EVENT"), action: process.env.ACTION || null };
+    const manifest = { sha, pr: pr ? Number(pr) : null, stage: env("STAGE"), event: env("EVENT"), action: env("ACTION", false) || null };
     writeFileSync(join(env("SITE_ARTIFACT_DIR"), MANIFEST), `${JSON.stringify(manifest)}\n`);
   },
 
@@ -237,7 +254,7 @@ const commands: Record<string, () => Promise<void>> = {
   async smoke() {
     const url = env("SMOKE_URL");
     const revision = env("REVISION", false);
-    const soft = process.env.SMOKE_SOFT === "1";
+    const soft = env("SMOKE_SOFT", false) === "1";
     const attempts = soft ? 14 : 10; // soft: ~5 min of backoff
     for (const path of config.site.smokePaths) {
       let last = "";
@@ -315,7 +332,12 @@ const commands: Record<string, () => Promise<void>> = {
     if (!body?.success) throw new Error(redact(`cannot list Workers: HTTP ${status}`, [token]));
     const fromWorkers = previewNumbers(base, body.result.map((w) => w.id));
     const listFile = env("STATE_LIST_FILE", false);
-    const fromState = listFile && existsSync(listFile) ? previewNumbersFromState(readFileSync(listFile, "utf8"), `${config.project}-site`) : [];
+    const stateListed = Boolean(listFile && existsSync(listFile));
+    const fromState = stateListed ? previewNumbersFromState(readFileSync(listFile, "utf8"), `${config.project}-site`) : [];
+    // A preview Worker deployed by CI has a stage in the preview store: Workers but no stage at all
+    // = the listing is empty or not what we parse (v0.4.1: the store root was listed instead).
+    const stateNote = !stateListed ? "state list unavailable: sweeping by Worker list only" : fromWorkers.length && !fromState.length ? `state list empty or unparsable (${fromWorkers.length} preview Worker(s), 0 preview stage(s)): stages without a Worker cannot be found` : "";
+    if (stateNote) console.log(`::warning::${stateNote}`);
     const numbers = [...new Set([...fromWorkers, ...fromState])].sort((a, b) => a - b);
     const client = gh();
     const ctx = policy();
@@ -323,10 +345,10 @@ const commands: Record<string, () => Promise<void>> = {
     const kept: number[] = [];
     for (const n of numbers) (isOrphan(await getPr(client, n), ctx) ? orphans : kept).push(n);
     const open = await client.list<PullRequest>(`/repos/${repo()}/pulls?state=open&per_page=100`);
-    const missing = previewMode(config) === "dynamic" ? open.filter((p) => !isOrphan(p, ctx) && !fromWorkers.includes(p.number)).map((p) => p.number) : [];
+    const missing = previewMode(config, env("PREVIEW_MODE", false)) === "dynamic" ? open.filter((p) => !isOrphan(p, ctx) && !fromWorkers.includes(p.number)).map((p) => p.number) : [];
     for (const n of missing) console.log(`::notice::PR #${n} is eligible but has no preview Worker (build red, still running, or a missed event: re-run its site workflow)`);
     console.log(`previews: workers [${fromWorkers.join(" ")}] state [${fromState.join(" ")}] kept [${kept.join(" ")}] orphans [${orphans.join(" ")}] missing [${missing.join(" ")}]`);
-    summary(["### Preview sweep", "", "| found | kept | orphans (to remove) | eligible without preview |", "|---|---|---|---|", `| ${numbers.length} | ${kept.map((n) => `#${n}`).join(" ") || "—"} | ${orphans.map((n) => `#${n}`).join(" ") || "—"} | ${missing.map((n) => `#${n}`).join(" ") || "—"} |`, ""].join("\n"));
+    summary(["### Preview sweep", "", ...(stateNote ? [`> ⚠️ ${stateNote}`, ""] : []), `Workers: ${fromWorkers.map((n) => `#${n}`).join(" ") || "—"} · state stages: ${fromState.map((n) => `#${n}`).join(" ") || "—"}`, "", "| found | kept | orphans (to remove) | eligible without preview |", "|---|---|---|---|", `| ${numbers.length} | ${kept.map((n) => `#${n}`).join(" ") || "—"} | ${orphans.map((n) => `#${n}`).join(" ") || "—"} | ${missing.map((n) => `#${n}`).join(" ") || "—"} |`, ""].join("\n"));
     output({ orphans: orphans.join(" ") });
   },
 
@@ -365,7 +387,7 @@ const commands: Record<string, () => Promise<void>> = {
    */
   async preflight() {
     const stage = env("STAGE");
-    const mode = previewMode(config);
+    const mode = previewMode(config, env("PREVIEW_MODE", false));
     const accountId = env("CLOUDFLARE_ACCOUNT_ID");
     const cfToken = env("CLOUDFLARE_API_TOKEN");
     const cf = cloudflare(cfToken);
@@ -404,7 +426,7 @@ const commands: Record<string, () => Promise<void>> = {
   },
 };
 
-const name = process.argv[2] ?? "";
+const name = commandName;
 const command = commands[name];
 if (!command) {
   console.error(`usage: cli.ts <${Object.keys(commands).join(" | ")}>`);

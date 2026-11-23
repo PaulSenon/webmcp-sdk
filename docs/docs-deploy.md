@@ -146,7 +146,7 @@ Changing the CSP (for example to embed a third-party demo) is an infra PR, revie
   - the state-store token and API version;
   - the Workers visible to the token;
   - a preview token may reach production only if `docs-preview` is main-only, which is required. A reviewer there is reported as policy drift and never blocks cleanup.
-- **Hygiene:** `permissions: {}`, least privilege per job, SHA pins, no cache in the build whose artifact ships nor in any privileged job, only `infra/site` dependencies from main's frozen lockfile in privileged jobs; zizmor pedantic (one justified `dangerous-triggers` suppression on `workflow_run`), actionlint and the kit's workflow invariants (`tooling/check-workflows.mjs`, W1–W11, run in `checks`).
+- **Hygiene:** `permissions: {}`, least privilege per job, SHA pins, no cache in the build whose artifact ships nor in any privileged job, only `infra/site` dependencies from main's frozen lockfile in privileged jobs; zizmor pedantic (one justified `dangerous-triggers` suppression on `workflow_run`), actionlint and the kit's workflow invariants (`tooling/check-workflows.mjs`, W1–W12, run in `checks`).
 
 ### 2.2 Kit divergences (to upstream or decide)
 
