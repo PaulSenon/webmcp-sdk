@@ -5,6 +5,7 @@
 // builds, close during a deploy, reopen, merge, forks and bots (said in the comment), foreign
 // workflows with the same name, ambiguous PRs, staging mode, orphans, production freshness.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { pickPr, planFromRun, type PrInfo, type RunInfo } from "../src/deploy-plan.ts";
 import { afterDeploy, isOrphan, previewAction, previewNumbers, previewNumbersFromState } from "../src/preview.ts";
@@ -261,4 +262,10 @@ test("sweep scope: only <worker>-pr-<n> Workers and pr-<n> stages, never anythin
   const stack = "example-site";
   const listing = ["production/", "staging/", "prod/", "pr-0/", "pr-01/", "pr-8/x/", "other/pr-9/", `${stack}/production/`, "pr-10", `${stack}/pr-11/`].join("\n");
   assert.deepEqual(previewNumbersFromState(listing, stack), [10, 11]);
+});
+
+test("state list: captured beta.85 output — the stack listing yields its pr-<n> stages, the root yields none (v0.4.1)", () => {
+  const read = (f: string) => readFileSync(new URL(`fixtures/state-list/${f}`, import.meta.url), "utf8");
+  assert.deepEqual(previewNumbersFromState(read("stack.txt"), "example-site"), [6, 16]);
+  assert.deepEqual(previewNumbersFromState(read("root.txt"), "example-site"), []); // why v0.4.0 saw `state []`
 });

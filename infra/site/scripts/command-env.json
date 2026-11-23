@@ -1,0 +1,21 @@
+{
+  "//": "Env each `cli.ts <command>` reads (v0.4.1). required = the workflow step MUST map it (it may evaluate to empty); optional = may be absent. Enforced at startup by cli.ts, against the source by test/command-env.test.ts, and against every workflow step by tooling/check-workflows.mjs W12. GITHUB_* / RUNNER_* are runner-provided.",
+  "plan": {"required": ["GH_TOKEN", "REPO", "DEFAULT_BRANCH", "RUN_ID", "TRIGGER", "SUBDOMAIN", "PREVIEW_MODE", "BOT_PREVIEWS"]},
+  "fetch-artifact": {"required": ["GH_TOKEN", "REPO", "RUN_ID", "DEST", "EXPECT_SHA", "EXPECT_PR", "EXPECT_STAGE"]},
+  "build-target": {"required": ["PR_NUMBER", "SUBDOMAIN", "PREVIEW_MODE"]},
+  "write-manifest": {"required": ["PR_NUMBER", "SHA", "STAGE", "EVENT", "ACTION", "SITE_ARTIFACT_DIR"]},
+  "pr-target": {"required": ["PR_NUMBER", "PREVIEW_MODE"]},
+  "pr-check": {"required": ["GH_TOKEN", "REPO", "DEFAULT_BRANCH", "BOT_PREVIEWS", "PR_NUMBER", "SHA"]},
+  "main-check": {"required": ["GH_TOKEN", "REPO", "DEFAULT_BRANCH", "SHA"]},
+  "gate": {"required": ["GH_TOKEN", "REPO", "SHA", "GATE"]},
+  "prod-url": {"required": ["SUBDOMAIN"]},
+  "check-artifact": {"required": ["SITE_ARTIFACT_DIR"]},
+  "after-deploy": {"required": ["GH_TOKEN", "REPO", "DEFAULT_BRANCH", "BOT_PREVIEWS", "PR_NUMBER"]},
+  "smoke": {"required": ["SMOKE_URL"], "optional": ["REVISION", "SMOKE_SOFT"]},
+  "comment": {"required": ["GH_TOKEN", "REPO", "PR_NUMBER", "STATUS", "RUN_URL"], "optional": ["SHA", "URL", "REASON"]},
+  "sweep": {"required": ["GH_TOKEN", "REPO", "DEFAULT_BRANCH", "BOT_PREVIEWS", "PREVIEW_MODE", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"], "optional": ["STATE_LIST_FILE"]},
+  "orphan-check": {"required": ["GH_TOKEN", "REPO", "DEFAULT_BRANCH", "BOT_PREVIEWS", "PR_NUMBER"]},
+  "sweep-report": {"required": ["PR_NUMBER", "RESULT"]},
+  "delete-worker": {"required": ["PR_NUMBER", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]},
+  "preflight": {"required": ["GH_TOKEN", "REPO", "DEFAULT_BRANCH", "ENVIRONMENT", "STAGE", "PREVIEW_MODE", "SUBDOMAIN", "SITE_STATE_STORE", "SITE_STATE_TOKEN", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]}
+}

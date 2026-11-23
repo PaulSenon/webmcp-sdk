@@ -1,0 +1,2 @@
+[23:35:39.651] WARN: alchemy 2.0.0-beta.87 is available (you're on 2.0.0-beta.85). Run `pnpm add alchemy@2.0.0-beta.87` to upgrade.
+example-site/

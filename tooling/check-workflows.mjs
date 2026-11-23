@@ -18,12 +18,48 @@
 //       `# local: sweep-cadence <why>` comment on the cron line); the site build workflow (job
 //       `lifecycle`) runs on `closed`
 //       and not on converted_to_draft / ready_for_review (drafts are previewed, not torn down)
+//   W12 (v0.4.1) every step running `infra/site/scripts/cli.ts <cmd>` maps each name that
+//       infra/site/scripts/command-env.json declares required for <cmd> (workflow, job or step
+//       env, or assigned in the script itself); a privileged workflow sets DEFAULT_BRANCH to
+//       `${{ github.event.repository.default_branch || github.ref_name }}` (the schedule payload
+//       may lack `repository`; a scheduled run is always on the default branch)
 //   node tooling/check-workflows.mjs <dir>   -> exit 1 with the list of violations
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "yaml";
 
-export function checkWorkflow(file, text) {
+export const DEFAULT_BRANCH_EXPR = "${{ github.event.repository.default_branch || github.ref_name }}";
+const RUNNER_PROVIDED = /^(GITHUB|RUNNER)_/;
+
+/** Names a run script assigns itself (`A=… cmd`, `export A=… B=…`, `A=$(…)`). */
+export function assignedInScript(run) {
+  return new Set([...run.matchAll(/(?:^|[\s;(&|])(?:export\s+)?([A-Z][A-Z0-9_]*)=/gm)].map((m) => m[1]));
+}
+
+/** W12 for one step: the names `cli.ts <cmd>` requires that nothing maps. */
+export function unmappedCliEnv(commandEnv, provided, run) {
+  const out = [];
+  for (const m of run.matchAll(/infra\/site\/scripts\/cli\.ts\s+([a-z-]+)/g)) {
+    const spec = commandEnv[m[1]];
+    if (!spec) {
+      out.push(`${m[1]}: unknown cli.ts command`);
+      continue;
+    }
+    const missing = spec.required.filter((n) => !provided.has(n) && !RUNNER_PROVIDED.test(n));
+    if (missing.length) out.push(`${m[1]}: ${missing.join(", ")}`);
+  }
+  return out;
+}
+
+export function loadCommandEnv(dir) {
+  const path = join(dir, "../../infra/site/scripts/command-env.json");
+  if (!existsSync(path)) return undefined;
+  const table = JSON.parse(readFileSync(path, "utf8"));
+  delete table["//"];
+  return table;
+}
+
+export function checkWorkflow(file, text, { commandEnv } = {}) {
   const errors = [];
   const err = (rule, msg) => errors.push(`${file}: ${rule} ${msg}`);
   const wf = parse(text);
@@ -52,6 +88,13 @@ export function checkWorkflow(file, text) {
 
   for (const [id, job] of Object.entries(jobs)) {
     const steps = job.steps ?? [];
+    for (const [i, s] of steps.entries()) {
+      if (typeof s.run !== "string") continue;
+      const provided = new Set([...Object.keys(wf.env ?? {}), ...Object.keys(job.env ?? {}), ...Object.keys(s.env ?? {}), ...assignedInScript(s.run)]);
+      if (commandEnv) for (const miss of unmappedCliEnv(commandEnv, provided, s.run)) err("W12", `job ${id} step ${s.id ?? s.name ?? i + 1}: cli.ts ${miss} not mapped (scripts/command-env.json)`);
+      const db = s.env?.DEFAULT_BRANCH ?? job.env?.DEFAULT_BRANCH;
+      if (privileged && db !== undefined && db !== DEFAULT_BRANCH_EXPR) err("W12", `job ${id}: DEFAULT_BRANCH must be ${DEFAULT_BRANCH_EXPR}`);
+    }
     const jobText = JSON.stringify(job);
     const perms = job.permissions ?? {};
     if (unprivileged) {
@@ -88,7 +131,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const dir = process.argv[2] ?? ".github/workflows";
   const errors = readdirSync(dir)
     .filter((f) => /\.ya?ml$/.test(f))
-    .flatMap((f) => checkWorkflow(f, readFileSync(join(dir, f), "utf8")));
+    .flatMap((f) => checkWorkflow(f, readFileSync(join(dir, f), "utf8"), { commandEnv: loadCommandEnv(dir) }));
   for (const e of errors) console.error(`::error::${e}`);
   console.log(errors.length ? `${errors.length} violation(s)` : "workflow invariants ok");
   process.exit(errors.length ? 1 : 0);

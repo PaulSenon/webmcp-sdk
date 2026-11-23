@@ -98,7 +98,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || github.ref_name }}
           RUN_ID: ${{ github.event.workflow_run.id }}
           TRIGGER: ${{ github.event.action }}
           SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
@@ -183,9 +183,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || github.ref_name }}
           PR_NUMBER: ${{ needs.plan.outputs.pr }}
           SHA: ${{ needs.plan.outputs.sha }}
+          BOT_PREVIEWS: ${{ vars.DOCS_PREVIEW_DEPENDABOT }}
         run: node infra/site/scripts/cli.ts pr-check
       - id: art
         if: steps.before.outputs.deploy == 'true'
@@ -206,7 +207,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || github.ref_name }}
           ENVIRONMENT: docs-preview
           SHA: ${{ needs.plan.outputs.sha }}
           PR_NUMBER: ${{ needs.plan.outputs.pr }}
@@ -232,6 +233,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || github.ref_name }}
+          BOT_PREVIEWS: ${{ vars.DOCS_PREVIEW_DEPENDABOT }}
           PR_NUMBER: ${{ needs.plan.outputs.pr }}
         run: node infra/site/scripts/cli.ts after-deploy
       - if: steps.after.outputs.action == 'destroy' && needs.plan.outputs.stage != 'staging'
@@ -299,7 +302,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || github.ref_name }}
           ENVIRONMENT: docs-preview
           PR_NUMBER: ${{ steps.t.outputs.pr }}
           STAGE: ${{ steps.t.outputs.stage }}
@@ -396,7 +399,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || github.ref_name }}
           SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
           PREVIEW_MODE: ${{ vars.DOCS_PREVIEW_MODE }}
           ROLLBACK_RUN_ID: ${{ inputs.rollback_run_id }}
@@ -434,7 +437,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || github.ref_name }}
           SHA: ${{ steps.src.outputs.sha }}
         run: node infra/site/scripts/cli.ts main-check
       - id: go
@@ -460,7 +463,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || github.ref_name }}
           ENVIRONMENT: docs-production
           STAGE: production
           SHA: ${{ steps.src.outputs.sha }}
@@ -524,7 +527,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || github.ref_name }}
           BOT_PREVIEWS: ${{ vars.DOCS_PREVIEW_DEPENDABOT }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -535,17 +538,24 @@ jobs:
           STATE_LIST_FILE: ${{ runner.temp }}/state-list.txt
         run: |
           set -euo pipefail
-          SITE_STATE_STORE="$(node -p 'require("./delivery.config.json").site.worker')-preview-state" \
-            pnpm --filter "$INFRA_PKG" exec alchemy state list --no-input > "$STATE_LIST_FILE" || echo "::warning::alchemy state list failed: sweeping by Worker list only"
+          # List the STACK's directory (`<stack>/pr-<n>/` lines): without a path, `alchemy state
+          # list` prints only the store root (`<stack>/`), which hid every stage until v0.4.1.
+          STACK="$(node -p 'require("./delivery.config.json").project')-site"
+          if ! SITE_STATE_STORE="$(node -p 'require("./delivery.config.json").site.worker')-preview-state" \
+               pnpm --filter "$INFRA_PKG" exec alchemy state list "$STACK" --no-input > "$STATE_LIST_FILE"; then
+            echo "::warning::alchemy state list $STACK failed (no preview ever deployed, or the store is unreachable): sweeping by Worker list only"
+            rm -f "$STATE_LIST_FILE"
+          fi
           node infra/site/scripts/cli.ts sweep
-      - name: Destroy orphans (re-checked one by one; failures retried by the next sweep)
+      - id: destroy
+        name: Destroy orphans (re-checked one by one; failures retried by the next sweep)
         if: steps.list.outputs.orphans != ''
         env:
           ORPHANS: ${{ steps.list.outputs.orphans }}
           BOT_PREVIEWS: ${{ vars.DOCS_PREVIEW_DEPENDABOT }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || github.ref_name }}
           ENVIRONMENT: docs-preview
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
