@@ -27,7 +27,7 @@ export interface IsolationInput {
   protection: EnvironmentProtection;
 }
 
-export type IsolationResult = { ok: true; notes: string[] } | { ok: false; reason: string };
+export type IsolationResult = { ok: true; notes: string[]; warnings?: string[] } | { ok: false; reason: string };
 
 /** Exactly one custom branch policy, of type branch, named after the default branch. */
 export function isMainOnly(policy: { protected_branches?: boolean; custom_branch_policies?: boolean } | null | undefined, rules: readonly { name: string; type?: string }[], defaultBranch = "main"): boolean {
@@ -52,15 +52,17 @@ export function isolationDecision(input: IsolationInput): IsolationResult {
     if (input.target !== "present") return { ok: false, reason: `the production Worker is ${input.target} for this token: run the bootstrap (creates it) and scope the token to it` };
     return { ok: true, notes };
   }
+  // Automatic previews (D13): the preview environment's barrier is the default-branch-only policy,
+  // never a human. A reviewer there is policy drift: warned, never refused (a cleanup must not be
+  // blocked by it — the job only runs once someone approved anyway).
+  if (!input.protection.mainOnly) return { ok: false, reason: `the ${kind} environment must release its secrets to the default branch only (automatic previews, D13: a reviewer is not the barrier there): tooling/setup-github.mjs` };
+  const warnings = input.protection.reviewers > 0 ? [`policy drift (D13): the ${kind} environment requires a reviewer, so previews and cleanups wait for a human; remove it (tooling/setup-github.mjs sends reviewers: [])`] : [];
   if (kind === "staging" && input.mode !== "staging") return { ok: false, reason: "stage staging is only used in staging preview mode" };
   if (kind === "preview" && input.mode !== "dynamic") return { ok: false, reason: "per-PR stages are only used in dynamic preview mode" };
   if (kind === "staging" && input.target !== "present") return { ok: false, reason: `the staging Worker is ${input.target} for this token: run the bootstrap and scope the token to it` };
   const reachesProduction = input.mode === "dynamic" || input.production === "present";
-  if (reachesProduction) {
-    const why = [input.protection.mainOnly ? "only releases secrets to the default branch" : "", input.protection.reviewers > 0 ? "requires a reviewer" : ""].filter(Boolean).join(" and ");
-    notes.push(`this token can reach the production Worker (and other Workers of the account); accepted because the environment ${why}`);
-  }
-  return { ok: true, notes };
+  if (reachesProduction) notes.push("this token can reach the production Worker (and other Workers of the account); accepted because the environment only releases secrets to the default branch");
+  return { ok: true, notes, warnings };
 }
 
 // --- Cloudflare probes (from webmcp-sdk account.ts) ---------------------------------------------

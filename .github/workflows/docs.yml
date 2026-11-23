@@ -1,13 +1,14 @@
 # Monorepo Delivery Kit — site build (workflow `docs`; renamed per site by tooling/rename-site.mjs).
 # UNPRIVILEGED: runs PR code (including forks), no secret, no environment, no id-token.
-# Its completion triggers docs-deploy.yml (workflow_run), which deploys the artifact built here —
-# or tears the preview down when the PR is closed or converted to draft (only `lifecycle` runs then).
+# Its start and completion trigger docs-deploy.yml (workflow_run): it comments, deploys the artifact
+# built here, or tears the preview down when the PR is closed (only `lifecycle` runs then). Drafts
+# are built and previewed like any open PR (kit D13): no converted_to_draft / ready_for_review.
 # No pull_request_target anywhere (kit decision D2).
 name: docs
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, closed, converted_to_draft]
+    types: [opened, synchronize, reopened, closed]
   push:
     branches: [main]
 
@@ -30,7 +31,7 @@ jobs:
 
   docs-build:
     name: docs-build
-    if: github.event.action != 'closed' && github.event.action != 'converted_to_draft'
+    if: github.event.action != 'closed'
     runs-on: ubuntu-24.04
     cache-mode: none # no Actions cache: this artifact is what production serves
     timeout-minutes: 20

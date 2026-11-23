@@ -76,3 +76,23 @@ test("a static e2e matrix in a workflow satisfies its required checks", () => {
   const required = ["e2e (chromium)", "e2e (firefox)", "e2e (webkit)", "e2e (msedge)"];
   assert.deepEqual(missingChecks(required, workflowChecks(dir).names), []);
 });
+
+import { gateChecksError, previewGateChecks } from "./required-checks.mjs";
+
+test("preview gate (D13): default <site>-build, subset of requiredChecks, produced on pull_request", () => {
+  const dir = mkdtempSync(join(tmpdir(), "gate-"));
+  writeFileSync(join(dir, "ci.yml"), "on: { pull_request: {}, push: {} }\njobs:\n  checks: { runs-on: x, steps: [] }\n");
+  writeFileSync(join(dir, "site.yml"), "on: { pull_request: {}, push: {} }\njobs:\n  site-build: { name: site-build, runs-on: x, steps: [] }\n");
+  writeFileSync(join(dir, "nightly.yml"), "on: { schedule: [{ cron: '0 0 * * *' }] }\njobs:\n  e2e: { runs-on: x, steps: [] }\n");
+  const base = { site: { name: "site" }, previews: { requiredChecks: ["checks", "site-build", "e2e"] } };
+  assert.deepEqual(previewGateChecks(base), ["site-build"]);
+  assert.equal(gateChecksError(base, dir), undefined);
+  assert.match(gateChecksError({ ...base, previews: { ...base.previews, gateChecks: ["checks"] } }, dir), /must include site-build/);
+  assert.match(gateChecksError({ ...base, previews: { ...base.previews, gateChecks: ["site-build", "lint"] } }, dir), /subset .*not: lint/);
+  assert.match(gateChecksError({ ...base, previews: { ...base.previews, gateChecks: ["site-build", "e2e"] } }, dir), /not produced by a job of a pull_request workflow: e2e/);
+});
+
+test("the repository's own preview gate is valid", () => {
+  const config = JSON.parse(readFileSync(new URL("../delivery.config.json", import.meta.url), "utf8"));
+  assert.equal(gateChecksError(config, new URL("../.github/workflows/", import.meta.url).pathname), undefined);
+});

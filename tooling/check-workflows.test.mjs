@@ -33,7 +33,17 @@ const mutations = [
   ["W9", DEPLOY, "  schedule:\n", "  pull_request_target:\n    types: [closed]\n  schedule:\n"],
   ["W1", DEPLOY, "\npermissions: {}\n", "\npermissions: write-all\n"],
   ["W10", DEPLOY, "    cache-mode: none # no Actions cache in this job (integrity > speed)\n", ""],
+  ["W11", DEPLOY, '    - cron: "23 * * * *"', '    - cron: "23 4 * * 1"'],
+  ["W11", DEPLOY, '    - cron: "23 * * * *"', '    - cron: "23 */6 * * *"'],
+  ["W11", DEPLOY, "    types: [requested, completed]", "    types: [completed]"],
+  ["W11", SITE, "    types: [opened, synchronize, reopened, closed]", "    types: [opened, synchronize, reopened]"],
+  ["W11", SITE, "    types: [opened, synchronize, reopened, closed]", "    types: [opened, synchronize, reopened, ready_for_review, closed, converted_to_draft]"],
 ];
+
+test("W11: a slower sweep is accepted only as an explicit local exception", { skip: (files[DEPLOY] ?? "").includes('    - cron: "23 * * * *"') ? false : "anchor absent" }, () => {
+  const slower = files[DEPLOY].replace(/    - cron: "23 \* \* \* \*".*\n/, '    - cron: "23 */6 * * *" # local: sweep-cadence private repository, Actions minutes billed\n');
+  assert.deepEqual(checkWorkflow(DEPLOY, slower).filter((e) => e.includes("W11")), []);
+});
 
 for (const [rule, file, from, to] of mutations) {
   const present = isKitFile(file) && (files[file] ?? "").includes(from);
@@ -51,7 +61,9 @@ test("rename-site: docs rendering keeps the invariants and leaves no template na
   assert.deepEqual(checkWorkflow("docs.yml", site), []);
   assert.deepEqual(checkWorkflow("docs-deploy.yml", deploy), []);
   for (const text of [site, deploy]) {
-    assert.doesNotMatch(text, /vars\.SITE_|secrets\.SITE_|site-(build|deploy|preview|production)\b|workflows: \[site\]/);
+    assert.doesNotMatch(text, /vars\.SITE_|secrets\.SITE_|site-(build|deploy|preview|production|comment)\b|workflows: \[site\]/);
+    // every concurrency group carries the site name (v0.4.0: site-comment-pr-* was left behind)
+    for (const [, g] of text.matchAll(/^\s*group: (\S+)/gm)) assert.match(g, /^docs-/, `group ${g}`);
   }
   assert.match(site, /^name: docs$/m);
   assert.match(site, /name: docs-build/);

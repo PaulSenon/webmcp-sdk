@@ -9,14 +9,18 @@
 #     dependencies are installed; the CI artifact is data (checked, uploaded byte-for-byte).
 #   - Target (production / preview / teardown / skip), stage, URL and state store come from
 #     GitHub's payload and API, never from the artifact. The PR's CURRENT state decides.
-#   - Forks and dependency bots: CI only, never a deploy.
-# Lifecycle: docs.yml runs on opened/synchronize/reopened/ready_for_review (build) and on
-# closed/converted_to_draft (a no-op `lifecycle` job). Each completion lands here:
-#   open, non-draft, head == run SHA, build green -> gate (every required check of that SHA) -> preview
-#   closed (merged or not) or draft             -> teardown (dynamic mode)
-#   push to the default branch, build green, gate green, still its head -> production
-# Orphans: `sweep` (weekly + manual). Rollback: dispatch with rollback_run_id.
-# Dependabot/Renovate PRs: build only, unless DOCS_PREVIEW_DEPENDABOT is "true".
+#   - Forks: CI only, never a deploy (the comment says so). Dependency bots: build only unless
+#     DOCS_PREVIEW_DEPENDABOT is "true" (the comment says so).
+# Automatic previews (kit D13): no reviewer on docs-preview, previews and cleanups never wait for a human.
+# Lifecycle: docs.yml runs on opened/synchronize/reopened (build) and on closed (a no-op `lifecycle`
+# job). Each START lands here as `requested` (comment "waiting for the build" / "not deployed"), each
+# completion as `completed`:
+#   open (drafts included), head == run SHA, build green -> gate (previews.gateChecks) -> preview
+#   closed (merged or not), whatever the run concluded   -> teardown (dynamic mode)
+#   push to the default branch, build green, gate (previews.requiredChecks), still its head -> production
+# Reconciliation: `sweep` HOURLY + manual (the guarantee; the closed event is the fast path):
+# removes previews whose PR is no longer eligible, reports eligible PRs without one.
+# Rollback: dispatch with rollback_run_id.
 # Extracted from webmcp-sdk docs-deploy.yml @52311db (PR #7): plan job without secrets, hardened unzip.
 # Inert until the repository variable DOCS_DEPLOY_ENABLED is "true". Preview mode: DOCS_PREVIEW_MODE
 # (dynamic | staging), else delivery.config.json.
@@ -26,9 +30,9 @@ name: docs-deploy
 on:
   workflow_run: # zizmor: ignore[dangerous-triggers] see trust model above
     workflows: [docs]
-    types: [completed]
+    types: [requested, completed]
   schedule:
-    - cron: "23 4 * * 1" # Mondays: orphan preview sweep
+    - cron: "23 * * * *" # hourly reconciliation sweep (kit D13, W11)
   workflow_dispatch:
     inputs:
       destroy_pr:
@@ -67,10 +71,11 @@ jobs:
       checks: read # gate
       statuses: read # gate (commit statuses)
     concurrency:
-      group: docs-deploy-plan-${{ github.event.workflow_run.id }}
+      group: docs-deploy-plan-${{ github.event.workflow_run.id }}-${{ github.event.action }}
       cancel-in-progress: false
     outputs:
       kind: ${{ steps.t.outputs.kind }}
+      notice: ${{ steps.t.outputs.notice }}
       reason: ${{ steps.t.outputs.reason }}
       run_id: ${{ steps.t.outputs.run_id }}
       stage: ${{ steps.t.outputs.stage }}
@@ -95,17 +100,51 @@ jobs:
           REPO: ${{ github.repository }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           RUN_ID: ${{ github.event.workflow_run.id }}
+          TRIGGER: ${{ github.event.action }}
           SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
           PREVIEW_MODE: ${{ vars.DOCS_PREVIEW_MODE }}
           BOT_PREVIEWS: ${{ vars.DOCS_PREVIEW_DEPENDABOT }}
         run: node infra/site/scripts/cli.ts plan
       - if: steps.t.outputs.kind == 'preview' || steps.t.outputs.kind == 'production'
-        name: Gate on every required check of this exact commit
+        name: Gate on this exact commit (preview = previews.gateChecks, production = previews.requiredChecks)
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           SHA: ${{ steps.t.outputs.sha }}
+          GATE: ${{ steps.t.outputs.kind }}
         run: node infra/site/scripts/cli.ts gate
+
+  notify:
+    name: deploy-notify
+    # The sticky comment's progress / exception states (building, deploying, build failed, not
+    # deployed: fork / bot). Fixed text from the default branch's code; no Cloudflare secret.
+    needs: plan
+    if: needs.plan.outputs.notice != '' && needs.plan.outputs.pr != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write # the single preview comment
+    concurrency:
+      group: docs-comment-pr-${{ needs.plan.outputs.pr }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: infra/site
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ needs.plan.outputs.pr }}
+          SHA: ${{ needs.plan.outputs.notice != 'not-deployed-fork' && needs.plan.outputs.notice != 'not-deployed-bot' && needs.plan.outputs.sha || '' }}
+          STATUS: ${{ needs.plan.outputs.notice == 'build-failed' && 'failed' || needs.plan.outputs.notice }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ needs.plan.outputs.run_id }}
+        run: node infra/site/scripts/cli.ts comment
 
   preview:
     name: deploy-preview
@@ -119,7 +158,7 @@ jobs:
       actions: read # artifact of the triggering CI run; environment policy (preflight)
       pull-requests: read # PR state before and after deploying
     environment:
-      name: docs-preview # default branch only; required reviewer optional (owner's choice)
+      name: docs-preview # default branch only; NO reviewer (kit D13: automatic previews)
       url: ${{ needs.plan.outputs.url }}
     concurrency:
       # One group per PR, shared with its teardown: deploy and teardown never overlap. GitHub keeps
@@ -140,7 +179,7 @@ jobs:
           node-version-file: .nvmrc
           package-manager-cache: false # no cache restored into a privileged job
       - id: before
-        name: Still the open, non-draft head of the PR?
+        name: Still the head of an eligible open PR (drafts included)?
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -189,14 +228,14 @@ jobs:
           pnpm --filter "$INFRA_PKG" exec alchemy deploy --stage "$STAGE" --yes --no-input
       - id: after
         if: steps.before.outputs.deploy == 'true'
-        name: Closed or drafted meanwhile?
+        name: Closed (or no longer eligible) meanwhile?
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ needs.plan.outputs.pr }}
         run: node infra/site/scripts/cli.ts after-deploy
       - if: steps.after.outputs.action == 'destroy' && needs.plan.outputs.stage != 'staging'
-        name: Destroy (the PR closed or went draft during the deploy)
+        name: Destroy (the PR closed or became ineligible during the deploy)
         env:
           PREVIEW_MODE: ${{ vars.DOCS_PREVIEW_MODE }}
           STAGE: ${{ needs.plan.outputs.stage }}
@@ -281,10 +320,12 @@ jobs:
 
   comment:
     name: deploy-comment
-    needs: [plan, preview, teardown]
+    needs: [plan, notify, preview, teardown]
     if: >-
       always() && (needs.plan.outputs.pr != '' || inputs.destroy_pr != '')
-      && (needs.preview.result == 'failure' || needs.preview.outputs.status == 'deployed'
+      && (needs.preview.result == 'failure' || needs.preview.result == 'cancelled'
+          || needs.preview.outputs.status == 'deployed'
+          || (needs.plan.result == 'failure' && needs.plan.outputs.kind == 'preview')
           || needs.teardown.result == 'success' || needs.teardown.result == 'failure')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -293,7 +334,7 @@ jobs:
       statuses: write # `docs-preview` commit status with the URL (never a required check)
     concurrency:
       # One comment writer per PR: an older run never edits the comment after a newer one.
-      group: site-comment-pr-${{ needs.plan.outputs.pr || inputs.destroy_pr }}
+      group: docs-comment-pr-${{ needs.plan.outputs.pr || inputs.destroy_pr }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -314,7 +355,7 @@ jobs:
           STATUS: >-
             ${{ needs.teardown.result == 'success' && 'removed'
              || needs.teardown.result == 'failure' && 'removal-failed'
-             || needs.preview.result == 'failure' && 'failed' || 'deployed' }}
+             || needs.preview.outputs.status == 'deployed' && 'deployed' || 'failed' }}
           REASON: ${{ needs.plan.outputs.reason || 'manual' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: node infra/site/scripts/cli.ts comment # re-checks the PR head before a "deployed"
@@ -385,6 +426,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           SHA: ${{ steps.src.outputs.sha }}
+          GATE: production
         run: node infra/site/scripts/cli.ts gate
       - id: fresh
         name: Still the head of the default branch? (gate already passed in deploy-plan; not for a rollback)
@@ -478,10 +520,12 @@ jobs:
           package-manager-cache: false
       - run: pnpm --filter "$INFRA_PKG" install --frozen-lockfile
       - id: list
-        name: Orphans = (preview Workers ∪ preview stages in state) whose PR is closed, draft or gone
+        name: Orphans = (preview Workers ∪ preview stages in state) whose PR is not eligible (closed, gone, fork, other base, bot)
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          BOT_PREVIEWS: ${{ vars.DOCS_PREVIEW_DEPENDABOT }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_WORKERS_SUBDOMAIN: ${{ vars.DOCS_WORKERS_SUBDOMAIN }}
@@ -494,10 +538,11 @@ jobs:
           SITE_STATE_STORE="$(node -p 'require("./delivery.config.json").site.worker')-preview-state" \
             pnpm --filter "$INFRA_PKG" exec alchemy state list --no-input > "$STATE_LIST_FILE" || echo "::warning::alchemy state list failed: sweeping by Worker list only"
           node infra/site/scripts/cli.ts sweep
-      - name: Destroy orphans
+      - name: Destroy orphans (re-checked one by one; failures retried by the next sweep)
         if: steps.list.outputs.orphans != ''
         env:
           ORPHANS: ${{ steps.list.outputs.orphans }}
+          BOT_PREVIEWS: ${{ vars.DOCS_PREVIEW_DEPENDABOT }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -516,14 +561,21 @@ jobs:
           for n in $ORPHANS; do
             case "$n" in *[!0-9]*) echo "::error::bad PR number $n"; exit 1 ;; esac
             export PR_NUMBER="$n" STAGE="pr-$n"
+            # Race with a reopen/new deploy (other concurrency group): re-check right before destroying.
+            if [ "$(GITHUB_OUTPUT='' node infra/site/scripts/cli.ts orphan-check | sed -n 's/^orphan=//p')" != true ]; then
+              RESULT=kept node infra/site/scripts/cli.ts sweep-report; continue
+            fi
             SITE_STATE_STORE="$(GITHUB_OUTPUT='' node infra/site/scripts/cli.ts pr-target | sed -n 's/^store=//p')"
             export SITE_STATE_STORE
             if node infra/site/scripts/cli.ts preflight \
                && pnpm --filter "$INFRA_PKG" exec alchemy destroy --stage "$STAGE" --yes --no-input \
                && node infra/site/scripts/cli.ts delete-worker; then
+              RESULT=removed node infra/site/scripts/cli.ts sweep-report
               STATUS=removed REASON=sweep node infra/site/scripts/cli.ts comment || true
             else
-              failed=1; echo "::error::could not remove pr-$n"
+              failed=1; echo "::error::could not remove pr-$n: the next sweep retries"
+              RESULT=failed node infra/site/scripts/cli.ts sweep-report
+              STATUS=removal-failed REASON=sweep node infra/site/scripts/cli.ts comment || true
             fi
           done
           exit $failed

@@ -1,5 +1,6 @@
 // Renders the template's site name ("site") into a repository's own (e.g. "docs"):
 //   workflow `site` / `site-deploy`, files site.yml / site-deploy.yml, job `site-build`,
+//   concurrency groups `site-*` (incl. `site-comment-pr-*`, missed until v0.4.0),
 //   environments `site-preview` / `site-production`, artifact `site`, status `site-preview`,
 //   vars SITE_DEPLOY_ENABLED / SITE_PREVIEW_MODE / SITE_PREVIEW_DEPENDABOT / SITE_WORKERS_SUBDOMAIN,
 //   secret SITE_STATE_TOKEN,
@@ -15,7 +16,7 @@ export function renameSiteText(text, name) {
   if (name === "site") return text;
   const UP = name.toUpperCase();
   return text
-    .replace(/\bsite-(build|deploy|preview|production)\b/g, `${name}-$1`)
+    .replace(/\bsite-(build|deploy|preview|production|comment)\b/g, `${name}-$1`)
     .replace(/\b(vars|secrets)\.SITE_(DEPLOY_ENABLED|PREVIEW_MODE|PREVIEW_DEPENDABOT|WORKERS_SUBDOMAIN|STATE_TOKEN)\b/g, `$1.${UP}_$2`)
     .replace(/\bSITE_(DEPLOY_ENABLED|PREVIEW_MODE|PREVIEW_DEPENDABOT|WORKERS_SUBDOMAIN)\b/g, `${UP}_$1`) // comments, docs
     .replace(/^(\s*name: )site$/gm, `$1${name}`)
@@ -29,7 +30,9 @@ export function renameSiteConfig(config, name) {
   const c = structuredClone(config);
   const old = c.site.name;
   c.site.name = name;
-  c.previews.requiredChecks = c.previews.requiredChecks.map((x) => (x === `${old}-build` ? `${name}-build` : x));
+  const ren = (x) => (x === `${old}-build` ? `${name}-build` : x);
+  c.previews.requiredChecks = c.previews.requiredChecks.map(ren);
+  if (c.previews.gateChecks) c.previews.gateChecks = c.previews.gateChecks.map(ren);
   return c;
 }
 

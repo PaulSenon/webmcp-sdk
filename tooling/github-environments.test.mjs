@@ -17,11 +17,9 @@ test("default (stage mode): exact PUT bodies — reviewers: [] wherever no revie
   ]);
 });
 
-test("--preview-reviewer does NOT touch production; --production-reviewer is its own flag", () => {
-  const p = byName(environmentPlan({ ...base, flags: ["--preview-reviewer"] }));
-  assert.deepEqual(p["docs-preview"].body, one);
-  assert.deepEqual(p["docs-production"].body, none);
-  const q = byName(environmentPlan({ ...base, flags: ["--production-reviewer"] }));
+test("previews are automatic (D13): --preview-reviewer is refused; --production-reviewer touches production only", () => {
+  assert.throws(() => environmentPlan({ ...base, flags: ["--preview-reviewer"] }), /automatic/);
+  const q = byName(environmentPlan({ ...base, flags: ["--production-reviewer", "--npm-release-reviewer"] }));
   assert.deepEqual(q["docs-preview"].body, none);
   assert.deepEqual(q["docs-production"].body, one);
 });
