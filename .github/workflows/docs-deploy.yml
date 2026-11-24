@@ -18,8 +18,9 @@
 #   open (drafts included), head == run SHA, build green -> gate (previews.gateChecks) -> preview
 #   closed (merged or not), whatever the run concluded   -> teardown (dynamic mode)
 #   push to the default branch, build green, gate (previews.requiredChecks), still its head -> production
-# Reconciliation: `sweep` HOURLY + manual (the guarantee; the closed event is the fast path):
-# removes previews whose PR is no longer eligible, reports eligible PRs without one.
+# Reconciliation: `sweep` on every completed site run, every dispatch, and hourly cron (best effort,
+# backstop for idle repositories); the closed event is the fast path. Removes previews whose PR is
+# no longer eligible (closed > 15 min ago, gone, fork, other base, bot), reports eligible PRs without one.
 # Rollback: dispatch with rollback_run_id.
 # Extracted from webmcp-sdk docs-deploy.yml @52311db (PR #7): plan job without secrets, hardened unzip.
 # Inert until the repository variable DOCS_DEPLOY_ENABLED is "true". Preview mode: DOCS_PREVIEW_MODE
@@ -32,7 +33,7 @@ on:
     workflows: [docs]
     types: [requested, completed]
   schedule:
-    - cron: "23 * * * *" # hourly reconciliation sweep (kit D13, W11)
+    - cron: "23 * * * *" # hourly backstop sweep (kit D13, W11); every completed run also sweeps (W13)
   workflow_dispatch:
     inputs:
       destroy_pr:
@@ -44,7 +45,7 @@ on:
         required: false
         type: string
       sweep:
-        description: "Run the orphan preview sweep now"
+        description: "Only sweep (every dispatch sweeps; this one does nothing else)"
         required: false
         type: boolean
         default: false
@@ -497,9 +498,16 @@ jobs:
 
   sweep:
     name: deploy-sweep
+    # Reconciliation (v0.4.2, W13): EVENT-DRIVEN on every completed site run and every dispatch
+    # (GitHub cron is best effort: hourly slots were observed dropped), cron = backstop for idle
+    # repositories. Independent job: no `needs`, nothing needs it, so it never delays or changes
+    # deploy-preview / teardown / production. One running + at most one pending (GitHub replaces
+    # an older pending run of the group): no pile-up. PRs closed < 15 min ago are left to their
+    # teardown (sweepDecision).
     if: >-
       vars.DOCS_DEPLOY_ENABLED == 'true'
-      && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.sweep))
+      && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+          || (github.event_name == 'workflow_run' && github.event.action == 'completed'))
     runs-on: ubuntu-24.04
     cache-mode: none # no Actions cache in this job (integrity > speed)
     timeout-minutes: 30

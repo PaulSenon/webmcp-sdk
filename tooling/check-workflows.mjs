@@ -23,6 +23,9 @@
 //       env, or assigned in the script itself); a privileged workflow sets DEFAULT_BRANCH to
 //       `${{ github.event.repository.default_branch || github.ref_name }}` (the schedule payload
 //       may lack `repository`; a scheduled run is always on the default branch)
+//   W13 (v0.4.2) the deploy workflow's `sweep` job also runs on `workflow_run` (event-driven
+//       reconciliation: GitHub cron is best effort) and is independent: no `needs`, no job needs it,
+//       its own concurrency group without cancel-in-progress
 //   node tooling/check-workflows.mjs <dir>   -> exit 1 with the list of violations
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -79,6 +82,15 @@ export function checkWorkflow(file, text, { commandEnv } = {}) {
     const hourly = (c) => /^([0-5]?\d)\s+(\*|\*\/1)\s+\*\s+\*\s+\*$/.test(c.trim());
     const excepted = crons.some((c) => text.split("\n").some((l) => l.includes(c) && /#\s*local:\s*sweep-cadence\s+\S/.test(l)));
     if (!crons.some(hourly) && !excepted) err("W11", `the reconciliation sweep must run at least hourly (cron "M * * * *"), found [${crons.join(", ")}]; a slower cadence needs a "# local: sweep-cadence <why>" comment`);
+  }
+  if (triggers.includes("workflow_run") && jobs.sweep) {
+    const sw = jobs.sweep;
+    if (typeof sw.if !== "string" || !/github\.event_name\s*==\s*'workflow_run'/.test(sw.if)) err("W13", "the sweep job must also run on workflow_run (cron alone is best effort)");
+    if (sw.needs) err("W13", "the sweep job must not `needs` another job (it would wait for, or be skipped by, the deploy)");
+    const dependents = Object.entries(jobs).filter(([, j]) => [j.needs ?? []].flat().includes("sweep")).map(([k]) => k);
+    if (dependents.length) err("W13", `no job may depend on the sweep (${dependents.join(", ")}): it must never change a deploy's outcome`);
+    const group = String(sw.concurrency?.group ?? "");
+    if (!/-preview-sweep$/.test(group) || sw.concurrency?.["cancel-in-progress"] !== false) err("W13", "the sweep job needs its own `<site>-preview-sweep` concurrency group with cancel-in-progress: false");
   }
   if (triggers.includes("pull_request") && jobs.lifecycle) {
     const types = on.pull_request?.types ?? [];

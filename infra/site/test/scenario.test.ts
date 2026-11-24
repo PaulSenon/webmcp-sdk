@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { pickPr, planFromRun, type PrInfo, type RunInfo } from "../src/deploy-plan.ts";
-import { afterDeploy, isOrphan, previewAction, previewNumbers, previewNumbersFromState } from "../src/preview.ts";
+import { afterDeploy, isOrphan, previewAction, previewNumbers, previewNumbersFromState, sweepDecision, SWEEP_GRACE_MINUTES } from "../src/preview.ts";
 import { workerName } from "../src/stage.ts";
 
 const REPO = "acme/site";
@@ -71,11 +71,15 @@ class World {
       return "production";
     }
     if (plan.action === "teardown-preview") {
+      // In real life a sweep destroying the same stage concurrently races this destroy (two
+      // alchemy destroys of one stage); here: the teardown must still find what it removes.
+      if (this.raceCheck && !this.workers.has(workerName(BASE, plan.stage)) && this.everDeployed.has(plan.pr)) return `teardown: RACED by a sweep`;
       this.workers.delete(workerName(BASE, plan.stage));
       return `teardown: ${plan.reason}`;
     }
     if (previewAction(this.pr(plan.pr), run.head_sha, "success", ctx(this.botPreviews)).action !== "deploy") return "skip: re-check";
     this.workers.set(workerName(BASE, plan.stage), run.head_sha);
+    this.everDeployed.add(plan.pr);
     during?.();
     if (afterDeploy(this.prs.get(plan.pr) as never, ctx(this.botPreviews)) === "destroy") {
       this.workers.delete(workerName(BASE, plan.stage));
@@ -84,9 +88,19 @@ class World {
     return "deployed";
   }
 
-  sweep() {
+  raceCheck = false;
+  everDeployed = new Set<number>();
+  /** Fake clock (ms) for closed_at and the sweep's grace. */
+  now = Date.parse("2026-11-24T00:00:00Z");
+  close(n: number) {
+    this.pr(n).state = "closed";
+    (this.pr(n) as PrInfo & { closed_at?: string }).closed_at = new Date(this.now).toISOString();
+  }
+  /** cron / manual sweep: long after any close (no grace applies) unless `now` is given. */
+  sweep(now = this.now + 24 * 3600_000) {
     for (const n of previewNumbers(BASE, [...this.workers.keys()])) {
-      if (isOrphan(this.prs.get(n) as never, ctx(this.botPreviews))) this.workers.delete(workerName(BASE, `pr-${n}`));
+      assert.equal(isOrphan(this.prs.get(n) as never, ctx(this.botPreviews)), sweepDecision(this.prs.get(n) as never, ctx(this.botPreviews), Number.MAX_SAFE_INTEGER) === "remove");
+      if (sweepDecision(this.prs.get(n) as never, ctx(this.botPreviews), now) === "remove") this.workers.delete(workerName(BASE, `pr-${n}`));
     }
   }
   preview(n: number) {
@@ -268,4 +282,52 @@ test("state list: captured beta.85 output — the stack listing yields its pr-<n
   const read = (f: string) => readFileSync(new URL(`fixtures/state-list/${f}`, import.meta.url), "utf8");
   assert.deepEqual(previewNumbersFromState(read("stack.txt"), "example-site"), [6, 16]);
   assert.deepEqual(previewNumbersFromState(read("root.txt"), "example-site"), []); // why v0.4.0 saw `state []`
+});
+
+test("event-driven sweep (v0.4.2): running it around every deploy/teardown changes no outcome", () => {
+  const story = (w: World, sweepNow: boolean) => {
+    const out: string[] = [];
+    const step = (r: () => string) => {
+      if (sweepNow) w.sweep(w.now); // the sweep job of the same run, or of another, right now
+      out.push(r());
+      if (sweepNow) w.sweep(w.now);
+      w.now += 60_000;
+    };
+    w.open(50, sha(1));
+    w.open(51, sha(2), { draft: true });
+    step(() => w.handle(w.run(50, sha(1))));
+    step(() => w.handle(w.run(51, sha(2))));
+    w.close(50);
+    step(() => w.handle(w.run(50, sha(1)))); // teardown of a PR closed just now: the sweep defers
+    w.pr(51).head.sha = sha(3);
+    step(() => w.handle(w.run(51, sha(3)), () => w.close(51))); // closed during the deploy
+    w.pr(50).state = "open"; // reopened
+    step(() => w.handle(w.run(50, sha(1))));
+    return { out, workers: [...w.workers.entries()].sort() };
+  };
+  const raced = (w: World) => ((w.raceCheck = true), w);
+  const withSweep = story(raced(new World()), true);
+  assert.deepEqual(withSweep, story(raced(new World()), false));
+  assert.ok(!withSweep.out.some((o) => o.includes("RACED")));
+  // without the grace the same story races the teardown: the grace is what keeps outcomes equal
+  const noGrace = new World();
+  raced(noGrace).sweep = function (this: World) {
+    World.prototype.sweep.call(this, Number.MAX_SAFE_INTEGER);
+  };
+  assert.ok(story(noGrace, true).out.some((o) => o.includes("RACED")));
+});
+
+test("sweep grace: a PR closed < 15 min ago is left to its teardown, then removed", () => {
+  const w = new World();
+  w.open(52, sha(1));
+  w.handle(w.run(52, sha(1)));
+  w.close(52); // its closed run never arrives
+  w.sweep(w.now + (SWEEP_GRACE_MINUTES - 1) * 60_000);
+  assert.equal(w.preview(52), sha(1));
+  w.sweep(w.now + SWEEP_GRACE_MINUTES * 60_000);
+  assert.equal(w.preview(52), undefined);
+  // gone / fork / closed without closed_at: no grace
+  const c = { repo: REPO, defaultBranch: "main", botPreviews: false };
+  assert.equal(sweepDecision(undefined, c, w.now), "remove");
+  assert.equal(sweepDecision({ ...w.pr(52), closed_at: null } as never, c, w.now), "remove");
 });

@@ -14,6 +14,7 @@ export interface PullRequest {
   head: { sha: string; repo: { full_name: string } | null };
   base: { ref: string; repo?: { full_name: string } };
   user?: { login?: string } | null;
+  closed_at?: string | null;
 }
 
 export type PreviewAction =
@@ -44,6 +45,22 @@ export function afterDeploy(pr: PullRequest | undefined, ctx: PolicyContext): "k
 /** A preview is an orphan exactly when its PR is not eligible (closed, gone, fork, other base, bot not opted in). Drafts are not orphans. */
 export function isOrphan(pr: PullRequest | undefined, ctx: PolicyContext): boolean {
   return !eligibility(pr, ctx).eligible;
+}
+
+/**
+ * v0.4.2: the sweep also runs on every privileged run (event-driven), so it can meet the event
+ * teardown of a PR that was JUST closed (same or another run, different concurrency group). A PR
+ * closed less than this ago is left to its teardown; the next sweep removes it if that failed.
+ */
+export const SWEEP_GRACE_MINUTES = 15;
+
+export type SweepDecision = "remove" | "keep" | "defer";
+
+export function sweepDecision(pr: PullRequest | undefined, ctx: PolicyContext, now: number): SweepDecision {
+  if (!isOrphan(pr, ctx)) return "keep";
+  const closedAt = pr?.state === "closed" && pr.closed_at ? Date.parse(pr.closed_at) : NaN;
+  if (Number.isFinite(closedAt) && now - closedAt < SWEEP_GRACE_MINUTES * 60_000) return "defer";
+  return "remove";
 }
 
 /**
@@ -130,7 +147,7 @@ export function renderComment(input: { project: string; status: CommentStatus; s
     deployed: `✅ **Preview:** ${input.url} — commit ${short} — ${run}`,
     failed: `❌ **Preview not updated:** build or deploy of commit ${short} failed — ${run}. The previous preview, if any, is unchanged.`,
     removed: `🧹 **Preview removed** (${why}) — ${run}`,
-    "removal-failed": `⚠️ **Preview removal failed** (${why}) — ${run}. Will retry: the hourly sweep removes it.`,
+    "removal-failed": `⚠️ **Preview removal failed** (${why}) — ${run}. Will retry: the next sweep (on the next deploy run of this repository, or its hourly cron) removes it.`,
     "not-deployed-fork": `🔒 **Preview not deployed:** fork PR. Fork PRs never get a preview (untrusted code, no access to deploy credentials).`,
     "not-deployed-bot": `🤖 **Preview not deployed:** dependency-bot PR. Opt in with the repository variable \`${input.botVar ?? "<SITE>_PREVIEW_DEPENDABOT"}\` = \`true\`.`,
   }[input.status];
@@ -139,7 +156,7 @@ export function renderComment(input: { project: string; status: CommentStatus; s
     `<!-- state:${input.status}:${input.sha ?? "-"} -->`,
     line,
     "",
-    "<sub>Every open same-repository PR into the default branch gets a preview, drafts included, once the site build of its exact commit is green (other checks gate the merge, not the preview). Deployed by the default branch's workflow from the CI artifact; removed on close or merge, and by the hourly sweep.</sub>",
+    "<sub>Every open same-repository PR into the default branch gets a preview, drafts included, once the site build of its exact commit is green (other checks gate the merge, not the preview). Deployed by the default branch's workflow from the CI artifact; removed on close or merge, and by the sweep that runs with every deploy run.</sub>",
     "",
   ].join("\n");
 }
