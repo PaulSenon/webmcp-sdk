@@ -38,7 +38,7 @@ function stepEnv(jobId, stepId, ctx) {
 }
 
 const pr = (n, o = {}) => ({ number: n, state: o.state ?? "open", draft: o.draft ?? false, head: { sha: SHA, repo: { full_name: REPO } }, base: { ref: "main", repo: { full_name: REPO } }, user: { login: o.login ?? "alice" } });
-const PRS = { 7: pr(7, { draft: true }), 8: pr(8, { state: "closed" }), 9: pr(9, { login: "dependabot[bot]" }) };
+const PRS = { 7: pr(7, { draft: true }), 8: pr(8, { state: "closed" }), 9: pr(9, { login: "dependabot[bot]" }), 10: { ...pr(10, { state: "closed" }), closed_at: new Date().toISOString() } };
 
 async function withApi(fn) {
   const server = createServer((req, res) => {
@@ -106,7 +106,7 @@ test("sweep orphan-check + sweep-report run with the destroy step's env on a SCH
   await withApi(async (api) => {
     const { env, run: script } = stepEnv("sweep", "destroy", schedule());
     assert.equal(env.DEFAULT_BRANCH, "main");
-    for (const [n, want] of [["7", "false"], ["8", "true"]]) {
+    for (const [n, want] of [["7", "false"], ["8", "true"], ["10", "false"]]) { // 10: closed just now (grace)
       const r = await run("orphan-check", { ...env, PR_NUMBER: n }, api); // PR_NUMBER is exported by the loop
       assert.equal(r.status, 0, r.stderr + r.stdout);
       assert.match(r.output, new RegExp(`^orphan=${want}$`, "m"));

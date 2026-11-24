@@ -14,7 +14,7 @@ import { cloudflare, github, redact, type GitHubClient } from "../src/api.ts";
 import { isMainOnly, isolationDecision, probeStateStore, storeDecision, verifyToken, workerAccess } from "../src/isolation.ts";
 import { gateChecksFor, loadConfig, previewMode, serverEntry } from "../src/config.ts";
 import { evaluateChecks, type CheckRun, type CommitStatus } from "../src/gate.ts";
-import { afterDeploy, commentState, findComment, isOrphan, previewAction, previewNumbers, previewNumbersFromState, renderComment, shouldWrite, type CommentStatus, type IssueComment, type PullRequest } from "../src/preview.ts";
+import { afterDeploy, commentState, findComment, isOrphan, sweepDecision, SWEEP_GRACE_MINUTES, previewAction, previewNumbers, previewNumbersFromState, renderComment, shouldWrite, type CommentStatus, type IssueComment, type PullRequest } from "../src/preview.ts";
 import { productionUrl } from "../src/domain.ts";
 import { installedStoreVersion } from "../src/store-version.ts";
 import { prStage, revisionLabel, stateStoreFor, stateStoreUrl, workerName, workersDevUrl } from "../src/stage.ts";
@@ -343,18 +343,24 @@ const commands: Record<string, () => Promise<void>> = {
     const ctx = policy();
     const orphans: number[] = [];
     const kept: number[] = [];
-    for (const n of numbers) (isOrphan(await getPr(client, n), ctx) ? orphans : kept).push(n);
+    const deferred: number[] = [];
+    const now = Date.now();
+    for (const n of numbers) {
+      const d = sweepDecision(await getPr(client, n), ctx, now);
+      (d === "remove" ? orphans : d === "defer" ? deferred : kept).push(n);
+    }
+    if (deferred.length) console.log(`::notice::closed less than ${SWEEP_GRACE_MINUTES} min ago, left to their teardown (next sweep removes them otherwise): ${deferred.map((n) => `#${n}`).join(" ")}`);
     const open = await client.list<PullRequest>(`/repos/${repo()}/pulls?state=open&per_page=100`);
     const missing = previewMode(config, env("PREVIEW_MODE", false)) === "dynamic" ? open.filter((p) => !isOrphan(p, ctx) && !fromWorkers.includes(p.number)).map((p) => p.number) : [];
     for (const n of missing) console.log(`::notice::PR #${n} is eligible but has no preview Worker (build red, still running, or a missed event: re-run its site workflow)`);
-    console.log(`previews: workers [${fromWorkers.join(" ")}] state [${fromState.join(" ")}] kept [${kept.join(" ")}] orphans [${orphans.join(" ")}] missing [${missing.join(" ")}]`);
-    summary(["### Preview sweep", "", ...(stateNote ? [`> ⚠️ ${stateNote}`, ""] : []), `Workers: ${fromWorkers.map((n) => `#${n}`).join(" ") || "—"} · state stages: ${fromState.map((n) => `#${n}`).join(" ") || "—"}`, "", "| found | kept | orphans (to remove) | eligible without preview |", "|---|---|---|---|", `| ${numbers.length} | ${kept.map((n) => `#${n}`).join(" ") || "—"} | ${orphans.map((n) => `#${n}`).join(" ") || "—"} | ${missing.map((n) => `#${n}`).join(" ") || "—"} |`, ""].join("\n"));
+    console.log(`previews: workers [${fromWorkers.join(" ")}] state [${fromState.join(" ")}] kept [${kept.join(" ")}] deferred [${deferred.join(" ")}] orphans [${orphans.join(" ")}] missing [${missing.join(" ")}]`);
+    summary(["### Preview sweep", "", ...(stateNote ? [`> ⚠️ ${stateNote}`, ""] : []), `Workers: ${fromWorkers.map((n) => `#${n}`).join(" ") || "—"} · state stages: ${fromState.map((n) => `#${n}`).join(" ") || "—"}`, "", "| found | kept | deferred (just closed) | orphans (to remove) | eligible without preview |", "|---|---|---|---|---|", `| ${numbers.length} | ${kept.map((n) => `#${n}`).join(" ") || "—"} | ${deferred.map((n) => `#${n}`).join(" ") || "—"} | ${orphans.map((n) => `#${n}`).join(" ") || "—"} | ${missing.map((n) => `#${n}`).join(" ") || "—"} |`, ""].join("\n"));
     output({ orphans: orphans.join(" ") });
   },
 
   /** Right before a sweep destroys pr-<n>: still an orphan? (a reopen during the sweep wins) */
   async "orphan-check"() {
-    const orphan = isOrphan(await getPr(gh(), Number(env("PR_NUMBER"))), policy());
+    const orphan = sweepDecision(await getPr(gh(), Number(env("PR_NUMBER"))), policy(), Date.now()) === "remove";
     if (!orphan) console.log(`::notice::PR #${env("PR_NUMBER")} is eligible again: kept`);
     output({ orphan });
   },

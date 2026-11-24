@@ -69,7 +69,7 @@ Minimal sets:
                 ─ artifact `docs`
    lifecycle    always (no-op on closed): the run completes, docs-deploy reconciles
         │ workflow_run: requested (comment "building") + completed  (docs-deploy.yml always runs main's definition)
-        │ schedule: hourly reconciliation sweep, independent of any CI run
+        │ deploy-sweep also runs in every docs-deploy run; schedule: hourly backstop (best effort)
         ▼
  docs-deploy.yml ─ PRIVILEGED, main-defined; environments docs-preview / docs-production (main only)
    deploy-plan        run read back by id, PR resolved + verified from the API, plan, GATE (no secret)
@@ -78,7 +78,7 @@ Minimal sets:
    deploy-teardown    idempotent destroy (reopen keeps the preview)
    deploy-comment     one PR comment `<!-- delivery-kit:webmcp-sdk:preview -->` + status `docs-preview`
    deploy-production  still head of main? artifact → preflight → deploy → smoke  | rollback_run_id
-   deploy-sweep       hourly / dispatch: orphan previews (Workers ∪ Alchemy state stages), retried until removed
+   deploy-sweep       every run / dispatch / hourly cron: orphan previews (Workers ∪ Alchemy state stages), retried until removed
 
  One Cloudflare account (Isaac's)
    Worker webmcp-sdk-docs                production    https://webmcp-sdk-docs.<sub>.workers.dev
@@ -132,11 +132,17 @@ Changing the CSP (for example to embed a third-party demo) is an infra PR, revie
 - **Exceptions, stated in the PR comment:**
   - forks never get a preview (untrusted code, no secret);
   - Dependabot/Renovate PRs are built only, unless `DOCS_PREVIEW_DEPENDABOT=true`.
-- **Cleanup, independent of CI:**
+- **Cleanup, independent of CI (kit v0.4.2):**
   - the `closed` run is the fast path;
-  - an **hourly sweep** (`23 * * * *`) removes every `webmcp-sdk-docs-pr-<n>` Worker and `pr-<n>` stage whose PR is no longer eligible, re-checking the PR just before each removal;
+  - a **reconciliation sweep** removes every `webmcp-sdk-docs-pr-<n>` Worker and `pr-<n>` stage whose PR is no longer eligible, re-checking the PR just before each removal;
+  - **when it runs:**
+    - in every privileged `docs-deploy` run (each completed `docs` run, from any PR or push);
+    - on dispatch;
+    - from an hourly cron (`23 * * * *`) as the backstop for an idle repo;
+  - **no time guarantee:** GitHub's cron is best effort. Observed on 2026-11-23/24: 2 hourly slots dropped in a row, and the weekly run 10.5 h late. An orphan lives at most until the next repo activity or the next cron GitHub actually fires;
+  - a PR closed less than 15 min ago is left to its own teardown ("deferred"), so two `alchemy destroy` runs never race on one stage;
   - the sweep only matches the exact `webmcp-sdk-docs-pr-<n>` pattern, never production, the state stores or another project's Workers;
-  - a failed removal raises an `::error::`, turns the job red and posts a "removal failed, will retry" comment; the next hour retries.
+  - a failed removal raises an `::error::`, turns the sweep job red (never the deploy jobs) and posts a "removal failed, will retry" comment; the next sweep retries.
 - **PR comment:** one comment, updated in place.
   - Deploy: building → deploying → deployed (URL + SHA), or failed (run link).
   - Cleanup: removed, or removal failed.
@@ -146,7 +152,7 @@ Changing the CSP (for example to embed a third-party demo) is an infra PR, revie
   - the state-store token and API version;
   - the Workers visible to the token;
   - a preview token may reach production only if `docs-preview` is main-only, which is required. A reviewer there is reported as policy drift and never blocks cleanup.
-- **Hygiene:** `permissions: {}`, least privilege per job, SHA pins, no cache in the build whose artifact ships nor in any privileged job, only `infra/site` dependencies from main's frozen lockfile in privileged jobs; zizmor pedantic (one justified `dangerous-triggers` suppression on `workflow_run`), actionlint and the kit's workflow invariants (`tooling/check-workflows.mjs`, W1–W12, run in `checks`).
+- **Hygiene:** `permissions: {}`, least privilege per job, SHA pins, no cache in the build whose artifact ships nor in any privileged job, only `infra/site` dependencies from main's frozen lockfile in privileged jobs; zizmor pedantic (one justified `dangerous-triggers` suppression on `workflow_run`), actionlint and the kit's workflow invariants (`tooling/check-workflows.mjs`, W1–W13, run in `checks`).
 
 ### 2.2 Kit divergences (to upstream or decide)
 
@@ -203,7 +209,7 @@ The two CI tokens are created *after* the bootstrap (the Workers must exist for 
 
 | | `staging` (code default) | `dynamic` (**chosen**) |
 | - | - | - |
-| What PRs get | the shared Worker `webmcp-sdk-docs-staging`; last PR deployed wins | one Worker per PR (drafts included), removed on close, hourly sweep |
+| What PRs get | the shared Worker `webmcp-sdk-docs-staging`; last PR deployed wins | one Worker per PR (drafts included), removed on close, reconciliation sweep on every run + hourly cron |
 | Preview token | Editor on `webmcp-sdk-docs-staging` only | Admin on **all** Workers of the account |
 | Approval / guard | none needed (unless the token turns out broader, see fallback) | `docs-preview` must be **main-only** (branch policy); `preflight` refuses otherwise. No reviewer (automatic previews, decided by Isaac on 2026-11-22) |
 | Production Worker reachable by the preview token? | **no** | **yes**: it can overwrite or delete `webmcp-sdk-docs`, the state-store Workers and **every other Worker of the account, including Better Upload's** (§4.1) |
@@ -288,7 +294,7 @@ rm -rf "$PRIVATE" "$TEMP" "$PROD" "$PREVIEW"
 | Roll back to a given commit | Actions → **docs-deploy** → *Run workflow* on `main`, `rollback_run_id` = id of a successful **docs** run of that commit on main. CLI: `gh workflow run docs-deploy.yml --ref main -f rollback_run_id=<id>` |
 | Redeploy production from main | Actions → **docs** → *Run workflow* on `main` (rebuild); `docs-deploy` follows |
 | Reset staging to `main` | re-run the latest docs run of any open PR, or wait for the next PR push (staging is never torn down) |
-| Dynamic mode: a preview was not removed | the hourly sweep retries it (red job + PR comment until it succeeds), or **docs-deploy** → *Run workflow* with `destroy_pr` = PR number (or `sweep`) |
+| Dynamic mode: a preview was not removed | the next sweep (any repo activity, or the hourly cron) retries it (red sweep job + PR comment until it succeeds), or **docs-deploy** → *Run workflow* with `destroy_pr` = PR number (or `sweep`) |
 | A PR got no preview | read the `deploy-plan` summary: it states the reason (fork, draft, Dependabot, superseded, build failed, no artifact, checks) |
 | A deploy fails at *Gate* | a required check of that commit failed or is missing after 40 min: fix or re-run it, then re-run the deploy job |
 | `preflight` fails | the message names the cause: user token instead of account token, wrong `DOCS_STATE_TOKEN` for the environment, store version behind Alchemy (re-run the bootstrap with a new temporary token), Worker missing or not in the token's scope, preview-side token reaching production while `docs-preview` is neither main-only nor reviewer-protected |
